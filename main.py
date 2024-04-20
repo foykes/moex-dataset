@@ -1,8 +1,10 @@
 import os 
 # os.system('python3 filename.py')
 
-os.system('jupyter nbconvert --to script data_gathering.ipynb')
-os.system('jupyter nbconvert --to script tech.ipynb')
+current_path = os.getcwd()
 
-os.system('python data_gathering.py')
-os.system('python tech.py')
+os.system(('jupyter nbconvert --to script {}/data_gathering.ipynb').format(current_path))
+os.system(('jupyter nbconvert --to script {}/tech.ipynb').format(current_path))
+
+os.system(('python {}/data_gathering.py')).format(current_path)
+os.system(('python {}/tech.py')).format(current_path)
