@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import pandas as pd, os 
@@ -10,7 +10,7 @@ import urllib.request, json
 current_path = os.getcwd()
 
 
-# In[2]:
+# In[ ]:
 
 
 ### Функция выгрузки дивидендов по ISIN
@@ -55,7 +55,7 @@ def div_loader(isin, ticker):
             divs_all.append(tmp)
 
 
-# In[3]:
+# In[ ]:
 
 
 ## Подготовка списка для чего будут выгружаться дивиденды
@@ -67,7 +67,7 @@ df_isin.drop_duplicates(keep='first', inplace=True)
 df_isin.reset_index(drop=True, inplace=True)
 
 
-# In[4]:
+# In[ ]:
 
 
 divs_all = []
@@ -80,13 +80,13 @@ for i in range(0, len(df_isin)):
 print('Выгружено записей о дивидендах: {}'.format(len(divs_all)))
 
 
-# In[10]:
+# In[ ]:
 
 
 df_divs_all = pd.DataFrame(divs_all, columns=['ISIN','TRADE_CODE','dt','value','currency'])
 
 
-# In[11]:
+# In[ ]:
 
 
 path = current_path + "/datasets/dividends/" + "all"
