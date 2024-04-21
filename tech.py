@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[16]:
+# In[ ]:
 
 
 import talib, pandas as pd
@@ -12,7 +12,7 @@ from os.path import isfile, join
 current_path = os.getcwd()
 
 
-# In[20]:
+# In[ ]:
 
 
 def RSI14(filename):
@@ -36,7 +36,7 @@ def RSI14(filename):
     if len(df) > 0: df.to_csv(path,index = False)
 
 
-# In[18]:
+# In[ ]:
 
 
 #getting datasets
@@ -47,7 +47,7 @@ datasets_list = [x for x in datasets_list if not x.endswith('.csv')]
 datasets_list = list(set(datasets_list))
 
 
-# In[21]:
+# In[ ]:
 
 
 for file in datasets_list:
