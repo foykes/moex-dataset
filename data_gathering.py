@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[18]:
 
 
-import datetime, pandas as pd, requests, csv
+import datetime, pandas as pd, requests, csv, os
 
-
+current_path = os.getcwd()
 
 today = datetime.datetime.now()
 df_full = pd.DataFrame()
@@ -15,7 +15,7 @@ exception_list = []
 
 # Выгрузка доступного на мосбирже
 
-# In[2]:
+# In[19]:
 
 
 CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
@@ -36,8 +36,8 @@ df_moex = df_moex[1:]
 df_moex.columns = new_header
 
 print(len(df_moex))
-df_moex.to_excel("datasets/ticker_lists/moex_full.xlsx") 
-df_moex.to_csv("datasets/ticker_lists/moex_full.csv")  
+df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
+df_moex.to_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path))
 
 df_moex_stocks = df_moex[(df_moex['SUPERTYPE'] == "Акции")|(df_moex['SUPERTYPE'] == "Депозитарные расписки")]
 df_moex_stocks.reset_index(drop=True, inplace=True)
@@ -45,18 +45,18 @@ df_moex_stocks.reset_index(drop=True, inplace=True)
 ## moex_stocks_list['CURRENCY'] == '' это заблокированные акции
 
 print(len(df_moex_stocks))
-df_moex_stocks.to_excel("datasets/ticker_lists/moex_stocks.xlsx") 
-df_moex_stocks.to_csv("datasets/ticker_lists/moex_stocks.csv")  
+df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(current_path))
+df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(current_path))
 
 
-# In[3]:
+# In[20]:
 
 
 all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
 all_stocks_ru = all_stocks_ru.loc[~all_stocks_ru.duplicated(), :]
 
 
-# In[4]:
+# In[21]:
 
 
 #готовим даты
@@ -70,7 +70,7 @@ start_date_mx = start_date.strftime('%Y-%m-%d')
 end_date_mx = end_date.strftime('%Y-%m-%d')
 
 
-# In[5]:
+# In[22]:
 
 
 ## Функция выгрузки данных через ручку MOEX
@@ -94,7 +94,7 @@ def moex (ticker_in, start_date_mx, end_date_mx, interval):
 
 # Данные за 10 лет с интервалом 1 день
 
-# In[6]:
+# In[23]:
 
 
 interval = 24
@@ -109,15 +109,15 @@ for i in range(0,len(all_stocks_ru)):
 
 print(len(df_full))
 
-if len(df_full) > 0: df_full.to_excel('datasets/10years_data_1d_interval.xlsx',index = False)
-
+if len(df_full) > 0: df_full.to_excel(("{}/datasets/10years_data_1d_interval.xlsx".format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(("{}/datasets/10years_data_1d_interval.csv".format(current_path)),index = False)
     
 
 
 # Данные за 10 лет с интервалом 1 час
 # 
 
-# In[7]:
+# In[24]:
 
 
 interval = 60
@@ -133,12 +133,13 @@ for i in range(0,len(all_stocks_ru)):
 
 print(len(df_full))
 
-if len(df_full) > 0: df_full.to_excel('datasets/10years_data_1h_interval.xlsx',index = False)    
+if len(df_full) > 0: df_full.to_excel(('{}/datasets/10years_data_1h_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1h_interval.csv'.format(current_path)),index = False)    
 
 
 # Данные за 10 лет с интервалом 10 минут
 
-# In[8]:
+# In[25]:
 
 
 interval = 10
@@ -153,12 +154,13 @@ for i in range(0,len(all_stocks_ru)):
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel('datasets/10years_data_10m_interval.xlsx',index = False)
+if len(df_full) > 0: df_full.to_excel(('{}/datasets/10years_data_10m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_10m_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 10 лет с интервалом 1 минута
 
-# In[9]:
+# In[26]:
 
 
 interval = 1
@@ -173,10 +175,11 @@ for i in range(0,len(all_stocks_ru)):
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel('datasets/10years_data_1m_interval.xlsx',index = False)
+if len(df_full) > 0: df_full.to_excel(('{}/datasets/10years_data_1m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1m_interval.csv'.format(current_path)),index = False)
 
 
-# In[10]:
+# In[27]:
 
 
 #готовим даты для выгрузки за 30 лет
@@ -193,7 +196,7 @@ end_date_mx = end_date.strftime('%Y-%m-%d')
 # Данные за 30 лет с интервалом 1 день
 # 
 
-# In[11]:
+# In[28]:
 
 
 interval = 24
@@ -208,13 +211,14 @@ for i in range(0,len(all_stocks_ru)):
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel('datasets/30years_data_1d_interval.xlsx',index = False)  
+if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_1d_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1d_interval.csv'.format(current_path)),index = False)  
 
 
 # Данные за 30 лет с интервалом 1 час
 # 
 
-# In[12]:
+# In[29]:
 
 
 interval = 60
@@ -229,12 +233,13 @@ for i in range(0,len(all_stocks_ru)):
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel('datasets/30years_data_1h_interval.xlsx',index = False)   
+if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_1h_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1h_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 30 лет с интервалом 10 минут
 
-# In[13]:
+# In[30]:
 
 
 interval = 10
@@ -249,12 +254,13 @@ for i in range(0,len(all_stocks_ru)):
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel('datasets/30years_data_10m_interval.xlsx',index = False)
+if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_10m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_10m_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 30 лет с интервалом 1 минута
 
-# In[14]:
+# In[31]:
 
 
 interval = 1
@@ -268,10 +274,11 @@ for i in range(0,len(all_stocks_ru)):
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel('datasets/30years_data_1m_interval.xlsx',index = False)
+if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_1m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1m_interval.csv'.format(current_path)),index = False)
 
 
-# In[15]:
+# In[32]:
 
 
 exception_list = list(set(exception_list)) #дедупликация
