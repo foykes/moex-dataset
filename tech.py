@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[8]:
 
 
 import talib, pandas as pd
@@ -12,14 +12,18 @@ from os.path import isfile, join
 current_path = os.getcwd()
 
 
-# In[ ]:
+# In[9]:
 
 
 def RSI14(filename):
     path = current_path + "/datasets/" + filename
     RSI_full = pd.DataFrame()
 
-    df = pd.read_excel(path)
+    if path.endswith('csv'):
+        df = pd.read_csv(path)
+    elif path.endswith('xlsx'):
+        df = pd.read_excel(path)
+
     ticker_list = df['ticker'].to_list()
     ticker_list = list(set(ticker_list))
 
@@ -32,22 +36,24 @@ def RSI14(filename):
     RSI_full = RSI_full.rename(columns= {0: 'RSI14'})
     df = df.join(RSI_full)
 
-    if len(df) > 0: df.to_excel(path,index = False)
-    if len(df) > 0: df.to_csv(path,index = False)
+    if path.endswith('csv'):
+        if len(df) > 0: df.to_csv(path,index = False)
+    elif path.endswith('xlsx'):
+        if len(df) > 0: df.to_excel(path,index = False)
 
 
-# In[ ]:
+# In[10]:
 
 
 #getting datasets
 datasets_list = [f for f in listdir('datasets') if isfile(join('datasets', f))]
 
-datasets_list = [x for x in datasets_list if not x.endswith('.csv')]
+# datasets_list = [x for x in datasets_list if not x.endswith('.csv')]
 
 datasets_list = list(set(datasets_list))
 
 
-# In[ ]:
+# In[5]:
 
 
 for file in datasets_list:

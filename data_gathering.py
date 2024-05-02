@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[18]:
+# In[1]:
 
 
 import datetime, pandas as pd, requests, csv, os
@@ -15,7 +15,7 @@ exception_list = []
 
 # Выгрузка доступного на мосбирже
 
-# In[19]:
+# In[2]:
 
 
 CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
@@ -49,236 +49,235 @@ df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(cur
 df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(current_path))
 
 
-# In[20]:
+# In[3]:
 
 
 all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
 all_stocks_ru = all_stocks_ru.loc[~all_stocks_ru.duplicated(), :]
 
 
-# In[21]:
-
-
-#готовим даты
-end_date = datetime.datetime.now()
-d = datetime.timedelta(days = 365*10)
-start_date = end_date - d
-
-
-#спец формат даты для MOEX
-start_date_mx = start_date.strftime('%Y-%m-%d')
-end_date_mx = end_date.strftime('%Y-%m-%d')
-
-
-# In[22]:
+# In[4]:
 
 
 ## Функция выгрузки данных через ручку MOEX
-def moex (ticker_in, start_date_mx, end_date_mx, interval):
+def moex (ticker_in, years, interval):
+
+    df_ticker = pd.DataFrame()
 
     df = pd.DataFrame()
     global exception_list
+    today = datetime.datetime.now()
 
-    try:
-        query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={start_date_mx}&till={end_date_mx}&interval={interval}'
-        df = pd.read_csv(query, sep=';', header=1)
+    for i in range(1, years):
 
-        # df.rename(columns={'End': 'Date'}, inplace=True) #переименовка колонки, чтобы было всё в одном формате
-        df['ticker'] = ticker_in
-        # df = df.set_index('Date')
-    except:
-        exception_list.append(ticker_in)
+        if i == 1:
+            start_date = today
+        else:
+            d_s = datetime.timedelta(days = 365*(i-1))
+            start_date = today - d_s
 
-    return df
+        d_e = datetime.timedelta(days = 365*i)
+        end_date = today - d_e
+
+        start_date_mx = start_date.strftime('%Y-%m-%d')
+        end_date_mx = end_date.strftime('%Y-%m-%d')
+
+        try:
+            query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}'
+            df = pd.read_csv(query, sep=';', header=1)
+
+            # df.rename(columns={'End': 'Date'}, inplace=True) #переименовка колонки, чтобы было всё в одном формате
+            df['ticker'] = ticker_in
+            # df = df.set_index('Date')
+
+            if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
+            
+        except:
+            exception_list.append(ticker_in)
+
+    return df_ticker
 
 
 # Данные за 10 лет с интервалом 1 день
 
-# In[23]:
+# In[5]:
 
 
 interval = 24
+years = 10
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 print(len(df_full))
 
-if len(df_full) > 0: df_full.to_excel(("{}/datasets/10years_data_1d_interval.xlsx".format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(("{}/datasets/10years_data_1d_interval.xlsx".format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(("{}/datasets/10years_data_1d_interval.csv".format(current_path)),index = False)
-    
 
 
 # Данные за 10 лет с интервалом 1 час
 # 
 
-# In[24]:
+# In[6]:
 
 
 interval = 60
+years = 10
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 
 print(len(df_full))
 
-if len(df_full) > 0: df_full.to_excel(('{}/datasets/10years_data_1h_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/10years_data_1h_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1h_interval.csv'.format(current_path)),index = False)    
 
 
 # Данные за 10 лет с интервалом 10 минут
 
-# In[25]:
+# In[7]:
 
 
 interval = 10
+years = 10
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel(('{}/datasets/10years_data_10m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/10years_data_10m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_10m_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 10 лет с интервалом 1 минута
 
-# In[26]:
+# In[8]:
 
 
 interval = 1
+years = 10
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel(('{}/datasets/10years_data_1m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/10years_data_1m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1m_interval.csv'.format(current_path)),index = False)
-
-
-# In[27]:
-
-
-#готовим даты для выгрузки за 30 лет
-end_date = datetime.datetime.now()
-d = datetime.timedelta(days = 365*30)
-start_date = end_date - d
-
-
-#спец формат даты для MOEX
-start_date_mx = start_date.strftime('%Y-%m-%d')
-end_date_mx = end_date.strftime('%Y-%m-%d')
 
 
 # Данные за 30 лет с интервалом 1 день
 # 
 
-# In[28]:
+# In[9]:
 
 
 interval = 24
+years = 30
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_1d_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_1d_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1d_interval.csv'.format(current_path)),index = False)  
 
 
 # Данные за 30 лет с интервалом 1 час
 # 
 
-# In[29]:
+# In[11]:
 
 
 interval = 60
+years = 30
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_1h_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_1h_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1h_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 30 лет с интервалом 10 минут
 
-# In[30]:
+# In[12]:
 
 
 interval = 10
+years = 30
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_10m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_10m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_10m_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 30 лет с интервалом 1 минута
 
-# In[31]:
+# In[13]:
 
 
 interval = 1
+years = 30
 
 df_full = pd.DataFrame()
 
 for i in range(0,len(all_stocks_ru)):
     ticker_in = all_stocks_ru['TRADE_CODE'][i]
-    df = moex (ticker_in, start_date_mx, end_date_mx, interval)
+    df = moex(ticker_in, years, interval)
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
 print(len(df_full))
-if len(df_full) > 0: df_full.to_excel(('{}/datasets/30years_data_1m_interval.xlsx'.format(current_path)),index = False)
+if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_1m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1m_interval.csv'.format(current_path)),index = False)
 
 
-# In[32]:
+# In[ ]:
 
 
 exception_list = list(set(exception_list)) #дедупликация
