@@ -4,10 +4,10 @@
 # In[ ]:
 
 
-import pandas as pd, os 
+import pandas as pd, sys
 import urllib.request, json
 
-current_path = os.getcwd()
+current_path = sys.path[0]
 
 
 # In[ ]:
@@ -59,7 +59,7 @@ def div_loader(isin, ticker):
 
 
 ## Подготовка списка для чего будут выгружаться дивиденды
-path = "datasets/ticker_lists/moex_full.xlsx"
+path = current_path + "/datasets/ticker_lists/moex_full.xlsx"
 df = pd.read_excel(path)
 df_isin = df[['TRADE_CODE','ISIN']]
 df_isin = df_isin.dropna(how='all')

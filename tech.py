@@ -1,28 +1,31 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[8]:
+# In[1]:
 
 
 import talib, pandas as pd
-import os
+import sys
 from os import listdir
 from os.path import isfile, join
 
-current_path = os.getcwd()
+current_path = sys.path[0]
 
 
-# In[9]:
+# In[2]:
 
 
 def RSI14(filename):
     path = current_path + "/datasets/" + filename
     RSI_full = pd.DataFrame()
 
-    if path.endswith('csv'):
+    if path.endswith('csv') and "~$" not in path:
         df = pd.read_csv(path)
-    elif path.endswith('xlsx'):
+    elif path.endswith('xlsx') and "~$" not in path:
         df = pd.read_excel(path)
+
+    # Проверка наличия колонки RSI в df. Убрирает в случае наличия. Необходимо для пересчёта RSI без перевыгрузки данных
+    if 'RSI14' in df.columns: df.drop('RSI14', axis=1, inplace=True)
 
     ticker_list = df['ticker'].to_list()
     ticker_list = list(set(ticker_list))
@@ -42,20 +45,25 @@ def RSI14(filename):
         if len(df) > 0: df.to_excel(path,index = False)
 
 
-# In[10]:
+# In[3]:
 
 
 #getting datasets
-datasets_list = [f for f in listdir('datasets') if isfile(join('datasets', f))]
+datasets_list = [f for f in listdir(current_path + '/datasets') if isfile(join(current_path + '/datasets', f))]
 
 # datasets_list = [x for x in datasets_list if not x.endswith('.csv')]
 
 datasets_list = list(set(datasets_list))
 
 
-# In[5]:
+# In[4]:
 
 
 for file in datasets_list:
-    RSI14(file)
+    try:
+        RSI14(file)
+    except Exception as e:
+        print (e)
+        print(file)
+        print('------------------------')
 

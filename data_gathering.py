@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
-import datetime, pandas as pd, requests, csv, os
+import datetime, pandas as pd, requests, csv, sys
 
-current_path = os.getcwd()
+current_path = sys.path[0]
 
 today = datetime.datetime.now()
 df_full = pd.DataFrame()
@@ -15,7 +15,7 @@ exception_list = []
 
 # Выгрузка доступного на мосбирже
 
-# In[2]:
+# In[ ]:
 
 
 CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
@@ -35,7 +35,7 @@ new_header = df_moex.iloc[0]
 df_moex = df_moex[1:]
 df_moex.columns = new_header
 
-print(len(df_moex))
+print("Общее количество объектов на Мосбирже: {}".format(len(df_moex)))
 df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
 df_moex.to_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path))
 
@@ -44,19 +44,19 @@ df_moex_stocks.reset_index(drop=True, inplace=True)
 
 ## moex_stocks_list['CURRENCY'] == '' это заблокированные акции
 
-print(len(df_moex_stocks))
+print("Количество акций и депозитарных расписок: {}".format(len(df_moex_stocks)))
 df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(current_path))
 df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(current_path))
 
 
-# In[3]:
+# In[ ]:
 
 
 all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
 all_stocks_ru = all_stocks_ru.loc[~all_stocks_ru.duplicated(), :]
 
 
-# In[4]:
+# In[ ]:
 
 
 ## Функция выгрузки данных через ручку MOEX
@@ -100,7 +100,7 @@ def moex (ticker_in, years, interval):
 
 # Данные за 10 лет с интервалом 1 день
 
-# In[5]:
+# In[ ]:
 
 
 interval = 24
@@ -114,7 +114,7 @@ for i in range(0,len(all_stocks_ru)):
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
-print(len(df_full))
+print("Записей для промежутка 10 лет с интервалом 1 день: {}".format(len(df_full)))
 
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(("{}/datasets/10years_data_1d_interval.xlsx".format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(("{}/datasets/10years_data_1d_interval.csv".format(current_path)),index = False)
@@ -123,7 +123,7 @@ if len(df_full) > 0: df_full.to_csv(("{}/datasets/10years_data_1d_interval.csv".
 # Данные за 10 лет с интервалом 1 час
 # 
 
-# In[6]:
+# In[ ]:
 
 
 interval = 60
@@ -138,7 +138,7 @@ for i in range(0,len(all_stocks_ru)):
 
 
 
-print(len(df_full))
+print("Записей для промежутка 10 лет с интервалом 1 час: {}".format(len(df_full)))
 
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/10years_data_1h_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1h_interval.csv'.format(current_path)),index = False)    
@@ -146,7 +146,7 @@ if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1h_interval.csv'.
 
 # Данные за 10 лет с интервалом 10 минут
 
-# In[7]:
+# In[ ]:
 
 
 interval = 10
@@ -161,14 +161,14 @@ for i in range(0,len(all_stocks_ru)):
 
 
 
-print(len(df_full))
+print("Записей для промежутка 10 лет с интервалом 10 минут: {}".format(len(df_full)))
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/10years_data_10m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_10m_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 10 лет с интервалом 1 минута
 
-# In[8]:
+# In[ ]:
 
 
 interval = 1
@@ -183,7 +183,7 @@ for i in range(0,len(all_stocks_ru)):
 
 
 
-print(len(df_full))
+print("Записей для промежутка 10 лет с интервалом 1 минута: {}".format(len(df_full)))
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/10years_data_1m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1m_interval.csv'.format(current_path)),index = False)
 
@@ -191,7 +191,7 @@ if len(df_full) > 0: df_full.to_csv(('{}/datasets/10years_data_1m_interval.csv'.
 # Данные за 30 лет с интервалом 1 день
 # 
 
-# In[9]:
+# In[ ]:
 
 
 interval = 24
@@ -206,7 +206,7 @@ for i in range(0,len(all_stocks_ru)):
 
 
 
-print(len(df_full))
+print("Записей для промежутка 30 лет с интервалом 1 день: {}".format(len(df_full)))
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_1d_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1d_interval.csv'.format(current_path)),index = False)  
 
@@ -214,7 +214,7 @@ if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1d_interval.csv'.
 # Данные за 30 лет с интервалом 1 час
 # 
 
-# In[11]:
+# In[ ]:
 
 
 interval = 60
@@ -229,14 +229,14 @@ for i in range(0,len(all_stocks_ru)):
 
 
 
-print(len(df_full))
+print("Записей для промежутка 30 лет с интервалом 1 час: {}".format(len(df_full)))
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_1h_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1h_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 30 лет с интервалом 10 минут
 
-# In[12]:
+# In[ ]:
 
 
 interval = 10
@@ -251,14 +251,14 @@ for i in range(0,len(all_stocks_ru)):
 
 
 
-print(len(df_full))
+print("Записей для промежутка 30 лет с интервалом 10 минут: {}".format(len(df_full)))
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_10m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_10m_interval.csv'.format(current_path)),index = False)
 
 
 # Данные за 30 лет с интервалом 1 минута
 
-# In[13]:
+# In[ ]:
 
 
 interval = 1
@@ -272,7 +272,7 @@ for i in range(0,len(all_stocks_ru)):
     if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
-print(len(df_full))
+print("Записей для промежутка 30 лет с интервалом 1 минута: {}".format(len(df_full)))
 if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/30years_data_1m_interval.xlsx'.format(current_path)),index = False)
 if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1m_interval.csv'.format(current_path)),index = False)
 
@@ -281,5 +281,5 @@ if len(df_full) > 0: df_full.to_csv(('{}/datasets/30years_data_1m_interval.csv'.
 
 
 exception_list = list(set(exception_list)) #дедупликация
-print(len(exception_list))
+print("Пропущено тикеров при разных интервалах: {}".format(len(exception_list)))
 
