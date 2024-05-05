@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[4]:
 
 
 import talib, pandas as pd
@@ -12,7 +12,7 @@ from os.path import isfile, join
 current_path = sys.path[0]
 
 
-# In[2]:
+# In[5]:
 
 
 def RSI14(filename):
@@ -45,7 +45,7 @@ def RSI14(filename):
         if len(df) > 0: df.to_excel(path,index = False)
 
 
-# In[3]:
+# In[6]:
 
 
 #getting datasets
@@ -56,14 +56,15 @@ datasets_list = [f for f in listdir(current_path + '/datasets') if isfile(join(c
 datasets_list = list(set(datasets_list))
 
 
-# In[4]:
+# In[7]:
 
 
 for file in datasets_list:
-    try:
-        RSI14(file)
-    except Exception as e:
-        print (e)
-        print(file)
-        print('------------------------')
+    if (file.endswith('csv') and "~$" not in file) or (file.endswith('xlsx') and "~$" not in file):
+        try:
+            RSI14(file)
+        except Exception as e:
+            print (e)
+            print(file)
+            print('------------------------')
 

@@ -52,8 +52,13 @@ df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(curren
 # In[ ]:
 
 
+## Запуск только для акций и депозитарных расписок
 all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
 all_stocks_ru = all_stocks_ru.loc[~all_stocks_ru.duplicated(), :]
+
+## Запуск для всего
+all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
+all_stocks_ru = df_moex_stocks.loc[~all_stocks_ru.duplicated(), :]
 
 
 # In[ ]:
