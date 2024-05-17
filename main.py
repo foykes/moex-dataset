@@ -14,6 +14,7 @@ os.system(('jupyter nbconvert --to script {}/dividends.ipynb').format(current_pa
 os.system(('python {}/data_gathering.py').format(current_path))
 os.system(('python {}/dividends.py').format(current_path))
 os.system(('python {}/tech.py').format(current_path))
+os.system(('python {}/datasets/dividends/dohod.ru/data.py').format(current_path))
 
 print("Скрипт закончил отрабатывать: {}".format(datetime.datetime.now()))
 end_time = time.time()
