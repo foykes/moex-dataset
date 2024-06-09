@@ -1,11 +1,12 @@
 # %%
-import requests
-import pandas as pd
+import requests,pandas as pd, sys
 from bs4 import BeautifulSoup
 
 df_overview_full = pd.DataFrame()
 df_years_full = pd.DataFrame()
 df_each_full = pd.DataFrame()
+
+current_path = sys.path[0]
 
 # %%
 ### Составление общего списка
@@ -15,9 +16,10 @@ df_list = pd.read_html(html)
 df_mainpage = df_list[-1]
 
 # %%
+# очистка от ненужных колонок
 bad_columns = []
 for i in list(df_mainpage.columns):
-    if "Unnamed:" in i:
+    if "Unnamed:" in i or "Капитализация, sorting" in i:
         bad_columns.append(i)
 
 # print(bad_columns)
@@ -25,7 +27,13 @@ df_mainpage.drop(columns=bad_columns, inplace=True)
 
 # %%
 # len(df_mainpage)
-df_mainpage.to_excel('obzor_vsex_divs_tickerov.xlsx')
+if len(df_mainpage) > 0:
+    df_mainpage.to_excel(current_path +'/obzor_vsex_divs_tickerov.xlsx')
+else:
+    print('Не удалось скачать актуальные данные о дивах с доход.ру')
+
+# %%
+df_mainpage
 
 # %%
 ### Сбор всех ссылок на страницы
@@ -109,8 +117,13 @@ for i in o:
     print("___")
 
 # %%
-df_overview_full.to_excel('rate_for_each_ticker.xlsx')
-df_years_full.to_excel('sum_each_year_divs.xlsx')
-df_each_full.to_excel('all_payments.xlsx')
+df_overview_full.to_excel(current_path +'/rate_for_each_ticker.xlsx')
+df_overview_full.to_csv(current_path +'/rate_for_each_ticker.csv')
+
+df_years_full.to_excel(current_path +'/sum_each_year_divs.xlsx')
+df_years_full.to_csv(current_path +'/sum_each_year_divs.csv')
+
+df_each_full.to_excel(current_path +'/all_payments.xlsx')
+df_each_full.to_csv(current_path +'/all_payments.csv')
 
 
