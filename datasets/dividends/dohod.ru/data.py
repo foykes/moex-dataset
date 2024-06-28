@@ -37,6 +37,10 @@ def get_main (url):
 # %%
 def get_page_info (url):
 
+    df_overview_full = pd.DataFrame()
+    df_years_full = pd.DataFrame()
+    df_each_full = pd.DataFrame()
+
     ### Сбор всех ссылок на страницы
     page = requests.get(url)
     soup = BeautifulSoup(page.text, 'lxml')
