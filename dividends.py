@@ -1,18 +1,10 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
+# %%
 import pandas as pd, sys
 import urllib.request, json
 
 current_path = sys.path[0]
 
-
-# In[ ]:
-
-
+# %%
 ### Функция выгрузки дивидендов по ISIN
 
 def div_loader(isin, ticker):
@@ -54,10 +46,7 @@ def div_loader(isin, ticker):
 
             divs_all.append(tmp)
 
-
-# In[ ]:
-
-
+# %%
 ## Подготовка списка для чего будут выгружаться дивиденды
 path = current_path + "/datasets/ticker_lists/moex_full.xlsx"
 df = pd.read_excel(path)
@@ -66,10 +55,7 @@ df_isin = df_isin.dropna(how='all')
 df_isin.drop_duplicates(keep='first', inplace=True)
 df_isin.reset_index(drop=True, inplace=True)
 
-
-# In[ ]:
-
-
+# %%
 divs_all = []
 
 for i in range(0, len(df_isin)):
@@ -79,17 +65,12 @@ for i in range(0, len(df_isin)):
     
 print('Выгружено записей о дивидендах: {}'.format(len(divs_all)))
 
-
-# In[ ]:
-
-
+# %%
 df_divs_all = pd.DataFrame(divs_all, columns=['ISIN','TRADE_CODE','dt','value','currency'])
 
-
-# In[ ]:
-
-
+# %%
 path = current_path + "/datasets/dividends/" + "all"
 if len(df_divs_all) > 0: df_divs_all.to_excel(path + ".xlsx",index = False)
 if len(df_divs_all) > 0: df_divs_all.to_csv(path + ".csv",index = False)
+
 
