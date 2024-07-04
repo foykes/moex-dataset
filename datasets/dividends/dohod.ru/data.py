@@ -29,7 +29,7 @@ def get_main (url):
 
     # len(df_mainpage)
     if len(df_mainpage) > 0:
-        df_mainpage.to_excel(current_path +'/obzor_vsex_divs_tickerov.xlsx')
+        df_mainpage.to_excel('./obzor_vsex_divs_tickerov.xlsx')
     else:
         print('Не удалось скачать актуальные данные о дивах с доход.ру')
     return df_mainpage
@@ -126,17 +126,18 @@ def get_page_info (url):
 
 # %%
 df_mainpage = get_main(url)
-df_mainpage
+df_mainpage.to_excel('./main_page.xlsx')
+df_mainpage.to_csv('./main_page.csv')
 
 # %%
 df_overview_full, df_years_full, df_each_full = get_page_info (url)
-df_overview_full.to_excel(current_path +'/rate_for_each_ticker.xlsx')
-df_overview_full.to_csv(current_path +'/rate_for_each_ticker.csv')
+df_overview_full.to_excel('./rate_for_each_ticker.xlsx')
+df_overview_full.to_csv('./rate_for_each_ticker.csv')
 
-df_years_full.to_excel(current_path +'/sum_each_year_divs.xlsx')
-df_years_full.to_csv(current_path +'/sum_each_year_divs.csv')
+df_years_full.to_excel('./sum_each_year_divs.xlsx')
+df_years_full.to_csv('./sum_each_year_divs.csv')
 
-df_each_full.to_excel(current_path +'/all_payments.xlsx')
-df_each_full.to_csv(current_path +'/all_payments.csv')
+df_each_full.to_excel('./all_payments.xlsx')
+df_each_full.to_csv('./all_payments.csv')
 
 

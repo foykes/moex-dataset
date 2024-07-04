@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[2]:
 
 
 import talib, pandas as pd
@@ -12,18 +12,18 @@ from os.path import isfile, join
 current_path = sys.path[0]
 
 
-# In[2]:
+# In[3]:
 
 
 # print(talib.get_functions())
 # print(talib.get_function_groups())
 
 
-# In[3]:
+# In[4]:
 
 
 def calculator(filename):
-    path = current_path + "/datasets/" + filename
+    path = "./datasets/" + filename
     RSI_full = pd.DataFrame()
     ADX_full = pd.DataFrame()
     STOCH_full_slowk = pd.DataFrame()
@@ -178,11 +178,11 @@ def calculator(filename):
         if len(df) > 0: df.to_excel(path,index = False)
 
 
-# In[4]:
+# In[5]:
 
 
 # filename = "30years_data_1h_interval.csv"
-# path = current_path + "/datasets/" + filename
+# path =  "./datasets/" + filename
 # df = pd.read_csv(path)
 # ticker_list = df['ticker'].to_list()
 # ticker_list = list(set(ticker_list))
@@ -192,31 +192,31 @@ def calculator(filename):
 #     df_ticker = df[(df['ticker'] == ticker)]
 
 
-# In[5]:
+# In[6]:
 
 
 # df_ticker.columns
 
 
-# In[6]:
+# In[7]:
 
 
 # real = talib.WILLR(df_ticker['high'], df_ticker['low'], df_ticker['close'], timeperiod=14)
 # real
 
 
-# In[7]:
+# In[8]:
 
 
 #getting datasets
-datasets_list = [f for f in listdir(current_path + '/datasets') if isfile(join(current_path + '/datasets', f))]
+datasets_list = [f for f in listdir('./datasets') if isfile(join('./datasets', f))]
 
 # datasets_list = [x for x in datasets_list if not x.endswith('.csv')]
 
 datasets_list = list(set(datasets_list))
 
 
-# In[8]:
+# In[9]:
 
 
 for file in datasets_list:
