@@ -1,5 +1,5 @@
 # %%
-import requests,pandas as pd, sys
+import requests, pandas as pd, sys
 from bs4 import BeautifulSoup
 
 df_overview_full = pd.DataFrame()
@@ -10,11 +10,14 @@ current_path = sys.path[0]
 
 url = 'https://www.dohod.ru/ik/analytics/dividend'
 
+headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
+
+
 # %%
 ### Составление общего списка
 def get_main (url):
     
-    html = requests.get(url).content
+    html = requests.get(url, headers=headers).content
     df_list = pd.read_html(html)
     df_mainpage = df_list[-1]
 
@@ -42,7 +45,7 @@ def get_page_info (url):
     df_each_full = pd.DataFrame()
 
     ### Сбор всех ссылок на страницы
-    page = requests.get(url)
+    page = requests.get(url, headers=headers)
     soup = BeautifulSoup(page.text, 'lxml')
 
     data = []
@@ -68,7 +71,7 @@ def get_page_info (url):
 
     b = []
     for url in url_list:
-        html = requests.get(url).content
+        html = requests.get(url, headers=headers).content
         try:
             df_list = pd.read_html(html)
         except:
@@ -118,8 +121,7 @@ def get_page_info (url):
     o = list(set(b))
 
     for i in o:
-        print(i)
-        print(b.count(i))
+        print("Тип {}. Количество: {}".format(i, b.count(i)))
         print("___")
     
     return df_overview_full, df_years_full, df_each_full

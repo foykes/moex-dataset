@@ -11,3 +11,5 @@ datasets/30years_data_1d_interval.xlsx
 datasets/30years_data_1h_interval.csv
 datasets/30years_data_1m_interval.csv
 datasets/30years_data_10m_interval.csv
+datasets/30years_data_1m_interval.xlsx
+.DS_Store
