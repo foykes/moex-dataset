@@ -10,8 +10,9 @@ os.system(('jupyter nbconvert --to script {}/data_gathering.ipynb').format(curre
 os.system(('jupyter nbconvert --to script {}/tech.ipynb').format(current_path))
 os.system(('jupyter nbconvert --to script {}/dividends.ipynb').format(current_path))
 os.system(('jupyter nbconvert --to script {}/dohodru_data.ipynb').format(current_path))
+os.system(('jupyter nbconvert --to script {}/upload.ipynb').format(current_path))
 
-import data_gathering, dividends, tech, dohodru_data
+import data_gathering, dividends, tech, dohodru_data, upload
 
 data_gathering.main(current_path)
 
@@ -20,6 +21,8 @@ dividends.main()
 tech.main()
 
 dohodru_data.main()
+
+upload.main()
 
 print("Скрипт закончил отрабатывать: {}".format(datetime.datetime.now()))
 end_time = time.time()
