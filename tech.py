@@ -1,4 +1,9 @@
-# %%
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
 import talib, pandas as pd
 import sys
 from os import listdir
@@ -6,15 +11,21 @@ from os.path import isfile, join
 
 current_path = sys.path[0]
 
-# %%
+
+# In[ ]:
+
+
 ### Все доступные функции в пакете TA-lib
 
 # print(talib.get_functions())
 # print(talib.get_function_groups())
 
-# %%
+
+# In[ ]:
+
+
 def calculator(filename):
-    path = "./datasets/" + filename
+    path = current_path + "/datasets/" + filename
 
 
     ## Overlap Studies
@@ -837,11 +848,14 @@ def calculator(filename):
     elif path.endswith('xlsx'):
         if len(df) > 0: df.to_excel(path,index = False)
 
-# %%
+
+# In[ ]:
+
+
 ### Ниже блоки для проверки отдельно функции
 
 # filename = "30years_data_1h_interval.csv"
-# path =  "./datasets/" + filename
+# path =  current_path + "/datasets/" + filename
 # df = pd.read_csv(path)
 # ticker_list = df['ticker'].to_list()
 # ticker_list = list(set(ticker_list))
@@ -850,27 +864,38 @@ def calculator(filename):
 #     ticker = ticker_list[i]
 #     df_ticker = df[(df['ticker'] == ticker)]
 
-# %%
+
+# In[ ]:
+
+
 # real = talib.WILLR(df_ticker['high'], df_ticker['low'], df_ticker['close'], timeperiod=14)
 # real
 
-# %%
-#getting datasets
-datasets_list = [f for f in listdir('./datasets') if isfile(join('./datasets', f))]
 
-# datasets_list = [x for x in datasets_list if not x.endswith('.csv')]
-
-datasets_list = list(set(datasets_list))
-
-# %%
-for file in datasets_list:
-    if (file.endswith('csv') and "~$" not in file) or (file.endswith('xlsx') and "~$" not in file):
-        try:
-            calculator(file)
-        except Exception as e:
-            print (e)
-            print(file)
-            print('------------------------')
+# In[ ]:
 
 
+def main():
+    #getting datasets
+    datasets_list = [f for f in listdir(current_path + '/datasets') if isfile(join(current_path + '/datasets', f))]
+
+    # datasets_list = [x for x in datasets_list if not x.endswith('.csv')]
+
+    datasets_list = list(set(datasets_list))
+
+    for file in datasets_list:
+        if (file.endswith('csv') and "~$" not in file) or (file.endswith('xlsx') and "~$" not in file):
+            try:
+                calculator(file)
+            except Exception as e:
+                print (e)
+                print(file)
+                print('------------------------')
+
+
+# In[ ]:
+
+
+if __name__ == "__main__": 
+    main()
 

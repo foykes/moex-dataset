@@ -13,3 +13,4 @@ datasets/30years_data_1m_interval.csv
 datasets/30years_data_10m_interval.csv
 datasets/30years_data_1m_interval.xlsx
 .DS_Store
+__pycache__/*
