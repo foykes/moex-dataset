@@ -1,10 +1,5 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
-import datetime, pandas as pd, requests, csv, sys
+# %%
+import datetime, pandas as pd, requests, csv, sys, time
 
 current_path = sys.path[0]
 
@@ -15,11 +10,10 @@ exception_list = []
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
 
 
+# %% [markdown]
 # Выгрузка доступного на мосбирже
 
-# In[ ]:
-
-
+# %%
 def moex_tickerlists (current_path):
     CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
 
@@ -61,10 +55,25 @@ def moex_tickerlists (current_path):
 
     return all_stocks_ru
 
+# %%
+def moex_query (ticker_in, end_date_mx, start_date_mx, interval):
 
-# In[ ]:
+    df_ticker = pd.DataFrame()
+    
+    query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}'
+    df = pd.read_csv(query, sep=';', header=1)
 
+    time.sleep(3) #нужно чтобы не перегружать API Мосбиржи
 
+    # df.rename(columns={'End': 'Date'}, inplace=True) #переименовка колонки, чтобы было всё в одном формате
+    df['ticker'] = ticker_in
+    # df = df.set_index('Date')
+
+    if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
+
+    return df_ticker
+
+# %%
 ## Функция выгрузки данных через ручку MOEX
 def moex (ticker_in, years, interval):
 
@@ -89,26 +98,16 @@ def moex (ticker_in, years, interval):
         end_date_mx = end_date.strftime('%Y-%m-%d')
 
         try:
-            query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}'
-            df = pd.read_csv(query, sep=';', header=1)
-
-            # df.rename(columns={'End': 'Date'}, inplace=True) #переименовка колонки, чтобы было всё в одном формате
-            df['ticker'] = ticker_in
-            # df = df.set_index('Date')
-
-            if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
+            df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
             
         except:
             exception_list.append(ticker_in)
 
     return df_ticker
 
-
-# In[ ]:
-
-
+# %%
 ### Функция для выгрузки данных по конфигу
-def full_reload (all_stocks_ru, interval, years, filename, current_path):
+def full_reload (all_stocks_ru, interval, years, filename, word, current_path):
     df_full = pd.DataFrame()
 
     for i in range(0,len(all_stocks_ru)):
@@ -117,67 +116,169 @@ def full_reload (all_stocks_ru, interval, years, filename, current_path):
         if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
-    print("Записей для промежутка {} лет с интервалом {} мин.: {}".format(years,interval,len(df_full)))
+    print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, len(df_full)))
     if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename + '.xlsx')),index = False)
     if len(df_full) > 0: df_full.to_csv(('{}/datasets/{}'.format(current_path, filename + '.csv')),index = False)
 
 
-# In[ ]:
-
-
+# %%
 ## для тестирования функции
 # full_reload(1,10,'1year_data_1m_intervcal',current_path)
 
-
-# In[ ]:
-
-
+# %%
 config = [
-        {'interval': 24,
+        {
+        'interval': 24,
         'years': 10,
-        'filename': '10years_data_1d_interval'},
-        {'interval': 60,
+        'filename': '10years_data_1d_interval',
+        'word': 'часа'
+        },
+        {
+        'interval': 60,
         'years': 10,
-        'filename': '10years_data_1h_interval'},
-        {'interval': 10,
+        'filename': '10years_data_1h_interval',
+        'word': 'минут'
+        },
+        {
+        'interval': 10,
         'years': 10,
-        'filename': '10years_data_10m_interval'},
-        {'interval': 1,
+        'filename': '10years_data_10m_interval',
+        'word': 'минут'
+        },
+        {
+        'interval': 1,
         'years': 10,
-        'filename': '10years_data_1m_interval'},
-        {'interval': 24,
+        'filename': '10years_data_1m_interval',
+        'word': 'минута'
+        },
+        {
+        'interval': 24,
         'years': 30,
-        'filename': '30years_data_1d_interval'},
-        {'interval': 60,
+        'filename': '30years_data_1d_interval',
+        'word': 'часа'
+        },
+        {
+        'interval': 60,
         'years': 30,
-        'filename': '30years_data_1h_interval'},
-        {'interval': 10,
+        'filename': '30years_data_1h_interval',
+        'word': 'минут'
+        },
+        {
+        'interval': 10,
         'years': 30,
-        'filename': '30years_data_10m_interval'},
-        {'interval': 1,
+        'filename': '30years_data_10m_interval',
+        'word': 'минут'
+        },
+        {
+        'interval': 1,
         'years': 30,
-        'filename': '30years_data_1m_interval'}
+        'filename': '30years_data_1m_interval',
+        'word': 'минута'
+        }
         ]
 
+# %%
+config[0]['filename']
+config[0]['interval']
 
-# In[ ]:
+# %%
+def data_update (config, current_path, all_stocks_ru):
+
+    ## обновление готовых файлов
+    for j in range(0,len(config)):
+        filename_j = config[j]['filename']
+        interval = config[j]['interval']
+
+        dataset_path = current_path + "/datasets/{}.csv".format(filename_j)
+
+        if dataset_path.endswith('csv') and "~$" not in dataset_path:
+            df = pd.read_csv(dataset_path)
+        elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
+            df = pd.read_excel(dataset_path)
+
+        print("Длина {} до обновления {}".format(filename_j, len(df)))
+
+        # убираем ненужные колонки теханализа - их потом с нуля пересчитаем
+        ## ПРОВЕРИТЬ ЧТО ЕСЛИ ЭТО НЕ ДЕЛАТЬ
+        columns = df.columns
+        white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
+            'ticker']
+        columns_to_remove = [i for i in columns if i not in white_list_columns]
+        columns_to_remove
+        df.drop(columns_to_remove, axis=1,inplace=True)
+        # df.head(2)
+
+        # для каждого тикера выбираем последнюю дату за которую есть выгрузка 
+        df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
+        df_last_date = df_last_date.loc[:,['end','ticker']]
+        df_last_date.drop_duplicates(inplace=True)
+        df_last_date.reset_index(inplace=True,drop=True)
+
+        # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
+        filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+        df_last_date = df_last_date[df_last_date['end'] >= filter_date]
 
 
+
+        # обновление текущих данных
+        for i in range(0,len(df_last_date)):
+            end_date = df_last_date.iloc[i]['end']
+            ticker_in = df_last_date.iloc[i]['ticker']
+            start_date = today
+
+            start_date_mx = start_date.strftime('%Y-%m-%d')
+            end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
+
+            df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
+            df = pd.concat([df, df_ticker])
+
+        
+        ### Проверка не появилось ли новых тикеров с момента последнего обновления
+
+        ticker_list_actual = list(set(all_stocks_ru['TRADE_CODE'].to_list()))
+        ticker_list_actual.remove('')
+
+        ticker_list_actual_dataset = list(set(df['ticker'].to_list()))
+
+        delta = list(set(ticker_list_actual) - set(ticker_list_actual_dataset))
+        if len(delta) > 0:
+            for t in range (0,len(delta)):
+                ticker_in = delta[t]
+
+                start_date_mx = start_date.strftime('%Y-%m-%d')
+                end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
+
+                df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
+                df = pd.concat([df, df_ticker])
+        
+
+        df.sort_values(by=['ticker','begin'],inplace=True)
+        df.drop_duplicates(inplace=True)
+        df.reset_index(inplace=True,drop=True)
+        print("Длина {} после обновления {}".format(filename_j, len(df)))
+
+        if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
+        if len(df_full) > 0: df_full.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+
+# %%
 def main(current_path):
     global exception_list
 
     all_stocks_ru = moex_tickerlists (current_path)
 
-    for k in range(0, len(config)):
-        full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'], current_path)
+    if datetime.datetime.now().day in [1, 14]:
+        for k in range(0, len(config)):
+            full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path)
+        
+    else:
+        data_update(config,current_path, all_stocks_ru)
+
 
     exception_list = list(set(exception_list)) #дедупликация
     print("Пропущено тикеров при разных интервалах: {}".format(len(exception_list)))
 
-
-# In[ ]:
-
-
+# %%
 if __name__ == "__main__":
     main(current_path)
+
 
