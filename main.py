@@ -12,19 +12,23 @@ os.system(('jupyter nbconvert --to script {}/dividends.ipynb').format(current_pa
 os.system(('jupyter nbconvert --to script {}/dohodru_data.ipynb').format(current_path))
 os.system(('jupyter nbconvert --to script {}/upload.ipynb').format(current_path))
 
-import data_gathering, dividends, tech, dohodru_data, upload
+if __name__ == "__main__":
+    import data_gathering, dividends, tech, dohodru_data, upload
 
-data_gathering.main(current_path)
+    data_gathering.main(current_path)
 
-dividends.main()
+    dividends.main()
 
-tech.main()
+    tech.main()
 
-dohodru_data.main()
+    dohodru_data.main()
 
-upload.main()
+    gdoc_to_write = "https://docs.google.com/spreadsheets/d/1HXXoxcDVqIrWN6QEg5ij88AxcNAKT-G-xm2UTUfQe1Q/edit?usp=sharing" ## Гугл док для сохранения данных
+    upload.main(current_path,gdoc_to_write)
 
-print("Скрипт закончил отрабатывать: {}".format(datetime.datetime.now()))
-end_time = time.time()
-elapsed_time = end_time - start_time
-print("Заняло времени: {} секунд".format(round(elapsed_time,0)))
+    print("Скрипт закончил отрабатывать: {}".format(datetime.datetime.now()))
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    mins, secs = divmod(elapsed_time, 60)
+    hours, mins = divmod(mins, 60)
+    print('Скрипт полностью закончил работу.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
