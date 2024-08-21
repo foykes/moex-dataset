@@ -21,7 +21,8 @@ if __name__ == "__main__":
 
     tech.main()
 
-    dohodru_data.main()
+    url = 'https://www.dohod.ru/ik/analytics/dividend'
+    dohodru_data.main(url)
 
     gdoc_to_write = "https://docs.google.com/spreadsheets/d/1HXXoxcDVqIrWN6QEg5ij88AxcNAKT-G-xm2UTUfQe1Q/edit?usp=sharing" ## Гугл док для сохранения данных
     upload.main(current_path,gdoc_to_write)

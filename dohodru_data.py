@@ -1,9 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
+# %%
 import requests, pandas as pd, sys
 from bs4 import BeautifulSoup
 
@@ -18,9 +13,7 @@ url = 'https://www.dohod.ru/ik/analytics/dividend'
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
 
 
-# In[ ]:
-
-
+# %%
 ### Составление общего списка
 def get_main (url):
     
@@ -44,10 +37,7 @@ def get_main (url):
         print('Не удалось скачать актуальные данные о дивах с доход.ру')
     return df_mainpage
 
-
-# In[ ]:
-
-
+# %%
 def get_page_info (url):
 
     df_overview_full = pd.DataFrame()
@@ -114,17 +104,17 @@ def get_page_info (url):
             df = df[['текущая доходность','доля от прибыли','индекс DSI']]
             df['page_url'] = url
             df['ticker'] = url.split(r'/')[-1].upper()
-            df_overview_full = pd.concat([df_overview_full,df])
+            if len(df) > 0: df_overview_full = pd.concat([df_overview_full,df])
 
             df = df_list[1]
             df['page_url'] = url
             df['ticker'] = url.split(r'/')[-1].upper()
-            df_years_full = pd.concat([df_years_full,df])
+            if len(df) > 0: df_years_full = pd.concat([df_years_full,df])
 
             df = df_list[2]
             df['page_url'] = url
             df['ticker'] = url.split(r'/')[-1].upper()
-            df_each_full = pd.concat([df_each_full,df])
+            if len(df) > 0: df_each_full = pd.concat([df_each_full,df])
 
 
     ## Статистика для отладки. Сколько разных табличек спарсено
@@ -136,11 +126,8 @@ def get_page_info (url):
     
     return df_overview_full, df_years_full, df_each_full
 
-
-# In[ ]:
-
-
-def main():
+# %%
+def main(url):
     df_mainpage = get_main(url)
     df_mainpage.to_excel('{}/datasets/dividends/dohodru/main_page.xlsx'.format(current_path))
     df_mainpage.to_csv('{}/datasets/dividends/dohodru/main_page.csv'.format(current_path))
@@ -156,10 +143,9 @@ def main():
     df_each_full.to_excel('{}/datasets/dividends/dohodru/all_payments.xlsx'.format(current_path))
     df_each_full.to_csv('{}/datasets/dividends/dohodru/all_payments.csv'.format(current_path))
 
-
-# In[ ]:
-
-
+# %%
 if __name__ == "__main__":
-    main()
+    url = 'https://www.dohod.ru/ik/analytics/dividend'
+    main(url)
+
 
