@@ -179,9 +179,7 @@ config = [
 
 # %%
 def data_update (config, current_path, all_stocks_ru):
-
     today = datetime.datetime.now()
-
     ## обновление готовых файлов
     for j in range(0,len(config)):
         filename_j = config[j]['filename']
@@ -242,14 +240,12 @@ def data_update (config, current_path, all_stocks_ru):
         if len(delta) > 0:
             for t in range (0,len(delta)):
                 ticker_in = delta[t]
-                start_date = today
-                start_date_mx = start_date.strftime('%Y-%m-%d')
-                end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
+                start_date_mx = today.strftime('%Y-%m-%d')
+                end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
 
                 df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
                 df = pd.concat([df, df_ticker])
         
-
         df.sort_values(by=['ticker','begin'],inplace=True)
         df.drop_duplicates(inplace=True)
         df.reset_index(inplace=True,drop=True)
