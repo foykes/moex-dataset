@@ -1,4 +1,9 @@
-# %%
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
 import pygsheets, pandas as pd, time, datetime, ftplib, sys, json
 from os import listdir
 from os.path import isfile, join
@@ -7,7 +12,6 @@ from multiprocessing import Process
 
 
 current_path = sys.path[0]
-current_path = "/Users/nkukharev/Documents/petprojects/prod/moex-dataset"
 
 ## Префикс секретов
 secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
@@ -22,7 +26,10 @@ datasets_path = current_path + "/datasets/"
 ## Начальное время
 start_time = time.time()
 
-# %%
+
+# In[ ]:
+
+
 def gdoc_upload(current_path, gdoc_to_write):
     print('Начал загрузку данных на Google Диск и FTP.\nВремя старта: {}'.format(datetime.datetime.now()))
 
@@ -75,7 +82,10 @@ def gdoc_upload(current_path, gdoc_to_write):
     print('Обновление данных на Google Диске закончено.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
-# %%
+
+# In[ ]:
+
+
 def ftp_upload(current_path):
 
     secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
@@ -151,7 +161,10 @@ def ftp_upload(current_path):
     print('Загрузка данных на FTP закончена.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
-# %%
+
+# In[ ]:
+
+
 def main(current_path,gdoc_to_write):
     # end_time = gdoc_upload(current_path, gdoc_to_write)
     # end_time_ftp = ftp_upload(current_path)
@@ -175,8 +188,10 @@ def main(current_path,gdoc_to_write):
     print('Скрипт загрузки данных закончил работу.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
-# %%
+
+# In[ ]:
+
+
 if __name__ == "__main__": 
     main(current_path,gdoc_to_write)
-
 
