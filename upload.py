@@ -3,7 +3,11 @@ import pygsheets, pandas as pd, time, datetime, ftplib, sys, json
 from os import listdir
 from os.path import isfile, join
 
+from multiprocessing import Process
+
+
 current_path = sys.path[0]
+current_path = "/Users/nkukharev/Documents/petprojects/prod/moex-dataset"
 
 ## Префикс секретов
 secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
@@ -19,8 +23,11 @@ datasets_path = current_path + "/datasets/"
 start_time = time.time()
 
 # %%
-def gdoc_upload(secrets_prefix, gdoc_to_write):
+def gdoc_upload(current_path, gdoc_to_write):
     print('Начал загрузку данных на Google Диск и FTP.\nВремя старта: {}'.format(datetime.datetime.now()))
+
+    ## Префикс секретов
+    secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
 
     service_account_json = secrets_prefix + '/python-304621-1e403209f05f.json'
     gc = pygsheets.authorize(service_file=service_account_json)
@@ -62,17 +69,16 @@ def gdoc_upload(secrets_prefix, gdoc_to_write):
     # разница между конечным и начальным временем
     elapsed_time = end_time - start_time
 
-    hours = int(round((elapsed_time/60)/60,0))
-    mins = int(round(elapsed_time/60,0))
-    secs = int(round(elapsed_time - mins*60,0))
+    mins, secs = divmod(elapsed_time, 60)
+    hours, mins = divmod(mins, 60)
 
-    print('Обновление данных на Google Диске закончено.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(hours, mins, secs, round(elapsed_time, 3), 'сек'))
+    print('Обновление данных на Google Диске закончено.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
-    return end_time
-
 # %%
-def ftp_upload(secrets_prefix,end_time):
+def ftp_upload(current_path):
+
+    secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
 
     ## Получение секрета подключения к FTP
     ftp_secrets_path = open(secrets_prefix + "moex.foykes.com.json")
@@ -134,39 +140,43 @@ def ftp_upload(secrets_prefix,end_time):
 
 
     # конечное время
-    end_time_ftp = time.time()
+    end_time = time.time()
 
     # разница между конечным и начальным временем
-    elapsed_time = end_time_ftp - end_time
+    elapsed_time = end_time - start_time
 
-    hours = int(round((elapsed_time/60)/60,0))
-    mins = int(round(elapsed_time/60,0))
-    secs = int(round(elapsed_time - mins*60,0))
+    mins, secs = divmod(elapsed_time, 60)
+    hours, mins = divmod(mins, 60)
 
-    print('Загрузка данных на FTP закончена.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(hours, mins, secs, round(elapsed_time, 3), 'сек'))
+    print('Загрузка данных на FTP закончена.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
-    return end_time_ftp
-
 # %%
-def main(secrets_prefix,gdoc_to_write):
-    end_time = gdoc_upload(secrets_prefix, gdoc_to_write)
-    end_time_ftp = ftp_upload(secrets_prefix,end_time)
+def main(current_path,gdoc_to_write):
+    # end_time = gdoc_upload(current_path, gdoc_to_write)
+    # end_time_ftp = ftp_upload(current_path)
+
+    p1 = Process(target=gdoc_upload, args=(current_path, gdoc_to_write))
+    p1.start()
+    p2 = Process(target=ftp_upload, args=(current_path,))
+    p2.start()
+    p1.join()
+    p2.join()
+
     # конечное время
     end_time_ftp = time.time()
 
     # разница между конечным и начальным временем
     elapsed_time = end_time_ftp - start_time
 
-    hours = int(round((elapsed_time/60)/60,0))
-    mins = int(round(elapsed_time/60,0))
-    secs = int(round(elapsed_time - mins*60,0))
+    mins, secs = divmod(elapsed_time, 60)
+    hours, mins = divmod(mins, 60)
 
-    print('Скрипт закончил работу.\nСуммарно заняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(hours, mins, secs, round(elapsed_time, 3), 'сек'))
+    print('Скрипт загрузки данных закончил работу.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
 # %%
 if __name__ == "__main__": 
-    main(secrets_prefix,gdoc_to_write)
+    main(current_path,gdoc_to_write)
 
 
