@@ -33,7 +33,7 @@ def moex_tickerlists (current_path):
     df_moex.columns = new_header
 
     print("Общее количество объектов на Мосбирже: {}".format(len(df_moex)))
-    df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
+    # df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
     df_moex.to_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path))
 
     df_moex_stocks = df_moex[(df_moex['SUPERTYPE'] == "Акции")|(df_moex['SUPERTYPE'] == "Депозитарные расписки")]
@@ -42,7 +42,7 @@ def moex_tickerlists (current_path):
     ## moex_stocks_list['CURRENCY'] == '' это заблокированные акции
 
     print("Количество акций и депозитарных расписок: {}".format(len(df_moex_stocks)))
-    df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(current_path))
+    # df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(current_path))
     df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(current_path))
 
     ## Запуск только для акций и депозитарных расписок
@@ -251,8 +251,8 @@ def data_update (config, current_path, all_stocks_ru):
         df.reset_index(inplace=True,drop=True)
         print("Длина {} после обновления {}".format(filename_j, len(df)))
 
-        if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
-        if len(df_full) > 0: df_full.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+        if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
+        if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
 
 # %%
 def main(current_path):

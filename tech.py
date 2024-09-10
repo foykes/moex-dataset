@@ -1,9 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
+# %%
 import talib, pandas as pd
 import sys
 from os import listdir
@@ -11,19 +6,13 @@ from os.path import isfile, join
 
 current_path = sys.path[0]
 
-
-# In[ ]:
-
-
+# %%
 ### Все доступные функции в пакете TA-lib
 
 # print(talib.get_functions())
 # print(talib.get_function_groups())
 
-
-# In[ ]:
-
-
+# %%
 def calculator(filename):
     path = current_path + "/datasets/" + filename
 
@@ -37,8 +26,8 @@ def calculator(filename):
     HT_TRENDLINE_full = pd.DataFrame()
     KAMA_full = pd.DataFrame()
     MA_full = pd.DataFrame()
-    MAMA_full_mama = pd.DataFrame()
-    MAMA_full_fama = pd.DataFrame()
+    # MAMA_full_mama = pd.DataFrame()
+    # MAMA_full_fama = pd.DataFrame()
     MAVP_full = pd.DataFrame()
     MIDPOINT_full = pd.DataFrame()
     MIDPRICE_full = pd.DataFrame()
@@ -161,8 +150,8 @@ def calculator(filename):
     if 'HT_TRENDLINE' in df.columns: df.drop('HT_TRENDLINE', axis=1, inplace=True) #HT_TRENDLINE - Hilbert Transform - Instantaneous Trendline
     if 'KAMA' in df.columns: df.drop('KAMA', axis=1, inplace=True) #KAMA - Kaufman Adaptive Moving Average
     if 'MA' in df.columns: df.drop('MA', axis=1, inplace=True) #MA - Moving average
-    if 'MAMA_mama' in df.columns: df.drop('MAMA_mama', axis=1, inplace=True) #MAMA - MESA Adaptive Moving Average
-    if 'MAMA_fama' in df.columns: df.drop('MAMA_fama', axis=1, inplace=True) #MAMA - MESA Adaptive Moving Average
+    # if 'MAMA_mama' in df.columns: df.drop('MAMA_mama', axis=1, inplace=True) #MAMA - MESA Adaptive Moving Average
+    # if 'MAMA_fama' in df.columns: df.drop('MAMA_fama', axis=1, inplace=True) #MAMA - MESA Adaptive Moving Average
     if 'MAVP' in df.columns: df.drop('MAVP', axis=1, inplace=True) #MAVP - Moving average with variable period
     if 'MIDPOINT' in df.columns: df.drop('MIDPOINT', axis=1, inplace=True) #MIDPOINT - MidPoint over period
     if 'MIDPRICE' in df.columns: df.drop('MIDPRICE', axis=1, inplace=True) #MIDPRICE - Midpoint Price over period
@@ -298,10 +287,10 @@ def calculator(filename):
         MA_real_ticker = talib.MA(df_ticker['close'], timeperiod=30, matype=0)
         if len(MA_real_ticker) > 0: MA_full = pd.concat([MA_full,MA_real_ticker])
 
-        MAMA_real_ticker_mama, MAMA_real_ticker_fama = talib.MAMA(df_ticker['close'], fastlimit=0, slowlimit=0)
-        if len(MAMA_real_ticker_mama) > 0 and len(MAMA_real_ticker_fama) > 0:
-            MAMA_full_mama = pd.concat([MAMA_full_mama,MAMA_real_ticker_mama])
-            MAMA_full_fama = pd.concat([MAMA_full_fama,MAMA_real_ticker_fama])
+        # MAMA_real_ticker_mama, MAMA_real_ticker_fama = talib.MAMA(df_ticker['close'], fastlimit=0, slowlimit=0)
+        # if len(MAMA_real_ticker_mama) > 0 and len(MAMA_real_ticker_fama) > 0:
+        #     MAMA_full_mama = pd.concat([MAMA_full_mama,MAMA_real_ticker_mama])
+        #     MAMA_full_fama = pd.concat([MAMA_full_fama,MAMA_real_ticker_fama])
 
         # разобраться с периодами
         # MAVP_real_ticker = talib.MAVP(df_ticker['close'], periods, minperiod=2, maxperiod=30, matype=0)
@@ -316,7 +305,7 @@ def calculator(filename):
         SAR_real_ticker = talib.SAR(df_ticker['high'], df_ticker['low'], acceleration=0, maximum=0)
         if len(SAR_real_ticker) > 0: SAR_full = pd.concat([SAR_full,SAR_real_ticker])
 
-        SAREXT_real_ticker = talib.SAREXT(df_ticker['close'], timeperiod=30)
+        SAREXT_real_ticker = talib.SAREXT(df_ticker['high'], df_ticker['low'], startvalue=0, offsetonreverse=0, accelerationinitlong=0, accelerationlong=0, accelerationmaxlong=0, accelerationinitshort=0, accelerationshort=0, accelerationmaxshort=0)
         if len(SAREXT_real_ticker) > 0: SAREXT_full = pd.concat([SAREXT_full,SAREXT_real_ticker])
 
         T3_real_ticker = talib.T3(df_ticker['high'], timeperiod=5, vfactor=0)
@@ -573,11 +562,11 @@ def calculator(filename):
     MA_full = MA_full.rename(columns= {0: 'MA'})
     df = df.join(MA_full)
 
-    MAMA_full_mama = MAMA_full_mama.rename(columns= {0: 'MAMA_mama'})
-    df = df.join(MAMA_full_mama)
+    # MAMA_full_mama = MAMA_full_mama.rename(columns= {0: 'MAMA_mama'})
+    # df = df.join(MAMA_full_mama)
 
-    MAMA_full_fama = MAMA_full_fama.rename(columns= {0: 'MAMA_fama'})
-    df = df.join(MAMA_full_fama)
+    # MAMA_full_fama = MAMA_full_fama.rename(columns= {0: 'MAMA_fama'})
+    # df = df.join(MAMA_full_fama)
 
     MAVP_full = MAVP_full.rename(columns= {0: 'MAVP'})
     df = df.join(MAVP_full)
@@ -602,9 +591,6 @@ def calculator(filename):
 
     T3_full = T3_full.rename(columns= {0: 'T3'})
     df = df.join(T3_full)
-
-    TEMA_full = TEMA_full.rename(columns= {0: 'TEMA'})
-    df = df.join(TEMA_full)
 
     TEMA_full = TEMA_full.rename(columns= {0: 'TEMA'})
     df = df.join(TEMA_full)
@@ -847,11 +833,10 @@ def calculator(filename):
         if len(df) > 0: df.to_csv(path,index = False)
     elif path.endswith('xlsx'):
         if len(df) > 0: df.to_excel(path,index = False)
+    else:
+        print(path)
 
-
-# In[ ]:
-
-
+# %%
 ### Ниже блоки для проверки отдельно функции
 
 # filename = "30years_data_1h_interval.csv"
@@ -864,18 +849,12 @@ def calculator(filename):
 #     ticker = ticker_list[i]
 #     df_ticker = df[(df['ticker'] == ticker)]
 
-
-# In[ ]:
-
-
+# %%
 # real = talib.WILLR(df_ticker['high'], df_ticker['low'], df_ticker['close'], timeperiod=14)
 # real
 
-
-# In[ ]:
-
-
-def main():
+# %%
+def main(current_path):
     #getting datasets
     datasets_list = [f for f in listdir(current_path + '/datasets') if isfile(join(current_path + '/datasets', f))]
 
@@ -886,6 +865,7 @@ def main():
     for file in datasets_list:
         if (file.endswith('csv') and "~$" not in file) or (file.endswith('xlsx') and "~$" not in file):
             try:
+                print('Начал рассчёт файла {}'.format(file))
                 calculator(file)
             except Exception as e:
                 print (e)
@@ -893,9 +873,9 @@ def main():
                 print('------------------------')
 
 
-# In[ ]:
-
-
+# %%
 if __name__ == "__main__": 
-    main()
+    main(current_path)
+    print('Закончил просчитывать тех метрики для всех файлов')
+
 

@@ -19,7 +19,7 @@ if __name__ == "__main__":
 
     dividends.main()
 
-    tech.main()
+    tech.main(current_path)
 
     url = 'https://www.dohod.ru/ik/analytics/dividend'
     dohodru_data.main(url)
