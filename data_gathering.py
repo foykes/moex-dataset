@@ -1,5 +1,5 @@
 # %%
-import datetime, pandas as pd, requests, csv, sys, time
+import datetime, pandas as pd, requests, csv, sys, time, os
 
 current_path = sys.path[0]
 
@@ -8,7 +8,6 @@ df_full = pd.DataFrame()
 exception_list = []
 
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
-
 
 # %% [markdown]
 # Выгрузка доступного на мосбирже
@@ -180,79 +179,88 @@ config = [
 # %%
 def data_update (config, current_path, all_stocks_ru):
     today = datetime.datetime.now()
+    
     ## обновление готовых файлов
     for j in range(0,len(config)):
         filename_j = config[j]['filename']
         interval = config[j]['interval']
+        years = config[j]['years']
+        word = config[j]['word']
 
-        dataset_path = current_path + "/datasets/{}.csv".format(filename_j)
+        dataset_path = current_path + "datasets/{}.csv".format(filename_j)
 
-        if dataset_path.endswith('csv') and "~$" not in dataset_path:
-            df = pd.read_csv(dataset_path)
-        elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
-            df = pd.read_excel(dataset_path)
+        # проверка что файл существует
+        if os.path.isfile(dataset_path) == False:
+            print("Файла не существует, не могу его обновить: \n{}".format(dataset_path))
+            full_reload (all_stocks_ru, interval, years, filename_j, word, current_path)
 
-        print("Длина {} до обновления {}".format(filename_j, len(df)))
+        else:
+            if dataset_path.endswith('csv') and "~$" not in dataset_path:
+                df = pd.read_csv(dataset_path)
+            elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
+                df = pd.read_excel(dataset_path)
 
-        # убираем ненужные колонки теханализа - их потом с нуля пересчитаем
-        ## ПРОВЕРИТЬ ЧТО ЕСЛИ ЭТО НЕ ДЕЛАТЬ
-        columns = df.columns
-        white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
-            'ticker']
-        columns_to_remove = [i for i in columns if i not in white_list_columns]
-        columns_to_remove
-        df.drop(columns_to_remove, axis=1,inplace=True)
-        # df.head(2)
+            print("Длина {} до обновления {}".format(filename_j, len(df)))
 
-        # для каждого тикера выбираем последнюю дату за которую есть выгрузка 
-        df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
-        df_last_date = df_last_date.loc[:,['end','ticker']]
-        df_last_date.drop_duplicates(inplace=True)
-        df_last_date.reset_index(inplace=True,drop=True)
+            # убираем ненужные колонки теханализа - их потом с нуля пересчитаем
+            ## ПРОВЕРИТЬ ЧТО ЕСЛИ ЭТО НЕ ДЕЛАТЬ
+            columns = df.columns
+            white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
+                'ticker']
+            columns_to_remove = [i for i in columns if i not in white_list_columns]
+            columns_to_remove
+            df.drop(columns_to_remove, axis=1,inplace=True)
+            # df.head(2)
 
-        # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
-        filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
-        df_last_date = df_last_date[df_last_date['end'] >= filter_date]
+            # для каждого тикера выбираем последнюю дату за которую есть выгрузка 
+            df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
+            df_last_date = df_last_date.loc[:,['end','ticker']]
+            df_last_date.drop_duplicates(inplace=True)
+            df_last_date.reset_index(inplace=True,drop=True)
+
+            # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
+            filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+            df_last_date = df_last_date[df_last_date['end'] >= filter_date]
 
 
 
-        # обновление текущих данных
-        for i in range(0,len(df_last_date)):
-            end_date = df_last_date.iloc[i]['end']
-            ticker_in = df_last_date.iloc[i]['ticker']
-            start_date = today
+            # обновление текущих данных
+            for i in range(0,len(df_last_date)):
+                end_date = df_last_date.iloc[i]['end']
+                ticker_in = df_last_date.iloc[i]['ticker']
+                start_date = today
 
-            start_date_mx = start_date.strftime('%Y-%m-%d')
-            end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
-
-            df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
-            df = pd.concat([df, df_ticker])
-
-        
-        ### Проверка не появилось ли новых тикеров с момента последнего обновления
-
-        ticker_list_actual = list(set(all_stocks_ru['TRADE_CODE'].to_list()))
-        ticker_list_actual.remove('')
-
-        ticker_list_actual_dataset = list(set(df['ticker'].to_list()))
-
-        delta = list(set(ticker_list_actual) - set(ticker_list_actual_dataset))
-        if len(delta) > 0:
-            for t in range (0,len(delta)):
-                ticker_in = delta[t]
-                start_date_mx = today.strftime('%Y-%m-%d')
-                end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
+                start_date_mx = start_date.strftime('%Y-%m-%d')
+                end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
 
                 df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
                 df = pd.concat([df, df_ticker])
-        
-        df.sort_values(by=['ticker','begin'],inplace=True)
-        df.drop_duplicates(inplace=True)
-        df.reset_index(inplace=True,drop=True)
-        print("Длина {} после обновления {}".format(filename_j, len(df)))
 
-        if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
-        if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+            
+            ### Проверка не появилось ли новых тикеров с момента последнего обновления
+
+            ticker_list_actual = list(set(all_stocks_ru['TRADE_CODE'].to_list()))
+            ticker_list_actual.remove('')
+
+            ticker_list_actual_dataset = list(set(df['ticker'].to_list()))
+
+            delta = list(set(ticker_list_actual) - set(ticker_list_actual_dataset))
+            if len(delta) > 0:
+                for t in range (0,len(delta)):
+                    ticker_in = delta[t]
+                    start_date_mx = today.strftime('%Y-%m-%d')
+                    end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
+
+                    df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
+                    df = pd.concat([df, df_ticker])
+            
+            df.sort_values(by=['ticker','begin'],inplace=True)
+            df.drop_duplicates(inplace=True)
+            df.reset_index(inplace=True,drop=True)
+            print("Длина {} после обновления {}".format(filename_j, len(df)))
+
+            if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
+            if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
 
 # %%
 def main(current_path):
