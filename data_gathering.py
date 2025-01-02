@@ -7,7 +7,7 @@ today = datetime.datetime.now()
 df_full = pd.DataFrame()
 exception_list = []
 
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
+headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'}
 
 # %% [markdown]
 # Выгрузка доступного на мосбирже
@@ -60,15 +60,28 @@ def moex_query (ticker_in, end_date_mx, start_date_mx, interval):
     df_ticker = pd.DataFrame()
     
     query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}'
-    df = pd.read_csv(query, sep=';', header=1)
 
-    time.sleep(3) #нужно чтобы не перегружать API Мосбиржи
+    response = requests.get(query)
+    status_code = response.status_code
+
+    # Читаем CSV если статус успешный
+    if status_code == 200:
+        df = pd.read_csv(query, sep=';', header=1)
+        time.sleep(5) #нужно чтобы не перегружать API Мосбиржи
+    else: # Если нет то пауза и вторая попытка
+        print(status_code, ticker_in, end_date_mx, start_date_mx, interval)
+        print(query)
+        time.sleep(60)
+        df = pd.read_csv(query, sep=';', header=1)
 
     # df.rename(columns={'End': 'Date'}, inplace=True) #переименовка колонки, чтобы было всё в одном формате
     df['ticker'] = ticker_in
     # df = df.set_index('Date')
 
     if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
+    # else:
+    #     # print(df.head())
+    #     print(ticker_in, end_date_mx, start_date_mx, interval)
 
     return df_ticker
 
@@ -97,8 +110,8 @@ def moex (ticker_in, years, interval):
         end_date_mx = end_date.strftime('%Y-%m-%d')
 
         try:
-            df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
-            
+            df = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
+            if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
         except:
             exception_list.append(ticker_in)
 
@@ -278,6 +291,12 @@ def main(current_path):
 
     exception_list = list(set(exception_list)) #дедупликация
     print("Пропущено тикеров при разных интервалах: {}".format(len(exception_list)))
+
+# %%
+all_stocks_ru = moex_tickerlists (current_path)
+
+for k in range(0, len(config)):
+    full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path)
 
 # %%
 if __name__ == "__main__":
