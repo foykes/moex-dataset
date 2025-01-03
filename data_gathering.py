@@ -1,5 +1,5 @@
 # %%
-import datetime, pandas as pd, requests, csv, sys, time, os
+import datetime, pandas as pd, requests, csv, sys, time, os, json
 
 current_path = sys.path[0]
 
@@ -7,12 +7,20 @@ today = datetime.datetime.now()
 df_full = pd.DataFrame()
 exception_list = []
 
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'}
+# %%
+### Выгрузка header для запроса
+with open('settings/user_agents.json', 'r', encoding='utf-8') as f:
+    headers_full = json.load(f)
 
-# %% [markdown]
-# Выгрузка доступного на мосбирже
+headers = headers_full['chrome'][0]
 
 # %%
+### Выгрузка конфига файлов
+with open('settings/datasets_config.json', 'r', encoding='utf-8') as f:
+    config = json.load(f)
+
+# %%
+### Выгрузка датасета доступного на мосбирже
 def moex_tickerlists (current_path):
     CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
 
@@ -32,7 +40,7 @@ def moex_tickerlists (current_path):
     df_moex.columns = new_header
 
     print("Общее количество объектов на Мосбирже: {}".format(len(df_moex)))
-    # df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
+    df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
     df_moex.to_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path))
 
     df_moex_stocks = df_moex[(df_moex['SUPERTYPE'] == "Акции")|(df_moex['SUPERTYPE'] == "Депозитарные расписки")]
@@ -55,6 +63,7 @@ def moex_tickerlists (current_path):
     return all_stocks_ru
 
 # %%
+### Функция запроса к API по тикеру, датам и нужному интервалу
 def moex_query (ticker_in, end_date_mx, start_date_mx, interval):
 
     df_ticker = pd.DataFrame()
@@ -118,7 +127,7 @@ def moex (ticker_in, years, interval):
     return df_ticker
 
 # %%
-### Функция для выгрузки данных по конфигу
+### Функция для выгрузки данных с нуля
 def full_reload (all_stocks_ru, interval, years, filename, word, current_path):
     df_full = pd.DataFrame()
 
@@ -134,62 +143,7 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path):
 
 
 # %%
-## для тестирования функции
-# full_reload(1,10,'1year_data_1m_intervcal',current_path)
-
-# %%
-config = [
-        {
-        'interval': 24,
-        'years': 10,
-        'filename': '10years_data_1d_interval',
-        'word': 'часа'
-        },
-        {
-        'interval': 60,
-        'years': 10,
-        'filename': '10years_data_1h_interval',
-        'word': 'минут'
-        },
-        {
-        'interval': 10,
-        'years': 10,
-        'filename': '10years_data_10m_interval',
-        'word': 'минут'
-        },
-        {
-        'interval': 1,
-        'years': 10,
-        'filename': '10years_data_1m_interval',
-        'word': 'минута'
-        },
-        {
-        'interval': 24,
-        'years': 30,
-        'filename': '30years_data_1d_interval',
-        'word': 'часа'
-        },
-        {
-        'interval': 60,
-        'years': 30,
-        'filename': '30years_data_1h_interval',
-        'word': 'минут'
-        },
-        {
-        'interval': 10,
-        'years': 30,
-        'filename': '30years_data_10m_interval',
-        'word': 'минут'
-        },
-        {
-        'interval': 1,
-        'years': 30,
-        'filename': '30years_data_1m_interval',
-        'word': 'минута'
-        }
-        ]
-
-# %%
+### Функция для обновления текущих датасетов по конфигу
 def data_update (config, current_path, all_stocks_ru):
     today = datetime.datetime.now()
     
@@ -205,6 +159,7 @@ def data_update (config, current_path, all_stocks_ru):
         # проверка что файл существует
         if os.path.isfile(dataset_path) == False:
             print("Файла не существует, не могу его обновить: \n{}".format(dataset_path))
+            print("Начинаю выгружать его с нуля")
             full_reload (all_stocks_ru, interval, years, filename_j, word, current_path)
 
         else:
@@ -291,12 +246,6 @@ def main(current_path):
 
     exception_list = list(set(exception_list)) #дедупликация
     print("Пропущено тикеров при разных интервалах: {}".format(len(exception_list)))
-
-# %%
-all_stocks_ru = moex_tickerlists (current_path)
-
-for k in range(0, len(config)):
-    full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path)
 
 # %%
 if __name__ == "__main__":
