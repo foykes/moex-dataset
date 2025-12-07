@@ -15,3 +15,15 @@ datasets/30years_data_1m_interval.xlsx
 .DS_Store
 __pycache__/*
 secrets/*
+datasets/2years_data_1d_interval.csv
+datasets/2years_data_1d_interval.xlsx
+datasets/2years_data_1h_interval.csv
+datasets/2years_data_1h_interval.xlsx
+datasets/2years_data_1m_interval.csv
+datasets/2years_data_1m_interval.xlsx
+datasets/2years_data_10m_interval.csv
+datasets/2years_data_10m_interval.xlsx
+datasets/100years_data_1d_interval.csv
+datasets/100years_data_1d_interval.xlsx
+datasets/100years_data_1h_interval.csv
+datasets/100years_data_10m_interval.csv

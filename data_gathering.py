@@ -62,12 +62,15 @@ def moex_tickerlists (current_path):
     all_stocks_ru = df_moex.filter(['TRADE_CODE'], axis = 1)
     all_stocks_ru = df_moex.loc[~all_stocks_ru.duplicated(), :]
 
+    df_moex_stocks.reset_index(drop=True, inplace=True)
+
     return all_stocks_ru
 
 # %%
 ### Функция запроса к API по тикеру, датам и нужному интервалу
 def moex_query (ticker_in, ticker_type, end_date_mx, start_date_mx, interval):
-
+    global header
+    
     df_ticker = pd.DataFrame()
 
     #определение типа market для корректного запроса
@@ -82,7 +85,7 @@ def moex_query (ticker_in, ticker_type, end_date_mx, start_date_mx, interval):
     # query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для акций
     # query = f'http://iss.moex.com/iss/engines/stock/markets/bonds/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для облигаций
 
-    response = requests.get(query)
+    response = requests.get(query, headers = header)
     status_code = response.status_code
 
     # Читаем CSV если статус успешный
@@ -251,7 +254,8 @@ def main(current_path, force_reload = False):
     global config
     
     all_stocks_ru = moex_tickerlists (current_path)
-
+    all_stocks_ru.reset_index(drop=True, inplace=True)
+    
     if force_reload == True: ## Если нужно с нуля перевыгрузить данные, то это этот необязательный параметр нужно передать как True
         for k in range(0, len(config)):
             full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path)
