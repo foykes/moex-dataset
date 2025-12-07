@@ -1,18 +1,20 @@
 # %%
 import datetime, pandas as pd, requests, csv, sys, time, os, json
 
-current_path = sys.path[0]
 
 today = datetime.datetime.now()
 df_full = pd.DataFrame()
 exception_list = []
+current_path = sys.path[0]
 
 # %%
+header = {'User-Agent': ''}
 ### Выгрузка header для запроса
 with open('settings/user_agents.json', 'r', encoding='utf-8') as f:
     headers_full = json.load(f)
 
-headers = headers_full['chrome'][0]
+header_first = str(headers_full['chrome'][0])
+header['User-Agent'] = header_first
 
 # %%
 ### Выгрузка конфига файлов
@@ -23,10 +25,10 @@ with open('settings/datasets_config.json', 'r', encoding='utf-8') as f:
 ### Выгрузка датасета доступного на мосбирже
 def moex_tickerlists (current_path):
     CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
-
+    global header
 
     with requests.Session() as s:
-        download = s.get(CSV_URL, headers = headers)
+        download = s.get(CSV_URL, headers = header)
 
         decoded_content = download.content.decode('cp1251')
 
@@ -57,18 +59,28 @@ def moex_tickerlists (current_path):
     all_stocks_ru = all_stocks_ru.loc[~all_stocks_ru.duplicated(), :]
 
     ## Запуск для всего
-    all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
-    all_stocks_ru = df_moex_stocks.loc[~all_stocks_ru.duplicated(), :]
+    all_stocks_ru = df_moex.filter(['TRADE_CODE'], axis = 1)
+    all_stocks_ru = df_moex.loc[~all_stocks_ru.duplicated(), :]
 
     return all_stocks_ru
 
 # %%
 ### Функция запроса к API по тикеру, датам и нужному интервалу
-def moex_query (ticker_in, end_date_mx, start_date_mx, interval):
+def moex_query (ticker_in, ticker_type, end_date_mx, start_date_mx, interval):
 
     df_ticker = pd.DataFrame()
-    
-    query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}'
+
+    #определение типа market для корректного запроса
+    if ticker_type in ['Инвестиционные паи','Депозитарные расписки','Акции','Ипотечные сертификаты участия']:
+        market = "shares"
+    elif ticker_type in ['Облигации','Еврооблигации']:
+        market = "bonds"
+    else:
+        market = "shares"
+        
+    query = f'http://iss.moex.com/iss/engines/stock/markets/{market}/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #универсальный шаблон
+    # query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для акций
+    # query = f'http://iss.moex.com/iss/engines/stock/markets/bonds/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для облигаций
 
     response = requests.get(query)
     status_code = response.status_code
@@ -96,7 +108,7 @@ def moex_query (ticker_in, end_date_mx, start_date_mx, interval):
 
 # %%
 ## Функция выгрузки данных через ручку MOEX
-def moex (ticker_in, years, interval):
+def moex (ticker_in, ticker_type, years, interval):
 
     df_ticker = pd.DataFrame()
 
@@ -119,7 +131,7 @@ def moex (ticker_in, years, interval):
         end_date_mx = end_date.strftime('%Y-%m-%d')
 
         try:
-            df = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
+            df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
             if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
         except:
             exception_list.append(ticker_in)
@@ -133,7 +145,8 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path):
 
     for i in range(0,len(all_stocks_ru)):
         ticker_in = all_stocks_ru['TRADE_CODE'][i]
-        df = moex(ticker_in, years, interval)
+        ticker_type = all_stocks_ru['SUPERTYPE'][i]
+        df = moex(ticker_in, ticker_type, years, interval)
         if len(df) > 0: df_full = pd.concat([df_full,df])
 
 
@@ -146,6 +159,7 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path):
 ### Функция для обновления текущих датасетов по конфигу
 def data_update (config, current_path, all_stocks_ru):
     today = datetime.datetime.now()
+    moex_full_catalogue = pd.read_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path), index_col=0)
     
     ## обновление готовых файлов
     for j in range(0,len(config)):
@@ -197,11 +211,12 @@ def data_update (config, current_path, all_stocks_ru):
                 end_date = df_last_date.iloc[i]['end']
                 ticker_in = df_last_date.iloc[i]['ticker']
                 start_date = today
+                ticker_type = moex_full_catalogue[moex_full_catalogue['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
 
                 start_date_mx = start_date.strftime('%Y-%m-%d')
                 end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
 
-                df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
+                df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
                 df = pd.concat([df, df_ticker])
 
             
@@ -219,7 +234,7 @@ def data_update (config, current_path, all_stocks_ru):
                     start_date_mx = today.strftime('%Y-%m-%d')
                     end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
 
-                    df_ticker = moex_query(ticker_in, end_date_mx, start_date_mx, interval)
+                    df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
                     df = pd.concat([df, df_ticker])
             
             df.sort_values(by=['ticker','begin'],inplace=True)
@@ -231,12 +246,13 @@ def data_update (config, current_path, all_stocks_ru):
             if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
 
 # %%
-def main(current_path):
+def main(current_path, force_reload = False):
     global exception_list
-
+    global config
+    
     all_stocks_ru = moex_tickerlists (current_path)
 
-    if datetime.datetime.now().day in [1, 14]:
+    if force_reload == True: ## Если нужно с нуля перевыгрузить данные, то это этот необязательный параметр нужно передать как True
         for k in range(0, len(config)):
             full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path)
         
@@ -249,6 +265,7 @@ def main(current_path):
 
 # %%
 if __name__ == "__main__":
-    main(current_path)
+    main(current_path, force_reload = False)
+    # main(current_path, force_reload = True)
 
 
