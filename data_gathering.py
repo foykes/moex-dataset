@@ -7,6 +7,7 @@ df_full = pd.DataFrame()
 exception_list = []
 current_path = sys.path[0]
 
+
 # %%
 header = {'User-Agent': ''}
 ### Выгрузка header для запроса
@@ -142,21 +143,211 @@ def moex (ticker_in, ticker_type, years, interval):
     return df_ticker
 
 # %%
+def build_tickers_dates(all_stocks_ru, current_path):
+    """
+    По уникальным тикерам из all_stocks_ru['TRADE_CODE'] получает:
+    - дату начала торгов (ISSUEDATE) => issue_date
+    - дату последнего дня торгов, если бумага больше не торгуется => stopped_date
+
+    Возвращает DataFrame tickers_dates с колонками:
+    ['TRADE_CODE', 'issue_date', 'stopped_date']
+    """
+
+    session = requests.Session()
+
+    # Базовые URL'ы
+    desc_url = "https://iss.moex.com/iss/securities/{secid}.json"
+    securities_url = "https://iss.moex.com/iss/securities.json"
+    history_url = (
+        "https://iss.moex.com/iss/history/engines/stock/markets/shares/"
+        "boards/{board}/securities/{secid}.json"
+    )
+
+    # Берём уникальные тикеры, убираем NaN и пустоты, приводим к верхнему регистру
+    tickers = (
+        all_stocks_ru["TRADE_CODE"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+    tickers = tickers[tickers != ""].str.upper().unique()
+
+    rows = []
+
+    for secid in tickers:
+        issue_date = pd.NaT
+        stopped_date = pd.NaT
+        is_traded = None
+        primary_boardid = None
+
+        # --- 1. Дата начала торгов (ISSUEDATE) из description ---
+        try:
+            params_desc = {
+                "iss.meta": "off",
+                "iss.only": "description",
+                "description.columns": "name,value",
+            }
+            r = session.get(
+                desc_url.format(secid=secid),
+                params=params_desc,
+                timeout=5,
+            )
+            r.raise_for_status()
+            j = r.json()
+
+            desc = j.get("description", {})
+            cols = desc.get("columns", [])
+            data = desc.get("data", [])
+
+            if "name" in cols and "value" in cols:
+                name_idx = cols.index("name")
+                value_idx = cols.index("value")
+
+                for row_ in data:
+                    if row_[name_idx] == "ISSUEDATE":
+                        date_str = row_[value_idx]
+                        if date_str:
+                            issue_date = pd.to_datetime(date_str)
+                        break
+        except Exception:
+            # если что-то пошло не так — оставляем issue_date = NaT
+            pass
+
+        # --- 2. is_traded и primary_boardid из /iss/securities ---
+        try:
+            params_sec = {
+                "q": secid,
+                "iss.meta": "off",
+                "iss.only": "securities",
+                "securities.columns": "secid,group,is_traded,primary_boardid",
+            }
+            r = session.get(
+                securities_url,
+                params=params_sec,
+                timeout=5,
+            )
+            r.raise_for_status()
+            j = r.json()
+
+            sec = j.get("securities", {})
+            cols = sec.get("columns", [])
+            data = sec.get("data", [])
+
+            if all(c in cols for c in ("secid", "group", "is_traded", "primary_boardid")):
+                secid_idx = cols.index("secid")
+                group_idx = cols.index("group")
+                is_traded_idx = cols.index("is_traded")
+                pb_idx = cols.index("primary_boardid")
+
+                for row_ in data:
+                    # выбираем именно акцию (group == 'stock_shares') и нужный SECID
+                    if str(row_[secid_idx]).upper() == secid and row_[group_idx] == "stock_shares":
+                        is_traded = row_[is_traded_idx]
+                        primary_boardid = row_[pb_idx]
+                        break
+        except Exception:
+            pass
+
+        # --- 3. Если бумага больше не торгуется (is_traded == 0), берём последний день торгов ---
+        if primary_boardid and is_traded == 0:
+            try:
+                params_hist = {
+                    "iss.meta": "off",
+                    "iss.only": "history",
+                    "history.columns": "TRADEDATE",
+                    "sort_column": "TRADEDATE",
+                    "sort_order": "desc",
+                    "limit": 1,
+                }
+                r = session.get(
+                    history_url.format(board=primary_boardid, secid=secid),
+                    params=params_hist,
+                    timeout=5,
+                )
+                r.raise_for_status()
+                j = r.json()
+
+                hist = j.get("history", {})
+                cols = hist.get("columns", [])
+                data = hist.get("data", [])
+
+                if "TRADEDATE" in cols and data:
+                    td_idx = cols.index("TRADEDATE")
+                    date_str = data[0][td_idx]
+                    if date_str:
+                        stopped_date = pd.to_datetime(date_str)
+            except Exception:
+                # если история не доступна — оставляем NaT
+                pass
+
+        rows.append(
+            {
+                "TRADE_CODE": secid,
+                "issue_date": issue_date,
+                # Для торгуемых бумаг будет NaT, для делистнутых — дата последнего дня торгов
+                "stopped_date": stopped_date,
+            }
+        )
+
+    tickers_dates = pd.DataFrame(rows)
+    
+    ## Сохранение файлов
+    tickers_dates.to_excel(("{}/datasets/ticker_lists/tickers_dates.xlsx").format(current_path))
+    tickers_dates.to_csv(("{}/datasets/ticker_lists/tickers_dates.csv").format(current_path))
+
+    return tickers_dates
+
+
+# %%
 ### Функция для выгрузки данных с нуля
-def full_reload (all_stocks_ru, interval, years, filename, word, current_path):
+def full_reload (all_stocks_ru, interval, years, filename, word, current_path, tickers_dates):
     df_full = pd.DataFrame()
+    today = datetime.datetime.now()
+    start_date = today
+
+
+    ## ручная отладка
+    interval = 24
+    years = 10
+    filename= "10years_data_1d_interval"
+    word = "часа"
+    ##
+
+
+    ##определяем границу нужного диапазона выгрузки
+    if years != 0:
+        date_shift_needed = start_date - datetime.timedelta(days=years*365)
+        date_shift_needed = date_shift_needed.strftime('%Y-%m-%d')
+    else:
+        date_shift_needed = '0'
+
 
     for i in range(0,len(all_stocks_ru)):
         ticker_in = all_stocks_ru['TRADE_CODE'][i]
         ticker_type = all_stocks_ru['SUPERTYPE'][i]
-        df = moex(ticker_in, ticker_type, years, interval)
-        if len(df) > 0: df_full = pd.concat([df_full,df])
 
+        if len(ticker_in) > 0: #проверка что тикер выгрузился и есть
+
+            #определение левой границы выгрузки: или дата листинга или самое раннее нужное значение
+            end_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['issue_date'].values[0]
+            end_date_mx = str(end_date_mx)[:10]
+            if date_shift_needed > end_date_mx:
+                end_date_mx = date_shift_needed
+
+            if tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].isna().values[0] == True:
+                start_date_mx = start_date.strftime('%Y-%m-%d')
+            else:
+                start_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].values[0]
+                start_date_mx = str(start_date_mx)[:10]
+
+            df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+            if len(df) > 0: df_full = pd.concat([df_full,df])
+        else:
+            print(ticker_in)
 
     print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, len(df_full)))
     if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename + '.xlsx')),index = False)
     if len(df_full) > 0: df_full.to_csv(('{}/datasets/{}'.format(current_path, filename + '.csv')),index = False)
-
 
 # %%
 ### Функция для обновления текущих датасетов по конфигу
@@ -236,6 +427,7 @@ def data_update (config, current_path, all_stocks_ru):
                     ticker_in = delta[t]
                     start_date_mx = today.strftime('%Y-%m-%d')
                     end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
+                    ticker_type = moex_full_catalogue[moex_full_catalogue['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
 
                     df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
                     df = pd.concat([df, df_ticker])
@@ -255,10 +447,12 @@ def main(current_path, force_reload = False):
     
     all_stocks_ru = moex_tickerlists (current_path)
     all_stocks_ru.reset_index(drop=True, inplace=True)
+
+    tickers_dates = build_tickers_dates(all_stocks_ru, current_path)
     
     if force_reload == True: ## Если нужно с нуля перевыгрузить данные, то это этот необязательный параметр нужно передать как True
         for k in range(0, len(config)):
-            full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path)
+            full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path, tickers_dates)
         
     else:
         data_update(config,current_path, all_stocks_ru)
@@ -269,7 +463,7 @@ def main(current_path, force_reload = False):
 
 # %%
 if __name__ == "__main__":
-    main(current_path, force_reload = False)
-    # main(current_path, force_reload = True)
+    # main(current_path, force_reload = False)
+    main(current_path, force_reload = True)
 
 
