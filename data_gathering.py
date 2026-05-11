@@ -7,7 +7,6 @@ df_full = pd.DataFrame()
 exception_list = []
 current_path = sys.path[0]
 
-
 # %%
 header = {'User-Agent': ''}
 ### Выгрузка header для запроса
@@ -143,6 +142,8 @@ def moex (ticker_in, ticker_type, years, interval):
     return df_ticker
 
 # %%
+## Функция выгружает даты торгов по каждому тикеру (когда начали торговать по этому тикеру и конца закончили)
+## полезно, чтобы перестать выгружать данные по тем тикерам, которые уже делистили
 def build_tickers_dates(all_stocks_ru, current_path):
     """
     По уникальным тикерам из all_stocks_ru['TRADE_CODE'] получает:
@@ -305,15 +306,6 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
     today = datetime.datetime.now()
     start_date = today
 
-
-    ## ручная отладка
-    interval = 24
-    years = 10
-    filename= "10years_data_1d_interval"
-    word = "часа"
-    ##
-
-
     ##определяем границу нужного диапазона выгрузки
     if years != 0:
         date_shift_needed = start_date - datetime.timedelta(days=years*365)
@@ -463,7 +455,7 @@ def main(current_path, force_reload = False):
 
 # %%
 if __name__ == "__main__":
-    # main(current_path, force_reload = False)
-    main(current_path, force_reload = True)
+    main(current_path, force_reload = False)
+    # main(current_path, force_reload = True)
 
 
