@@ -19,7 +19,7 @@ header['User-Agent'] = header_first
 
 # %%
 ### Выгрузка конфига файлов
-json_path = current_path + 'settings/datasets_config.json'
+json_path = current_path + '/settings/datasets_config.json'
 
 with open(json_path, 'r', encoding='utf-8') as f:
     config = json.load(f)
