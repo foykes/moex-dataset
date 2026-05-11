@@ -10,7 +10,8 @@ current_path = sys.path[0]
 # %%
 header = {'User-Agent': ''}
 ### Выгрузка header для запроса
-with open('settings/user_agents.json', 'r', encoding='utf-8') as f:
+json_path = current_path + '/settings/user_agents.json'
+with open(json_path, 'r', encoding='utf-8') as f:
     headers_full = json.load(f)
 
 header_first = str(headers_full['chrome'][0])
@@ -18,7 +19,9 @@ header['User-Agent'] = header_first
 
 # %%
 ### Выгрузка конфига файлов
-with open('settings/datasets_config.json', 'r', encoding='utf-8') as f:
+json_path = current_path + 'settings/datasets_config.json'
+
+with open(json_path, 'r', encoding='utf-8') as f:
     config = json.load(f)
 
 # %%
