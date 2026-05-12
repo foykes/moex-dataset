@@ -28,3 +28,4 @@ datasets/100years_data_1d_interval.xlsx
 datasets/100years_data_1h_interval.csv
 datasets/100years_data_10m_interval.csv
 playground.ipynb
+playground.py

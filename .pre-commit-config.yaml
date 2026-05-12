@@ -5,4 +5,4 @@ repos:
       - id: jupytext
         args: [--sync]
         files: \.ipynb$
-        exclude: (^|/)\.ipynb_checkpoints/
+        exclude: (^|/)(\.ipynb_checkpoints/|playground\.ipynb$)
