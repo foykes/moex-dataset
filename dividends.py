@@ -1,9 +1,19 @@
-#!/usr/bin/env python
-# coding: utf-8
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.2
+#   kernelspec:
+#     display_name: base
+#     language: python
+#     name: python3
+# ---
 
-# In[ ]:
-
-
+# %%
 import pandas as pd, sys
 import urllib.request, json
 
@@ -14,9 +24,7 @@ headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 divs_all = []
 
 
-# In[ ]:
-
-
+# %%
 ### Функция выгрузки дивидендов по ISIN
 
 def div_loader(isin, ticker):
@@ -59,9 +67,7 @@ def div_loader(isin, ticker):
             divs_all.append(tmp)
 
 
-# In[ ]:
-
-
+# %%
 def main():
     ## Подготовка списка для чего будут выгружаться дивиденды
     path = current_path + "/datasets/ticker_lists/moex_full.xlsx"
@@ -86,10 +92,6 @@ def main():
     if len(df_divs_all) > 0: df_divs_all.to_excel(path + ".xlsx",index = False)
     if len(df_divs_all) > 0: df_divs_all.to_csv(path + ".csv",index = False)
 
-
-# In[ ]:
-
-
+# %%
 if __name__ == "__main__":
     main()
-

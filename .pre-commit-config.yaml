@@ -1,0 +1,8 @@
+repos:
+  - repo: https://github.com/mwouts/jupytext
+    rev: v1.19.2
+    hooks:
+      - id: jupytext
+        args: [--sync]
+        files: \.ipynb$
+        exclude: (^|/)\.ipynb_checkpoints/

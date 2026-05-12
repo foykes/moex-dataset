@@ -1,3 +1,18 @@
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.2
+#   kernelspec:
+#     display_name: base
+#     language: python
+#     name: python3
+# ---
+
 # %%
 import requests, pandas as pd, sys
 from bs4 import BeautifulSoup
@@ -36,6 +51,7 @@ def get_main (url):
     else:
         print('Не удалось скачать актуальные данные о дивах с доход.ру')
     return df_mainpage
+
 
 # %%
 def get_page_info (url):
@@ -126,6 +142,7 @@ def get_page_info (url):
     
     return df_overview_full, df_years_full, df_each_full
 
+
 # %%
 def main(url):
     df_mainpage = get_main(url)
@@ -147,5 +164,3 @@ def main(url):
 if __name__ == "__main__":
     url = 'https://www.dohod.ru/ik/analytics/dividend'
     main(url)
-
-
