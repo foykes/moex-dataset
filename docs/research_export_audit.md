@@ -6,7 +6,7 @@ Audit date: 2026-09-07. Owner: @foykes. [U01 Issue #2](https://github.com/foykes
 
 **NO-GO for canonical mechanics daily import, strict daily research import, strict dividend import, point-in-time universe, and adjusted-price research.** All 15 owner-confirmed candidate files are readable and can be retained as a hash-pinned raw evidence snapshot. That archival capability does not make their contents eligible for canonical import or a research bundle.
 
-Both daily CSV/XLSX pairs lack `RSI14`, stable identity, board and adjusted OHLC. Each daily dataset has exactly 500 rows for 248 of its 263 tickers. The 30-year pair additionally contains a conflicting daily key, 39 invalid OHLC rows and two multi-year intervals labeled as daily candles. Dividend exports contain incomplete semantics and conflicting evidence. Reference files describe different snapshots and do not establish historical identity or universe completeness.
+Both daily CSV/XLSX pairs lack `RSI14`, stable identity, board and adjusted OHLC. Each daily dataset has exactly 500 rows for 248 of its 263 tickers. The 30-year pair additionally contains a conflicting daily key, 39 invalid OHLC rows and two multi-year intervals labeled as daily candles. The 10-/30-year exports disagree on 12 shared daily keys, and completed-session status is not attested. Dividend exports contain incomplete semantics and conflicting evidence. Reference files describe different snapshots and do not establish historical identity or universe completeness.
 
 This audit changes documentation only. It does not produce an adapter, enrich data, recalculate indicators, run models, or raise research readiness.
 
@@ -17,6 +17,7 @@ This audit changes documentation only. It does not produce an adapter, enrich da
 - Consumer contract baseline: `foykes/moex-rsi-research` main `dfb56e71692d9c222abc87e51e5534873ead23cc`, including accepted C00. U01 ownership and exclusive report reservation were confirmed by the coordinator in [research draft PR #54](https://github.com/foykes/moex-rsi-research/pull/54), not merged into main at audit time. Other lanes remain queued.
 - Files were read as bytes, SHA-256 hashed, parsed from those same bytes, and rehashed after analysis. All candidate hashes remained unchanged. No upstream Python module was imported or executed. Exact absolute paths, detailed per-ticker results and analysis tools are retained only in ignored local evidence.
 - Parser: bundled Python 3.12, pandas 2.2.3, NumPy 2.3.5 and openpyxl 3.1.5. Each XLSX has one sheet. Types below are observed parser dtypes, not a declared producer schema. `object` is primarily source text; all-null columns can infer different dtypes across formats.
+- In nine files the first header is literally empty (CSV) or a blank cell (XLSX); pandas labels it `Unnamed: 0`. Schema tables mark this distinction explicitly. Independent CSV/openpyxl checks of every column found that literal blank counts equal the reported parser-null counts in all 15 files; no extra nonempty NA-token values were silently counted as missing in this corpus.
 - Date parsing uses explicit ISO date/datetime and Russian `DD.MM.YYYY[ HH:MM:SS]` formats. Missing values and nonempty unparseable values are counted separately. Forecast annotations are retained in the source and parsed separately for diagnostics. Numeric source values are not repaired. Exact duplicate checks exclude a serialized dataframe index as well as checking all columns.
 - Equity/DR classification uses the audited current full catalogue only as an observed cross-check. It is not an as-of join. No historical reuse, missing instrument or inactive coverage claim is inferred from a current mapping.
 - Corpus: the two daily pairs, MOEX `all` pair, Dohod.ru `all_payments` pair, both stock/full reference pairs, `tickers_dates` pair and distinct legacy `ticker_dates.xlsx`. Intraday exports, Dohod overview/annual summary products, published mirrors and former Dry Run 001 files are outside this input audit.
@@ -42,12 +43,25 @@ Counts apply independently to each file in a CSV/XLSX pair; formats are not adde
 | Negative or nonfinite OHLC/value/volume | 0 | 0 |
 | Zero value / malformed begin or end / end before begin | 0 / 0 / 0 | 0 / 0 / 0 |
 | Begin and end on different calendar dates | 2 | 0 |
-| Time ordering inside each ticker | Ascending | Ascending |
+| Time ordering inside each ticker | Nondecreasing (one repeated key) | Strictly ascending |
 | Global ticker/date or global date ordering | Neither | Neither |
 | Current-catalogue equity / DR tickers | 262 / 1 | 262 / 1 |
 | Current-catalogue equity / DR rows | 126,649 / 500 | 126,600 / 500 |
 
 The duplicate is `ABIO` on 2011-01-01. Both rows end on 2023-08-22 and have differing OHLC/value/volume. These are conflicting multi-year records, not identical copies that can safely be dropped. The 39 zero-open/close rows also violate `low <= open, close`; zero volume with positive value is a separate diagnostic, not a license to fill volume.
+
+### Agreement between daily history windows
+
+Joining the 10- and 30-year exports on unique `(ticker, begin-date)` keys yields 36,133 shared keys for 100 tickers. Duplicate keys are excluded from this diagnostic join without selecting a winning record; the ABIO conflict above has no counterpart in the 10-year file. Independently for CSV and XLSX, **12 keys for 12 tickers disagree**, all on 2026-06-30, even with numeric tolerance `atol=1e-12, rtol=1e-12`:
+
+| Field | Unequal shared-key rows, in each format |
+|---|---:|
+| `open` / `begin` | 0 / 0 |
+| `high` / `low` | 1 / 1 |
+| `close` | 11 |
+| `value` / `volume` / `end` | 12 / 12 / 12 |
+
+In all 12 cases, the 30-year record has a later `end` and larger value/volume. This is consistent with different intraday capture times, but the actual producing runs, timezone/session rules and cause of divergence are not attested. Neither the later timestamp nor agreement elsewhere establishes a finalized daily bar. Preserve the variants independently; do not union these histories with an arbitrary last-write winner or claim that either file is a complete end-of-day snapshot. Strict intake needs source-backed session finality and a documented snapshot/revision selection policy. This new observation does not by itself prove a separate collector defect or activate UX01.
 
 ### Coverage and pagination
 
@@ -71,7 +85,7 @@ All four daily files contain only `open, close, high, low, value, volume, begin,
 
 In both code versions, `tech.calculator` uses `talib.RSI(df_ticker["close"], timeperiod=14)`, groups only by ticker, preserves the input row order within each ticker and joins results back by original index. It does not sort or enforce stable identity before the calculation. Its TA-Lib build/version and the actual successful indicator run are not attested. The candle path copies provider OHLC without a collector-side adjustment; the provider's exact historical price basis is unverified. No adjusted-price or stable-identity research-RSI claim is justified.
 
-`main.py` first runs notebook-to-script conversion, then collection, MOEX dividends, technical indicators, Dohod scraping and publishing. The five script/notebook pairs have equivalent function ASTs within each inspected version. Only `data_gathering` differs materially between local and main among these paired modules; this does not prove execution provenance.
+`main.py` first runs notebook-to-script conversion, then collection, MOEX dividends, technical indicators, Dohod scraping and publishing. The five script/notebook pairs have equivalent complete module ASTs, including top-level statements and functions, within each inspected version. Only `data_gathering` differs materially between local and main among these paired modules; this does not prove execution provenance.
 
 Writes use fixed names and overwrite CSV/XLSX. `tech.calculator` overwrites its input; `upload` replaces FTP names and clears/replaces the Google sheet. The 10-year daily CSV is explicitly the Google-sheet input, so it is operationally relevant. No versioned snapshot manifest or successful-stage attestation was supplied. CSV and XLSX need separate hashes; publication is not demonstrated to be atomic across files. No production entrypoint or upload was run during the audit.
 
@@ -83,7 +97,7 @@ The `all` pair contains 661 rows for 69 tickers, nominal amounts in RUB (638 row
 
 `dividends.div_loader` reads positions 2, 3 and 4 of `data['dividends']['data']` into `dt`, amount and currency, discarding the original column names and provider security/event identity. It queries securities by ISIN, iterates matching SECIDs, and writes the caller-supplied ticker/ISIN rather than retaining each contributing SECID. The code has no reconciliation, revision or cancellation preservation.
 
-**The exact `dt` semantics could not be re-established from the live primary interface in this audit.** On 2026-09-07, the [exact official endpoint used by the collector](https://iss.moex.com/iss/securities/SBER/dividends.json) returned HTTP 200 with only `description` and `boards`, no `dividends` block or column metadata (response SHA-256 `76586bf51bc2a6349c4e2b83d4817f96caf21ce6dbcdba9dba2cc01920150ffc`). No original provider response was retained with the export. Registry-close date is a hypothesis supported by cross-source matching below, not verified source semantics. In particular, `dt` must not be mapped to ex-date, payment date, eligibility date or announcement date. U04 needs original provider column metadata or other primary evidence before promoting a registry-date mapping. This primary-semantic evidence is unavailable; the local export itself is available.
+**The exact `dt` semantics could not be re-established from the live primary interface in this audit.** On 2026-09-07, the [exact official endpoint used by the collector](https://iss.moex.com/iss/securities/SBER/dividends.json) returned HTTP 200 with only `description` and `boards`, no `dividends` block or column metadata (response SHA-256 `76586bf51bc2a6349c4e2b83d4817f96caf21ce6dbcdba9dba2cc01920150ffc`). No original provider response was retained with the export. Registry-close date is a hypothesis supported by cross-source matching below, not verified source semantics. In particular, `dt` must not be mapped to ex-date, payment date, eligibility date or announcement date. U04 needs original provider column metadata or other primary evidence before promoting a registry-date mapping. Primary metadata status: `source unavailable` for the required dividend block/schema; the local export itself is available.
 
 The five-field format lacks announcement/payment/ex/eligibility dates, explicit realized/forecast status, revision/cancellation data, stable historical identity/board, source event IDs and per-row source references. No forecast marker was observed; this does not certify that every row is realized. Current-catalogue cross-check: 63 equity tickers, one DR and five unmapped tickers. No global ticker/date ordering; nine ticker groups are not date-ascending.
 
@@ -95,10 +109,10 @@ The `all_payments` pair contains 1,970 rows for 115 tickers. Its seven columns i
 - 210 announcement dates and accounting years are missing. All 208 forecast rows lack announcement dates, and two nonforecast rows also lack them. Retrieval time cannot supply a missing market knowledge date.
 - Unannotated registry dates span 2000-04-24 to 2024-10-17. Including separately parsed forecast dates extends the maximum to 2025-07-31. Announcement dates span 2000-03-31 to 2024-07-15. The filename `all_payments` does not supply a payment-date field.
 - 200 nonforecast rows have announcement dates after their registry dates. They require historical-semantic investigation before feature use; this ordering check alone does not establish that the economic event is erroneous.
-- There are 47 repeated `(ticker, registry-text)` groups, 94 rows involved and 47 excess rows. Forty-six groups have different nominal amounts. One group repeats `(ticker, registry-text, amount)` but differs in other fields; there are zero exact duplicate payload rows. Same-date events cannot automatically be collapsed.
+- There are 47 repeated `(ticker, registry-text)` groups, 94 rows involved and 47 excess rows. Forty-six groups have different nominal amounts. One group repeats `(ticker, registry-text, amount)` but differs in other fields; there are zero exact duplicate payload rows. A separate check using parsed registry dates, with forecast annotations removed only for diagnostics, gives the same 47 groups / 94 rows / 47 excess rows and 46 differing-amount groups. No parsed key mixes forecast and unannotated rows. Same-date events cannot automatically be collapsed.
 - Amounts are finite and nonnegative, including 73 zero amounts. Currency is absent for every row; it must not be assumed to be RUB.
 - All 1,970 rows have a `www.dohod.ru` source page URL. Explicit source event IDs, stable identity/ISIN, cancellation/revision status, ex/eligibility/payment dates and complete coverage attestations are absent.
-- Current-catalogue cross-check: 108 equity tickers, one DR and six unmapped tickers. Neither global ticker nor date order is ascending; 107 ticker groups are not date-ascending. Sorting for comparison is not a source correction.
+- Current-catalogue cross-check: 108 equity tickers, one DR and six unmapped tickers. Neither global ticker nor date order is ascending. Among unannotated-date subsequences, 107 ticker groups are not date-ascending; including the diagnostically parsed forecast dates, **all 115** ticker groups are not date-ascending, in both formats. Sorting for comparison is not a source correction.
 
 ### Cross-source diagnostic
 
@@ -119,11 +133,11 @@ Matching only ticker and parsed date, treating MOEX `dt` as a **provisional** re
 
 | Hypothesis | Main code | Local code / paired notebook | Actual-file conclusion |
 |---|---|---|---|
-| Equity/DR selection is overwritten by the full catalogue | Confirmed in `moex_tickerlists`: full-catalogue assignment follows the filtered assignment | Rejected for this version: both overwriting assignments are commented out; full catalogue is passed separately for type lookup | Daily files match 262 current equity tickers plus one DR; no observed other types or unmapped tickers. This does not prove the producing revision or a historical stock-only universe. |
-| `range(1, years)` causes an off-by-one history label | The helper `moex` requests `years-1` 365-day slices | Same helper behavior | Confirmed for the helper, **not established as the cause of these exports**: current full-reload/update entrypoints use `moex_query` directly, with `years*365` on full reload. The demonstrated export problem is truncated coverage/no pagination. |
-| RSI14 is TA-Lib RSI(14) on raw close grouped only by ticker | Confirmed call, period, input column and grouping; no internal sort | Same behavior | No supplied RSI exists in any daily candidate. The collector adds no price adjustment, but exact provider basis, TA-Lib version and successful calculation provenance are unverified. The entire raw-basis/provided-RSI claim is not proven. |
-| MOEX dividend `dt` is registry-close date | Positional field 2 is copied to `dt`, original metadata discarded | Same behavior | **Unverified from primary evidence**: current endpoint has no dividend block; original response schema absent. Cross-source matches support a provisional hypothesis only. Never map to ex/payment/knowledge dates. |
-| Dohod exports include forecasts and missing announcement dates | Scraped tables are saved without an explicit forecast-removal or announcement-completeness gate | Same behavior | Confirmed: 208 forecast rows, 210 missing announcement dates, including two nonforecast rows. |
+| Equity/DR selection is overwritten by the full catalogue | **Confirmed** in `moex_tickerlists`: full-catalogue assignment follows the filtered assignment | **Rejected** for this version: both overwriting assignments are commented out; full catalogue is passed separately for type lookup | **Insufficient evidence** to infer the producing filter/version. Daily files match 262 current equity tickers plus one DR, with no observed other types or unmapped tickers. This does not establish a historical stock-only universe. |
+| `range(1, years)` causes an off-by-one history label | **Confirmed for helper `moex`**: it requests `years-1` 365-day slices. **Rejected for the current full-reload path**, which uses `moex_query` with `years*365` directly | **Same verdicts**: helper confirmed; current full-reload path rejected | **Insufficient evidence** that this dormant helper caused these exports. The demonstrated export problem is truncated coverage/no pagination; a filename alone cannot establish a producing path. |
+| RSI14 is TA-Lib RSI(14) on raw close grouped only by ticker | **Confirmed** call, period, input column and grouping; no internal sort or collector adjustment. **Insufficient evidence** for the provider's exact raw price basis | **Same verdicts**: calculation structure confirmed; provider price basis unverified | **Insufficient evidence** for calculation/provenance: no supplied RSI exists in any daily candidate. Warm-up, internal gaps and successful execution cannot be observed; TA-Lib version is unattested. |
+| MOEX dividend `dt` is registry-close date | **Insufficient evidence**: positional field 2 is copied to `dt`, original metadata discarded | **Insufficient evidence**: same positional mapping | **Insufficient primary evidence**: current endpoint has no dividend block; original response schema absent. Cross-source matches support a provisional hypothesis only. Never map to ex/payment/knowledge dates. |
+| Dohod exports include forecasts and missing announcement dates | **Confirmed permissive behavior**: scraped tables are saved without a forecast-removal or announcement-completeness gate; code alone cannot prove any particular row exists | **Confirmed permissive behavior**, with the same limitation | **Confirmed**: 208 forecast rows, 210 missing announcement dates, including two nonforecast rows. |
 
 Main evidence locations are `data_gathering.py` (`moex_tickerlists`, `moex_query`, `moex`, `full_reload`, `data_update`, `build_tickers_dates`), `tech.py` (`calculator`), `dividends.py` (`div_loader`, `main`), `dohodru_data.py` (`get_page_info`, `main`), and `upload.py` (`gdoc_upload`, `ftp_upload`). Use the pinned base revision above; local counterparts are identified by the byte hashes below. Do not read a changed future main as the audited implementation.
 
@@ -132,7 +146,7 @@ Main evidence locations are `data_gathering.py` (`moex_tickerlists`, `moex_query
 | Capability | Decision for the audited files | Evidence required to reach GO |
 |---|---|---|
 | Mechanics import into canonical `daily_features` using supplied RSI | **NO-GO** | An enriched producer file with supplied RSI/provenance and explicitly bounded adequate coverage, deterministic identity compatibility at the mechanics boundary, valid daily intervals/prices and resolved source-key conflicts. Preserving raw bytes separately is GO for archival evidence only. No silent RSI calculation or bad-row dropping. |
-| Strict daily research import | **NO-GO** | Complete required history plus warm-up/label tails; stable identity and board history; verified adjusted OHLC and RSI basis/grouping provenance; validated uniqueness, data quality and source coverage. R02 freezes the RSI contract; S01/S02/S06 reconcile intake and identity. |
+| Strict daily research import | **NO-GO** | Complete required history plus warm-up/label tails; stable identity and board history; verified adjusted OHLC and RSI basis/grouping provenance; validated uniqueness, data quality, source coverage and completed-session status, with a source-backed policy for divergent snapshots. R02 freezes the RSI contract; S01/S02/S06 reconcile intake and identity. |
 | Strict dividend import | **NO-GO** | Verified date semantics, stable event/instrument identity, currency, realized/forecast and revision policy, reconciled conflicts and coverage. Feature knowledge dates, label/share-basis requirements and portfolio payment/eligibility dates need separate capability evidence. R01/U04/S06 supply the contracts and evidence. |
 | Point-in-time universe | **NO-GO** | Source-backed historical classifications, listings/delistings, board/ticker/ISIN transitions and effective intervals; complete inactive coverage or explicit coverage limits. Current catalogues and blank stopped dates are insufficient. S02 owns reconciliation. |
 | Adjusted-price research | **NO-GO** | Complete verified `adjusted_open/high/low/close` and source factors/actions on the `split_and_corporate_action_adjusted_ex_cash_dividends` basis, with cash dividends excluded, plus stable-identity adjusted-price RSI provenance. No raw-equals-adjusted shortcut. U03 depends on R02. |
@@ -145,7 +159,7 @@ Decisions apply to the inspected full-history candidates. A Study 001 universe/w
 2. Establish a successful enriched-export handoff with preserved legacy `RSI14` and calculation provenance. The missing column does not establish whether indicator execution failed, was skipped or was later overwritten; investigate that production stage before selecting a repair. U01 does not run it.
 3. **U02 is recommended**, for versioned file identity, actual per-ticker coverage, calculation settings and completed-stage evidence. It is not a prerequisite for consumer byte hashing or S01.
 4. **U03 is required by the observed adjusted-price/RSI gaps**, after R02 freezes its contract and a verified adjustment source is available. **U04 is required by dividend gaps**, after R01. Primary MOEX date metadata is an explicit additional U04 blocker. These are dependency recommendations; neither lane is activated here.
-5. Resolve stale format variants and source data anomalies through producer evidence. Do not round-trip CSV through XLSX, silently discard the conflicting ABIO record, convert missing currency to RUB, or replace future dates with guessed historical dates.
+5. Resolve stale format variants and source data anomalies through producer evidence, including the 12 divergent daily keys and missing session-finality evidence. Do not round-trip CSV through XLSX, silently discard the conflicting ABIO record, choose a divergent daily row solely by its later `end`, convert missing currency to RUB, or replace future dates with guessed historical dates.
 
 ### Minimal S01 consumer behavior
 
@@ -153,6 +167,7 @@ Decisions apply to the inspected full-history candidates. A Study 001 universe/w
 - Read local snapshots only; use neither upstream Python imports nor a fresh collector. Read identifiers as text at the mapping boundary, record serialized index columns as source artifacts and never treat them as instrument identity.
 - Use explicit date formats and normalize `RSI14 -> rsi14` only when supplied. Missing RSI is a declared capability blocker, not an instruction to calculate it. Preserve original values and forecasting annotations in evidence.
 - Validate uniqueness on parsed ticker/session keys, valid daily intervals and OHLC, plus explicit coverage. Reject ambiguous/non-equity mappings and unresolved conflicts at canonical intake; a current equity/DR cross-check cannot authorize historical backfill or turn a DR into an ordinary share.
+- Check overlapping daily inputs before any combination. File hashes bind different snapshots, not a reconciliation rule; preserve disagreements and require documented selection and completed-session evidence before strict daily promotion.
 - Keep MOEX and Dohod source contributions distinct. Preserve missing values, candidate repeated events, source URLs, forecasts and conflicts; do not merge them into canonical realized events in S01.
 - Treat full/stocks reference variants and singular/plural ticker-date files as different source contracts. Do not invent board IDs from `ISS_BOARDS` text or assign current instrument metadata backward in time.
 - Report blockers as data issue, upstream export issue, adapter requirement or expected limitation. None of this audit's source problems authorizes a model/pipeline workaround.
@@ -201,7 +216,7 @@ Rows: 127149; columns: 9; exact duplicate excess (all columns / excluding export
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
 | `open` | float64 | 0 |
 | `close` | float64 | 0 |
@@ -230,7 +245,7 @@ Rows: 127149; columns: 9; exact duplicate excess (all columns / excluding export
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
 | `open` | float64 | 0 |
 | `close` | float64 | 0 |
@@ -259,7 +274,7 @@ Rows: 127100; columns: 9; exact duplicate excess (all columns / excluding export
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
 | `open` | float64 | 0 |
 | `close` | float64 | 0 |
@@ -288,7 +303,7 @@ Rows: 127100; columns: 9; exact duplicate excess (all columns / excluding export
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
 | `open` | float64 | 0 |
 | `close` | float64 | 0 |
@@ -317,7 +332,7 @@ Rows: 661; columns: 5; exact duplicate excess (all columns / excluding export in
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
 | `ISIN` | object | 0 |
 | `TRADE_CODE` | object | 0 |
@@ -341,7 +356,7 @@ Rows: 661; columns: 5; exact duplicate excess (all columns / excluding export in
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
 | `ISIN` | object | 0 |
 | `TRADE_CODE` | object | 0 |
@@ -365,9 +380,9 @@ Rows: 1970; columns: 7; exact duplicate excess (all columns / excluding export i
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `Дата объявления дивиденда` | object | 210 |
 | `Дата закрытия реестра` | object | 0 |
 | `Год для учета дивиденда` | float64 | 210 |
@@ -392,9 +407,9 @@ Rows: 1970; columns: 7; exact duplicate excess (all columns / excluding export i
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `Дата объявления дивиденда` | object | 210 |
 | `Дата закрытия реестра` | object | 0 |
 | `Год для учета дивиденда` | float64 | 210 |
@@ -419,9 +434,9 @@ Rows: 263; columns: 48; exact duplicate excess (all columns / excluding export i
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `DATESTAMP` | object | 0 |
 | `INSTRUMENT_ID` | int64 | 0 |
 | `LIST_SECTION` | object | 0 |
@@ -476,6 +491,7 @@ Mutation/versioning: Inspected writer overwrites this fixed filename; no version
 | `REGISTRY_DATE` | 1992-11-19 00:00:00 | 2025-09-15 00:00:00 | 2 | 0 |
 | `DECISION_DATE` | 2004-11-26 00:00:00 | 2026-06-10 00:00:00 | 0 | 0 |
 | `INCLUDE_DATE` | 2014-06-09 00:00:00 | 2026-06-24 00:00:00 | 0 | 0 |
+| `OBLIGATION_PROGRAM_DATE` | unavailable | unavailable | 263 | 0 |
 
 Key check: `TRADE_CODE`; missing-key rows 0; repeated groups 0; involved rows 0; excess rows 0.
 
@@ -489,9 +505,9 @@ Rows: 262; columns: 47; exact duplicate excess (all columns / excluding export i
 
 Mutation/versioning: Current stock XLSX write is disabled; this retained older snapshot has no versioned manifest.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `DATESTAMP` | object | 0 |
 | `INSTRUMENT_ID` | int64 | 0 |
 | `LIST_SECTION` | object | 0 |
@@ -545,6 +561,7 @@ Mutation/versioning: Current stock XLSX write is disabled; this retained older s
 | `REGISTRY_DATE` | 1992-11-19 00:00:00 | 2024-05-27 00:00:00 | 12 | 0 |
 | `DECISION_DATE` | 2004-11-26 00:00:00 | 2024-07-22 00:00:00 | 0 | 0 |
 | `INCLUDE_DATE` | 2014-06-09 00:00:00 | 2024-07-30 00:00:00 | 0 | 0 |
+| `OBLIGATION_PROGRAM_DATE` | unavailable | unavailable | 262 | 0 |
 
 Key check: `TRADE_CODE`; missing-key rows 1; repeated groups 0; involved rows 0; excess rows 0.
 
@@ -558,9 +575,9 @@ Rows: 4270; columns: 48; exact duplicate excess (all columns / excluding export 
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `DATESTAMP` | object | 0 |
 | `INSTRUMENT_ID` | int64 | 0 |
 | `LIST_SECTION` | object | 0 |
@@ -615,6 +632,7 @@ Mutation/versioning: Inspected writer overwrites this fixed filename; no version
 | `REGISTRY_DATE` | 1992-11-19 00:00:00 | 2026-06-29 00:00:00 | 35 | 0 |
 | `DECISION_DATE` | 2004-11-26 00:00:00 | 2026-06-29 00:00:00 | 0 | 0 |
 | `INCLUDE_DATE` | 2014-06-09 00:00:00 | 2026-06-29 00:00:00 | 0 | 0 |
+| `OBLIGATION_PROGRAM_DATE` | 2015-04-09 00:00:00 | 2026-06-24 00:00:00 | 1438 | 0 |
 
 Key check: `TRADE_CODE`; missing-key rows 417; repeated groups 0; involved rows 0; excess rows 0.
 
@@ -628,9 +646,9 @@ Rows: 4270; columns: 48; exact duplicate excess (all columns / excluding export 
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `DATESTAMP` | object | 0 |
 | `INSTRUMENT_ID` | int64 | 0 |
 | `LIST_SECTION` | object | 0 |
@@ -685,6 +703,7 @@ Mutation/versioning: Inspected writer overwrites this fixed filename; no version
 | `REGISTRY_DATE` | 1992-11-19 00:00:00 | 2026-06-29 00:00:00 | 35 | 0 |
 | `DECISION_DATE` | 2004-11-26 00:00:00 | 2026-06-29 00:00:00 | 0 | 0 |
 | `INCLUDE_DATE` | 2014-06-09 00:00:00 | 2026-06-29 00:00:00 | 0 | 0 |
+| `OBLIGATION_PROGRAM_DATE` | 2015-04-09 00:00:00 | 2026-06-24 00:00:00 | 1438 | 0 |
 
 Key check: `TRADE_CODE`; missing-key rows 417; repeated groups 0; involved rows 0; excess rows 0.
 
@@ -698,9 +717,9 @@ Rows: 263; columns: 4; exact duplicate excess (all columns / excluding export in
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `TRADE_CODE` | object | 0 |
 | `issue_date` | object | 0 |
 | `stopped_date` | float64 | 263 |
@@ -722,9 +741,9 @@ Rows: 263; columns: 4; exact duplicate excess (all columns / excluding export in
 
 Mutation/versioning: Inspected writer overwrites this fixed filename; no versioned manifest supplied.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `TRADE_CODE` | object | 0 |
 | `issue_date` | datetime64[ns] | 0 |
 | `stopped_date` | float64 | 263 |
@@ -746,9 +765,9 @@ Rows: 3101; columns: 4; exact duplicate excess (all columns / excluding export i
 
 Mutation/versioning: Producer/versioning behavior not identified in the inspected current entrypoints; distinct retained legacy file.
 
-| Column (source order) | Observed dtype | Missing |
+| Column (source order; parser label) | Observed dtype | Missing |
 |---|---|---|
-| `Unnamed: 0` | int64 | 0 |
+| Blank source header → `Unnamed: 0` | int64 | 0 |
 | `ticker` | object | 0 |
 | `date_from` | object | 116 |
 | `date_till` | object | 116 |
@@ -765,7 +784,7 @@ Key check: `ticker`; missing-key rows 0; repeated groups 0; involved rows 0; exc
 
 ## Inspected code identities
 
-These hashes describe inspected code, not a verified producing commit. The local source tree remained dirty and untouched. `main.py` notebook conversion makes notebook identity material. Function AST equivalence was checked without executing code for all five `.py`/`.ipynb` pairs in main and local versions; all pairs matched within their respective version.
+These hashes describe inspected code, not a verified producing commit. The local source tree remained dirty and untouched. `main.py` notebook conversion makes notebook identity material. Complete module AST equivalence, including top-level statements, was checked without executing code for all five `.py`/`.ipynb` pairs in main and local versions; all pairs matched within their respective version.
 
 | Code source | Byte SHA-256 | Observation |
 |---|---|---|
@@ -779,24 +798,27 @@ These hashes describe inspected code, not a verified producing commit. The local
 | `upload.py` (main) | `95945e89d8bc766f934132270a8ee5df75d5382cad86ff44771eb352d5e5acb1` | same local bytes |
 | `settings/datasets_config.json` (main) | `96450fd87fed808d5ea0708430bb947c15561efdcc23d02f7ab4ece7e5eea3b7` | same local bytes |
 | `datasets/README.md` (main) | `bee0bb7037b280e39f58b928f091fd68b8dc22068aeb6ad9981b7b18dac20144` | same local bytes |
-| `data_gathering.ipynb` (main) | `2918db7c6039d48126dd45f3b818c070d0103bb07b2943298238a8ec88df403b` | function AST matches paired script |
-| `data_gathering.ipynb` (local) | `412869096e48be99f4aebf6c72625d93875954b4075c806fff1db6513d0f6a2c` | function AST matches paired script |
-| `tech.ipynb` (main) | `ed0ab182b1b21e0a72a12d75780b8d21ccba6a716fa82daf833295458de2457a` | function AST matches paired script |
-| `tech.ipynb` (local) | `ed0ab182b1b21e0a72a12d75780b8d21ccba6a716fa82daf833295458de2457a` | function AST matches paired script |
-| `dividends.ipynb` (main) | `fe887853568ef1c31d36e5c43e317c7c8255adb531fcc0c55600a885f72e4bd5` | function AST matches paired script |
-| `dividends.ipynb` (local) | `fe887853568ef1c31d36e5c43e317c7c8255adb531fcc0c55600a885f72e4bd5` | function AST matches paired script |
-| `dohodru_data.ipynb` (main) | `0344e364e69d6ab0bf6b579b81d8a45a3bd9f4a5b03599725bc75b3d0c4be9e0` | function AST matches paired script |
-| `dohodru_data.ipynb` (local) | `0344e364e69d6ab0bf6b579b81d8a45a3bd9f4a5b03599725bc75b3d0c4be9e0` | function AST matches paired script |
-| `upload.ipynb` (main) | `95b150039cd365dd222ea893b16f629c6ba2b0e3b4367b09c9e3b99396a6aa76` | function AST matches paired script |
-| `upload.ipynb` (local) | `95b150039cd365dd222ea893b16f629c6ba2b0e3b4367b09c9e3b99396a6aa76` | function AST matches paired script |
+| `data_gathering.ipynb` (main) | `2918db7c6039d48126dd45f3b818c070d0103bb07b2943298238a8ec88df403b` | complete module AST matches paired script |
+| `data_gathering.ipynb` (local) | `412869096e48be99f4aebf6c72625d93875954b4075c806fff1db6513d0f6a2c` | complete module AST matches paired script |
+| `tech.ipynb` (main) | `ed0ab182b1b21e0a72a12d75780b8d21ccba6a716fa82daf833295458de2457a` | complete module AST matches paired script |
+| `tech.ipynb` (local) | `ed0ab182b1b21e0a72a12d75780b8d21ccba6a716fa82daf833295458de2457a` | complete module AST matches paired script |
+| `dividends.ipynb` (main) | `fe887853568ef1c31d36e5c43e317c7c8255adb531fcc0c55600a885f72e4bd5` | complete module AST matches paired script |
+| `dividends.ipynb` (local) | `fe887853568ef1c31d36e5c43e317c7c8255adb531fcc0c55600a885f72e4bd5` | complete module AST matches paired script |
+| `dohodru_data.ipynb` (main) | `0344e364e69d6ab0bf6b579b81d8a45a3bd9f4a5b03599725bc75b3d0c4be9e0` | complete module AST matches paired script |
+| `dohodru_data.ipynb` (local) | `0344e364e69d6ab0bf6b579b81d8a45a3bd9f4a5b03599725bc75b3d0c4be9e0` | complete module AST matches paired script |
+| `upload.ipynb` (main) | `95b150039cd365dd222ea893b16f629c6ba2b0e3b4367b09c9e3b99396a6aa76` | complete module AST matches paired script |
+| `upload.ipynb` (local) | `95b150039cd365dd222ea893b16f629c6ba2b0e3b4367b09c9e3b99396a6aa76` | complete module AST matches paired script |
 
 ## Verification and remaining limits
 
 Revalidated on 2026-09-29: all 15 local export hashes and the inspected local-code hashes still match the 2026-09-07 evidence. Both retained primary-response hashes were independently recomputed; the dividend endpoint hash transcription was corrected. Those HTTP observations remain dated 2026-09-07 and were not refreshed. Capability decisions are unchanged.
 
+Strict self-review on 2026-09-29 added the previously omitted cross-window daily comparison, literal blank-header distinction and `OBLIGATION_PROGRAM_DATE` date ranges, and corrected the scope of Dohod ordering counts (107 without annotated dates; 115 including them). It also verified parsed dividend keys and complete script/notebook module ASTs, and made hypothesis verdicts explicit for each evidence layer. These corrections strengthen the existing NO-GO decisions; they do not repair or regenerate source data.
+
 - All 15 candidates parsed successfully, with independently checked row totals, key duplicates and selected anomalies. All source-byte hashes matched after reads and at final verification.
 - Schema/date tables distinguish missing values from unparseable nonempty text; all 208 Dohod non-date strings are explained by preserved forecast annotations. Reference Russian datetimes are accepted explicitly, not incorrectly classified as malformed.
 - Daily cap counts, ABIO conflicting-key counts, zero-price rows, forecast counts and announcement-order checks were cross-checked independently. Pair comparisons preserve exact vs tolerant equality and report the stale stock XLSX separately.
+- Cross-window mismatches were checked independently using standard-library CSV, calendar-date keys and decimal arithmetic, as well as separately in XLSX. Literal headers, every-column blank counts and row widths/totals were checked without pandas NA-token conversion for all 15 files. Parsed dividend-key counts agree with raw-text counts; complete module ASTs match in all ten version/pair comparisons.
 - Changed-path allowlist is only `docs/research_export_audit.md`. Whitespace and public-path/secret/data-extract checks passed on the final diff. Audit tools, raw provider checks, source exports and detailed private evidence remain outside the PR.
 - Expert checklist reviewed for applicability: no runtime, model, splits, portfolio or trading behavior changed. Existing mechanics validation is not new research evidence. No product tests were added for this documentation change; source analysis and document checks are the relevant verification.
 - No supplier run manifest, original MOEX dividend response schema, complete historical universe, adjusted price basis or complete event timing was supplied. Hypotheses with absent evidence remain unverified. The primary endpoint result is a dated observation, not a claim about all future availability.
@@ -808,5 +830,5 @@ Revalidated on 2026-09-29: all 15 local export hashes and the inspected local-co
 |---|---|---|
 | available and usable as-is | Exact source bytes and SHA-256; supplied nominal amounts and currency where present; Dohod `page_url`; original indicator-free candle values as source evidence | Preserve unchanged with provenance. Usable as source evidence does not imply canonical or research eligibility. |
 | available but requires mapping | `begin/end` and explicit calendar formats; `ticker`/`TRADE_CODE`; reference `INSTRUMENT_ID`/ISIN and `SUPERTYPE`; Dohod announcement/registry text and forecast annotations; serialized index | Deterministic alias/type mapping with original values retained. Current identity/classification only; no as-of or board inference. MOEX `dt` stays unmapped until its source semantics are verified. |
-| available but requires upstream enrichment | Truncated candle history; reference board-description/listing-history text; incomplete announcement dates and currency contributions; differing same-date dividend evidence; mutable file outputs | Supply full coverage, structured effective identity/board evidence, reconciled event semantics and versioned calculation/export provenance. Resolve source anomalies without consumer fabrication. |
-| unavailable / blocker | Supplied `RSI14` in all daily candidates; verified research RSI/method/basis; adjusted OHLC/factors and exclusion of cash dividends; row-level stable historical identity/board; verified MOEX `dt` metadata; canonical ex/eligibility/payment dates; event revision/cancellation IDs; complete inactive universe and zero-event/period attestations | NO-GO for the corresponding canonical/strict capabilities until evidence is supplied and independently validated. No silent RSI recalculation, raw-price substitution, guessed dates or research-grade claim. |
+| available but requires upstream enrichment | Truncated candle history; divergent shared daily keys; reference board-description/listing-history text; incomplete announcement dates and currency contributions; differing same-date dividend evidence; mutable file outputs | Supply full coverage, structured effective identity/board evidence, reconciled event semantics and versioned calculation/export provenance. Resolve source anomalies without consumer fabrication or arbitrary snapshot winners. |
+| unavailable / blocker | Supplied `RSI14` in all daily candidates; verified research RSI/method/basis; adjusted OHLC/factors and exclusion of cash dividends; completed-session attestation; row-level stable historical identity/board; verified MOEX `dt` metadata; canonical ex/eligibility/payment dates; event revision/cancellation IDs; complete inactive universe and zero-event/period attestations | NO-GO for the corresponding canonical/strict capabilities until evidence is supplied and independently validated. No silent RSI recalculation, raw-price substitution, guessed dates or research-grade claim. |
