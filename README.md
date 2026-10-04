@@ -3,6 +3,8 @@
 <h1 align="center">Выгрузка данных торгов акциями с Мосбиржи (MOEX)</h1>
 Используется официальное API https://iss.moex.com/iss/reference/.
 
+[Data contracts](docs/dataset_contracts.md) · [Coordination and acceptance](docs/coordination.md)
+
 <h3 align="center">Данные приготовлены в срезах:</h3>
 
 1) Выгрузка 10 лет с интервалом (свечкой) 1 день
