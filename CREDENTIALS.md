@@ -47,6 +47,13 @@ GitHub CLI уже авторизован как `foykes`, права чтени�
 
 ## 2. Google Sheets: заменить файл целиком
 
+Бюджет проекта — **0**. Не подключайте платёжный аккаунт, банковскую карту,
+free trial или платные услуги. Для этой настройки используйте проект без billing.
+Обычное использование [Sheets API](https://developers.google.com/workspace/sheets/api/limits)
+и [Drive API](https://developers.google.com/workspace/drive/api/guides/limits)
+доступно без дополнительной платы в пределах квот. Google сообщает о планируемой
+плате за превышение квот; не запрашивайте платные увеличения лимитов.
+
 Пароль от вашего Google-аккаунта не нужен. Код вызывает
 `pygsheets.authorize(service_file=...)` и ожидает JSON-ключ сервисного аккаунта.
 Подключение Google Drive в приложении само по себе не заменяет этот файл для Python.

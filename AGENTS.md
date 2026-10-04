@@ -8,6 +8,8 @@ Read `DEVELOPMENT.md` for checkout setup, Git commands, notebook pairing and saf
 Read `CREDENTIALS.md` for the local credential filenames and publication setup.
 Preserve filled files in the ignored `secrets/` directory. When checking credentials,
 report only presence, format and missing field names; never print passwords or keys.
+The project budget is zero. Do not enable Cloud Billing, trials, paid services or
+paid quota increases. Google Sheets/Drive setup must use a project without billing.
 At the start of each task, check `git status --short --branch` and `git remote -v`.
 The upstream repository is `foykes/moex-dataset`; its default branch is `main`.
 Use `codex/<topic>` branches for changes. Preserve existing work when switching branches.
