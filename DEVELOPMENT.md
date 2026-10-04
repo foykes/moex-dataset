@@ -3,6 +3,8 @@
 Repository: [foykes/moex-dataset](https://github.com/foykes/moex-dataset). Default branch: `main`.
 Run commands from the repository root. Examples below use PowerShell.
 
+Publication credentials and local fill-in files are described in [CREDENTIALS.md](CREDENTIALS.md).
+
 ## Prepared checkout
 
 This checkout contains the full Git history, tags and all remote branches. `main`

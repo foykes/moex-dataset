@@ -5,6 +5,9 @@ Project instructions for Codex and other AI coding agents working on `moex-datas
 ## Local development workflow
 
 Read `DEVELOPMENT.md` for checkout setup, Git commands, notebook pairing and safe validation.
+Read `CREDENTIALS.md` for the local credential filenames and publication setup.
+Preserve filled files in the ignored `secrets/` directory. When checking credentials,
+report only presence, format and missing field names; never print passwords or keys.
 At the start of each task, check `git status --short --branch` and `git remote -v`.
 The upstream repository is `foykes/moex-dataset`; its default branch is `main`.
 Use `codex/<topic>` branches for changes. Preserve existing work when switching branches.
