@@ -136,7 +136,7 @@ F0-01 is ready for independent review when:
 - ID correlation, canonical schema/order, raw identity/provenance and quarantine reasons are described. Collection/validation/export/publication and preflight/export/readback remain distinct.
 - Content-preservation verification does not upgrade previous data-quality verification. Unconfirmed required capabilities never receive PASS.
 - Capacity fields extend the general event envelope; privacy covers URL fields, nested fields, exceptions/traceback and bundles. Startup failure requires no ready artifact.
-- Inline examples cover all 11 approved families below, including two run/snapshot identities, separate CSV/XLSX artifacts and UNVERIFIED previous with verified preserved bytes.
+- Inline examples cover all 11 approved families below, including two run/snapshot identities, separate CSV/XLSX artifacts and UNVERIFIED previous with verified preserved canonical content using declared same-basis normalization (not serialized-byte equality).
 - Relative Markdown links, tables, code fences and rendered readability are checked; inline JSON parses and satisfies required fields/types/enums, conditional-null rules, coherent IDs and state invariants.
 - The exact allowlist, absence of private values and `git diff --check` are verified. Actual commands, exit codes and results are recorded separately from proposed checks.
 - No runtime, notebook, configuration, dataset, dependency, CI, tracked fixture, helper or secret change is included. The quarantine decision remains B2's open decision.
