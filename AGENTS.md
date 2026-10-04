@@ -2,6 +2,20 @@
 
 Project instructions for Codex and other AI coding agents working on `moex-dataset`.
 
+## Local development workflow
+
+Read `DEVELOPMENT.md` for checkout setup, Git commands, notebook pairing and safe validation.
+At the start of each task, check `git status --short --branch` and `git remote -v`.
+The upstream repository is `foykes/moex-dataset`; its default branch is `main`.
+Use `codex/<topic>` branches for changes. Preserve existing work when switching branches.
+When multiple chats work concurrently, give each chat a separate Git worktree and branch.
+
+The existing `main_tests.py` calls the live MOEX API, including at module import time.
+Do not treat it or `tests.py` as an offline test suite. Do not import `main.py` for a
+smoke check: its top-level notebook conversion can overwrite Python files.
+Check both files of each `.py`/`.ipynb` pair before syncing them; do not let a stale
+notebook overwrite a code fix.
+
 ## Project context
 
 This project builds datasets with Moscow Exchange trading data through the MOEX ISS API.
