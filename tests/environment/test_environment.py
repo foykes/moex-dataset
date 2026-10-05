@@ -10,7 +10,7 @@ test_directory = str(Path(__file__).resolve().parent)
 if test_directory not in sys.path:
     sys.path.insert(0, test_directory)
 
-from _safety import OfflineViolation, install_guards, isolated_path, validate_pytest_basetemp, validate_pytest_cache
+from _safety import OfflineViolation, install_guards, isolated_path, isolated_file, validate_output_file, write_isolated_text, validate_pytest_basetemp, validate_pytest_cache
 
 install_guards()
 
@@ -127,6 +127,8 @@ def check_file_backends(output_root):
     import pandas as pd
 
     output_root = isolated_path(output_root)
+    csv_path = validate_output_file(output_root / "fixture.csv")
+    xlsx_path = validate_output_file(output_root / "fixture.xlsx")
     output_root.mkdir(parents=True, exist_ok=True)
     expected = pd.DataFrame({
         "open": [1.25, 2.5, 3.75], "close": [1.5, 2.75, 4.0],
@@ -138,13 +140,15 @@ def check_file_backends(output_root):
     })
     columns = ["open", "close", "high", "low", "value", "volume", "begin", "end", "ticker", "RSI14"]
     assert expected.columns.tolist() == columns, "The approved ten-column projection changed"
-    csv_path = output_root / "fixture.csv"
-    xlsx_path = output_root / "fixture.xlsx"
     # Служебный индекс текущих файлов сохраняется; он не часть десяти колонок.
-    expected.to_csv(csv_path, encoding="utf-8")
-    with pd.ExcelWriter(xlsx_path) as writer:
-        assert writer.engine == "openpyxl", "Default XLSX writer must be openpyxl"
-        expected.to_excel(writer)
+    with isolated_file(csv_path) as stream:
+        expected.to_csv(stream, encoding="utf-8")
+    with isolated_file(xlsx_path) as stream:
+        with pd.ExcelWriter(stream) as writer:
+            assert writer.engine == "openpyxl", "Default XLSX writer must be openpyxl"
+            expected.to_excel(writer)
+    validate_output_file(csv_path)
+    validate_output_file(xlsx_path)
     physical_csv = pd.read_csv(csv_path)
     actual_csv = pd.read_csv(csv_path, index_col=0)
     with pd.ExcelFile(xlsx_path) as reader:
@@ -333,6 +337,287 @@ def test_pytest_cache_protection():
             raise AssertionError("Pytest could write cache into a protected directory")
 
 
+def _disposable_filesystem(tmp_path, monkeypatch):
+    replica = tmp_path / "replica"
+    output = replica / ".f1" / "output"
+    output.mkdir(parents=True)
+    sentinel = replica / "sentinel.bin"
+    sentinel.write_bytes(b"F1 external disposable sentinel: keep these bytes")
+    # Меняем только корень helper в disposable replica, не настоящий .f1.
+    monkeypatch.setattr(sys.modules["_safety"], "__file__", str(replica / "tests" / "environment" / "_safety.py"))
+    return replica, output, sentinel
+
+
+def _make_test_link(link, target, directory=False, hardlink=False):
+    import pytest
+
+    try:
+        if hardlink:
+            os.link(target, link)
+        else:
+            os.symlink(target, link, target_is_directory=directory)
+    except OSError as error:
+        # Недоступная возможность не становится Windows PASS.
+        if getattr(error, "winerror", None) in {5, 1314} or error.errno in {1, 13}:
+            pytest.skip("Filesystem link capability NOT AVAILABLE: " + str(getattr(error, "winerror", error.errno)))
+        raise
+
+
+def _assert_sentinel_unchanged(sentinel, before, digest):
+    assert sentinel.read_bytes() == before, "External sentinel bytes changed"
+    after_digest = hashlib.sha256(sentinel.read_bytes()).hexdigest()
+    assert after_digest == digest, "External sentinel SHA-256 changed"
+    return {"before_sha256": digest, "after_sha256": after_digest, "bytes": len(before), "filesystem": "real Windows" if os.name == "nt" else "real local filesystem"}
+
+
+def _check_backend_link(tmp_path, monkeypatch, name, hardlink=False):
+    import pytest
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    link = output / name
+    _make_test_link(link, sentinel, hardlink=hardlink)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    entry = link.lstat()
+    with pytest.raises(ValueError):
+        check_file_backends(output)
+    preservation = _assert_sentinel_unchanged(sentinel, before, digest)
+    assert os.path.samefile(link, sentinel), "Unsafe link was removed or replaced"
+    assert link.lstat().st_ino == entry.st_ino, "Unsafe link entry changed"
+    assert not (output / ("fixture.xlsx" if name == "fixture.csv" else "fixture.csv")).exists(), "A sibling fixture changed before rejection"
+    return {**preservation, "case": name, "link": "hardlink" if hardlink else "symlink", "links": entry.st_nlink, "unsafe_entry_preserved": True}
+
+
+def test_csv_symlink_preserves_external_sentinel(tmp_path, monkeypatch, record_property):
+    record_property("filesystem_probe", _check_backend_link(tmp_path, monkeypatch, "fixture.csv"))
+
+
+def test_xlsx_symlink_preserves_external_sentinel(tmp_path, monkeypatch, record_property):
+    record_property("filesystem_probe", _check_backend_link(tmp_path, monkeypatch, "fixture.xlsx"))
+
+
+def test_csv_hardlink_preserves_external_sentinel(tmp_path, monkeypatch, record_property):
+    record_property("filesystem_probe", _check_backend_link(tmp_path, monkeypatch, "fixture.csv", hardlink=True))
+
+
+def test_environment_json_symlink_rejected_before_fixtures(tmp_path, monkeypatch, record_property):
+    import pytest
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    link = output / "environment.json"
+    _make_test_link(link, sentinel)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    with pytest.raises(SystemExit) as stopped:
+        main(["--profile", os.environ.get("MDS_ENVIRONMENT_PROFILE", "test"), "--output-root", str(output)])
+    assert stopped.value.code == 2
+    record_property("filesystem_probe", _assert_sentinel_unchanged(sentinel, before, digest))
+    assert os.path.samefile(link, sentinel), "Unsafe JSON link changed"
+    assert not (output / "fixture.csv").exists() and not (output / "fixture.xlsx").exists()
+
+
+def test_pytest_json_symlink_rejected_before_collection(tmp_path, monkeypatch, record_property):
+    import pytest
+    import conftest as environment_conftest
+    from types import SimpleNamespace
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    link = output / "pytest.json"
+    _make_test_link(link, sentinel)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    monkeypatch.setenv("MDS_ENVIRONMENT_OUTPUT_ROOT", str(output))
+    config = SimpleNamespace(option=SimpleNamespace(basetemp=str(replica / ".f1" / "tmp" / "pytest-test")), args=[str(Path(__file__).resolve())], getini=lambda name: str(replica / ".f1" / "cache"))
+    with pytest.raises((pytest.UsageError, ValueError)):
+        environment_conftest.pytest_configure(config)
+        environment_conftest.pytest_sessionfinish(SimpleNamespace(config=config), 0)
+    record_property("filesystem_probe", _assert_sentinel_unchanged(sentinel, before, digest))
+    assert os.path.samefile(link, sentinel), "Unsafe pytest JSON link changed"
+    assert not (replica / ".f1" / "tmp").exists(), "Collection cleanup started before rejection"
+
+
+def _check_root_alias(tmp_path, monkeypatch, target_name):
+    import pytest
+
+    replica = tmp_path / "replica"
+    replica.mkdir()
+    target = replica if target_name == "project" else replica / "datasets"
+    target.mkdir(exist_ok=True)
+    sentinel = target / "sentinel.bin"
+    sentinel.write_bytes(b"F1 root alias disposable sentinel")
+    link = replica / ".f1"
+    _make_test_link(link, target, directory=True)
+    monkeypatch.setattr(sys.modules["_safety"], "__file__", str(replica / "tests" / "environment" / "_safety.py"))
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    with pytest.raises(ValueError):
+        check_file_backends(link / "output")
+    preservation = _assert_sentinel_unchanged(sentinel, before, digest)
+    assert link.is_symlink() and os.path.samefile(link, target)
+    assert not (target / "output").exists(), "Root alias caused an outside directory mutation"
+    return {**preservation, "alias_target": target_name, "unsafe_entry_preserved": True}
+
+
+def test_f1_alias_to_datasets_is_rejected(tmp_path, monkeypatch, record_property):
+    record_property("filesystem_probe", _check_root_alias(tmp_path, monkeypatch, "datasets"))
+
+
+def test_f1_alias_to_project_is_rejected(tmp_path, monkeypatch, record_property):
+    record_property("filesystem_probe", _check_root_alias(tmp_path, monkeypatch, "project"))
+
+
+def test_backend_normal_first_and_repeat(tmp_path, monkeypatch):
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    first = check_file_backends(output)
+    second = check_file_backends(output)
+    assert first == second and first["csv"] == "PASS" and first["xlsx"] == "PASS"
+    _assert_sentinel_unchanged(sentinel, before, digest)
+
+
+def test_all_final_hardlinks_are_rejected(tmp_path, monkeypatch, record_property):
+    import pytest
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    for name in ("fixture.csv", "fixture.xlsx", "environment.json", "pytest.json"):
+        link = output / name
+        _make_test_link(link, sentinel, hardlink=True)
+        with pytest.raises(ValueError):
+            write_isolated_text(link, "must not be written")
+        preservation = _assert_sentinel_unchanged(sentinel, before, digest)
+        assert os.path.samefile(link, sentinel)
+        record_property(name, {**preservation, "links": link.lstat().st_nlink, "unsafe_entry_preserved": True})
+
+
+def test_dangling_and_internal_file_symlinks_are_rejected(tmp_path, monkeypatch, record_property):
+    import pytest
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    for name, target in (("dangling.json", replica / "absent.bin"), ("internal.json", sentinel)):
+        link = output / name
+        _make_test_link(link, target)
+        with pytest.raises(ValueError):
+            write_isolated_text(link, "must not be written")
+        assert link.is_symlink() and not (replica / "absent.bin").exists()
+    record_property("filesystem_probe", _assert_sentinel_unchanged(sentinel, before, digest))
+
+
+def test_directory_alias_and_non_file_targets_are_rejected(tmp_path, monkeypatch, record_property):
+    import pytest
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    alias = output / "alias"
+    _make_test_link(alias, replica, directory=True)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    with pytest.raises(ValueError):
+        write_isolated_text(alias / "sentinel.bin", "must not be written")
+    directory = output / "directory.json"
+    directory.mkdir()
+    with pytest.raises(ValueError):
+        write_isolated_text(directory, "must not be written")
+    assert directory.is_dir() and alias.is_symlink()
+    record_property("filesystem_probe", _assert_sentinel_unchanged(sentinel, before, digest))
+
+
+def test_missing_f1_does_not_create_an_output_boundary(tmp_path, monkeypatch):
+    import pytest
+
+    replica = tmp_path / "replica"
+    replica.mkdir()
+    monkeypatch.setattr(sys.modules["_safety"], "__file__", str(replica / "tests" / "environment" / "_safety.py"))
+    with pytest.raises(ValueError):
+        write_isolated_text(replica / ".f1" / "output.json", "must not be written")
+    assert not (replica / ".f1").exists()
+
+
+def test_real_windows_junction_root_is_rejected(tmp_path, monkeypatch, record_property):
+    import pytest
+
+    if sys.platform != "win32":
+        pytest.skip("Windows junction NOT AVAILABLE on this runner")
+    import _winapi
+
+    if not hasattr(_winapi, "CreateJunction"):
+        pytest.skip("Windows junction API NOT AVAILABLE")
+    replica = tmp_path / "replica"
+    target = replica / "datasets"
+    target.mkdir(parents=True)
+    sentinel = target / "sentinel.bin"
+    sentinel.write_bytes(b"F1 disposable junction sentinel")
+    link = replica / ".f1"
+    try:
+        _winapi.CreateJunction(str(target), str(link))
+    except OSError as error:
+        if getattr(error, "winerror", None) in {5, 1314}:
+            pytest.skip("Windows junction capability NOT AVAILABLE")
+        raise
+    monkeypatch.setattr(sys.modules["_safety"], "__file__", str(replica / "tests" / "environment" / "_safety.py"))
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    with pytest.raises(ValueError):
+        check_file_backends(link / "output")
+    assert os.path.samefile(link, target) and not (target / "output").exists()
+    record_property("filesystem_probe", {**_assert_sentinel_unchanged(sentinel, before, digest), "reparse_point": True})
+
+
+def test_pytest_sessionfinish_rechecks_parent_alias(tmp_path, monkeypatch, record_property):
+    import pytest
+    import conftest as environment_conftest
+    from types import SimpleNamespace
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    alias = output / "late-alias"
+    _make_test_link(alias, replica, directory=True)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    config = SimpleNamespace(_f1_output_root=alias / "new-report")
+    with pytest.raises(ValueError):
+        environment_conftest.pytest_sessionfinish(SimpleNamespace(config=config), 0)
+    assert alias.is_symlink() and not (replica / "new-report").exists()
+    record_property("filesystem_probe", _assert_sentinel_unchanged(sentinel, before, digest))
+
+
+def test_atomic_writer_rechecks_late_link(tmp_path, monkeypatch, record_property):
+    import pytest
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    link = output / "late.json"
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    # Изменение после preflight моделируем реальной ссылкой, без race thread.
+    with pytest.raises(ValueError):
+        with isolated_file(link) as stream:
+            stream.write(b"owned temporary payload")
+            _make_test_link(link, sentinel)
+    assert link.is_symlink() and os.path.samefile(link, sentinel)
+    assert not list(output.glob(".f1-output-*.tmp"))
+    record_property("filesystem_probe", _assert_sentinel_unchanged(sentinel, before, digest))
+
+
+def test_cli_and_report_normal_first_and_repeat(tmp_path, monkeypatch, record_property):
+    import conftest as environment_conftest
+    from types import SimpleNamespace
+
+    replica, output, sentinel = _disposable_filesystem(tmp_path, monkeypatch)
+    before = sentinel.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    arguments = ["--profile", os.environ.get("MDS_ENVIRONMENT_PROFILE", "test"), "--output-root", str(output)]
+    for attempt in range(2):
+        assert main(arguments) == 0
+        assert json.loads((output / "environment.json").read_text(encoding="utf-8"))["status"] == "PASS"
+        config = SimpleNamespace(_f1_output_root=output)
+        environment_conftest.pytest_sessionfinish(SimpleNamespace(config=config), 0)
+        assert json.loads((output / "pytest.json").read_text(encoding="utf-8"))["exit_code"] == 0
+    assert not list(output.glob(".f1-output-*.tmp"))
+    record_property("filesystem_probe", _assert_sentinel_unchanged(sentinel, before, digest))
+
+
 def _redacted_error(error):
     message = str(error)
     message = re.sub(r"https?://[^\s'\"]+", "<url>", message)
@@ -346,6 +631,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         output_root = isolated_path(args.output_root)
+        for name in ("fixture.csv", "fixture.xlsx", "environment.json"):
+            validate_output_file(output_root / name)
     except ValueError as error:
         parser.error(str(error))
     output_root.mkdir(parents=True, exist_ok=True)
@@ -367,7 +654,7 @@ def main(argv=None):
         print(name + ": " + report["checks"][name]["status"])
     report["status"] = "PASS" if all(item["status"] == "PASS" for item in report["checks"].values()) else "FAIL"
     report["elapsed_seconds"] = round(time.perf_counter() - started, 6)
-    (output_root / "environment.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    write_isolated_text(output_root / "environment.json", json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     print("Evidence: environment.json; overall " + report["status"])
     return 0 if report["status"] == "PASS" else 1
 

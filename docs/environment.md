@@ -41,6 +41,11 @@ Use `.f1/python/python.exe` directly. Do not install globally or change PATH,
 registry, launcher settings or file associations. Each worktree has its own
 interpreter, environments, wheelhouse and evidence under ignored `.f1/`.
 
+Setup requires a fresh, real `.f1` directory tree with no symlinks, junctions,
+reparse points or shared hardlinks at write destinations. The PowerShell bootstrap
+and pip commands are setup recipes; the fixture/report guards below do not wrap
+archive extraction or pip's own writers. Do not point setup at an aliased tree.
+
 The verified full ZIP includes **pip 26.2.1**. Create each environment with this
 interpreter's `venv`/`ensurepip`, verify that the resulting pip is **26.2.1**, and
 record its version separately. Its integrity is bound to the verified official ZIP
@@ -274,6 +279,20 @@ The smoke CLI accepts `--profile runtime|test|dev` (default `runtime`) and requi
 an explicit ignored `--output-root`. It installs guards before third-party imports
 and uses synthetic data. It does not import project pipeline modules.
 
+The fixture/report writers anchor the boundary at the checkout's real `.f1`
+directory. They reject linked directory components, including a linked `.f1`,
+before creating directories. Each existing final file must be a regular file with
+exactly one link: resolving a filename alone would miss hardlinks. The CLI checks
+all three final filenames (`fixture.csv`, `fixture.xlsx`, `environment.json`)
+before any fixture write; pytest checks `pytest.json` before collection. Writes
+use an exclusively created sibling file, revalidate the destination and temporary
+file, then replace a safe destination. Unsafe links and their targets are preserved;
+repeated runs can replace the checks' own ordinary files.
+
+This guards pre-existing aliases and rechecks before replacement. It does not
+claim protection against arbitrary concurrent replacement of parent directories;
+the Windows path APIs used here do not provide a directory-descriptor transaction.
+
 For the test profile, run the scoped suite only:
 
 ```powershell
@@ -325,7 +344,7 @@ budget stays zero; no billing, paid services or quota increases are part of F1.
 | #67: Реальные subprocess проверяют Linux forkserver/fork и macOS spawn, CWD/Unicode/пробелы/encoding/child failure; writers ограничены fixtures/staging. | Deferred to R1/#67; Windows checks cannot satisfy these criteria |
 | #67: Матрица содержит PASS/FAIL/NOT VERIFIED и логи. Общий CI и packaging остаются отдельными задачами. | Keep explicit result matrix; general offline CI remains F3 |
 
-The final Windows verification used CPython **3.14.8 x86-64 GIL**, `Py_GIL_DISABLED=0`,
+The original installation verification used CPython **3.14.8 x86-64 GIL**, `Py_GIL_DISABLED=0`,
 GIL enabled, and pip **26.2.1** from the SHA-256-verified official ZIP. The reported
 OS version was **10.0**, build **26200**. The actual multiprocessing start method
 and the only available method were **spawn**.
@@ -335,6 +354,14 @@ and the only available method were **spawn**.
 | runtime | 43 | 44 | PASS, exit 0 | PASS, exit 0 | NOT APPLICABLE |
 | test | 47 | 48 | PASS, exit 0 | PASS, exit 0 | 11 passed, 2.76 s, exit 0 |
 | dev | 84 | 85 | PASS, exit 0 | PASS, exit 0 | 11 passed, 2.89 s, exit 0 |
+
+This table records the original installation and test results, not a rerun of a
+later test commit. The PR80 review fixes retain these eleven tests and add
+filesystem regressions. Every revised committed HEAD requires all three smoke
+CLIs and `pip check`, plus the complete test/dev suites. Latest command events,
+results, source hashes and commit identity are delivered in the review archive.
+The unchanged locks permit retaining the original install/replay results with
+their original timestamps and matching lock hashes; no new resolution is implied.
 
 All three profiles passed native TA-Lib checks with Python wrapper **0.6.8** and
 native library **0.6.4**: SMA, RSI and MACD were compared with independent synthetic
@@ -353,8 +380,46 @@ notebook conversion was performed. A fresh dev verification environment was also
 checked before installation: interpreter and guards passed, while missing imports
 and the absent installed dependency graph failed with the expected exit 1.
 Installation and the independent offline replay then produced the green results
-above. Reports, inventories, fixture outputs and test outcomes remain in ignored
-`.f1/evidence`.
+above. Raw reports, inventories, fixture outputs and test outcomes remain in
+ignored `.f1/evidence`.
+
+## Review evidence archive
+
+The review handoff provides a downloadable evidence ZIP and its SHA-256. Its manifest
+binds the base/revised HEAD, committed source blobs and lock hashes to included
+files. The archive includes actual command/stage events with exit codes and
+timings, failed attempts and reruns, three smoke JSON files, pip-check logs, two
+pytest reports and tool-version checks. Six sanitized install/replay reports
+retain package/version, wheel filename, SHA-256 and provenance fields. Replay
+records replace private local URLs with `wheelhouse:<filename>` and preserve the
+matching public PyPI source URL separately. Raw reports stay local; credentials,
+auth URLs, private paths, full environment dumps and wheels are excluded.
+
+The archive also contains the converter recipe, three positive inputs and expected
+locks, twelve negative inputs and rejection outcomes, plus `verify_evidence.py`.
+Compare the downloaded ZIP's SHA-256 with the handoff, extract the verifier into a
+fresh reviewer-owned directory, and run it with a new work directory:
+
+```powershell
+Get-FileHash -LiteralPath '<downloaded evidence ZIP>' -Algorithm SHA256
+& $taskPython -I -B '<extracted verify_evidence.py>' '<downloaded evidence ZIP>' --work-dir '<new private verification directory>'
+if ($LASTEXITCODE) { throw "Evidence verification failed" }
+```
+
+The standard-library verifier checks manifest closure/hashes, source blob hashes,
+all six package graphs against locks, public/local provenance mapping and
+byte-identical lock conversion. It reruns the 3 positive and 12 negative converter
+cases without network or child processes. It verifies archived evidence integrity;
+it does not repeat Windows acceptance checks on the reviewer's machine.
+
+For **F1-PR80-01**, the added disposable-target regressions cover both `.f1` root
+aliases, CSV/XLSX and JSON symlinks, final hardlinks, junctions where available,
+normal writes and repeats. They compare external sentinel bytes and SHA-256 before
+and after rejection, and check unsafe entries are retained. Red-before and
+green-after runner reports distinguish real Windows filesystem checks from mocks
+and unavailable capabilities. A skipped link probe is **NOT AVAILABLE**, not a
+Windows PASS. For **F1-PR80-02**, the archive provides the underlying
+records and reproducible checks rather than a PASS summary alone.
 
 Linux/macOS runners, the application pipeline, production publication and general
 CI remain **NOT VERIFIED**. These results do not declare product readiness or

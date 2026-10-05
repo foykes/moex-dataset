@@ -1,11 +1,14 @@
 """Process-wide guards for the isolated, offline environment checks."""
 
 import os
+from contextlib import contextmanager
 import multiprocessing.process
 from pathlib import Path
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 
 
 class OfflineViolation(RuntimeError):
@@ -68,17 +71,90 @@ def install_guards():
     _installed = True
 
 
+def _is_link(info):
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def isolated_path(value):
-    """Resolve an output/cache directory only within this worktree's .f1."""
+    """Keep a real directory boundary; reject aliases instead of following them."""
     project_root = Path(__file__).resolve().parents[2]
-    allowed = (project_root / ".f1").resolve()
+    allowed = project_root / ".f1"
     path = Path(value)
     if not path.is_absolute():
         path = project_root / path
-    path = path.resolve()
-    if not allowed.is_relative_to(project_root) or not path.is_relative_to(allowed):
+    path = Path(os.path.abspath(path))
+    if not path.is_relative_to(allowed):
         raise ValueError("F1 output and cache directories must stay inside .f1")
+    # lstat видит dangling links и Windows junction/reparse points.
+    directories = [allowed]
+    directory = allowed
+    for part in path.relative_to(allowed).parts:
+        directory = directory / part
+        directories.append(directory)
+    for directory in directories:
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            if directory == allowed:
+                raise ValueError("Create a real .f1 directory before F1 checks") from None
+            continue
+        if _is_link(info) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError("F1 directories must be real directories without links or reparse points")
+    # resolve подтверждает границу, но никогда не расширяет её.
+    if path.resolve() != path:
+        raise ValueError("F1 directory aliases are forbidden")
     return path
+
+
+def validate_output_file(value):
+    """Refuse existing symlinks, hardlinks and non-files before any write."""
+    path = Path(value)
+    project_root = Path(__file__).resolve().parents[2]
+    if not path.is_absolute():
+        path = project_root / path
+    path = Path(os.path.abspath(path))
+    isolated_path(path.parent)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return path
+    if _is_link(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError("F1 output files must be regular files with exactly one link")
+    return path
+
+
+@contextmanager
+def isolated_file(value):
+    """Write a new exclusive sibling, then replace only a safe destination."""
+    path = validate_output_file(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    validate_output_file(path)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".f1-output-", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    identity = os.fstat(descriptor)
+    try:
+        with os.fdopen(descriptor, "w+b") as stream:
+            yield stream
+        validate_output_file(path)
+        temporary_info = temporary.lstat()
+        if _is_link(temporary_info) or not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1 or (temporary_info.st_dev, temporary_info.st_ino) != (identity.st_dev, identity.st_ino):
+            raise ValueError("The exclusively created F1 temporary file changed")
+        os.replace(temporary, path)
+    finally:
+        # Удаляем только собственный временный inode; чужую ссылку не трогаем.
+        try:
+            isolated_path(temporary.parent)
+            info = temporary.lstat()
+        except (FileNotFoundError, ValueError):
+            pass
+        else:
+            if not _is_link(info) and info.st_nlink == 1 and (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
+                temporary.unlink()
+
+
+def write_isolated_text(value, text):
+    with isolated_file(value) as stream:
+        stream.write(text.encode("utf-8"))
 
 
 def validate_pytest_basetemp(value):
