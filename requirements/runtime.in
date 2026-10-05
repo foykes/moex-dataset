@@ -1,0 +1,11 @@
+# Windows x64 CPython 3.14 GIL scripts dependencies.
+# Numerical and HTML/XLSX backends are explicit, including pandas' HTML fallback.
+pandas==2.3.3
+numpy==2.3.4
+TA-Lib==0.6.8
+requests==2.32.5
+beautifulsoup4==4.14.2
+lxml==6.0.2
+html5lib==1.1
+openpyxl==3.1.5
+pygsheets==2.0.6
