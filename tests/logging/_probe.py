@@ -154,6 +154,80 @@ def install_guards():
     return counts
 
 
+def admission_race(log, producer, level, timing, worker=False):
+    """Bounded latch race, also executed inside a real Windows spawn child."""
+    import hashlib
+    import threading
+    entered, release, frozen, finished = [threading.Event() for _ in range(4)]
+    original_send, original_clock, original_fallback = log._send, log._clock, log._fallback
+    receipts, finals, errors, fallback_calls = [], [], [], []
+    def send(context, kind, record=None, **kwargs):
+        if threading.current_thread().name == 'FLOG-fixture-emitter':
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('fixture release timeout')
+        return original_send(context, kind, record, **kwargs)
+    def clock():
+        if threading.current_thread().name == 'FLOG-fixture-finalizer' and producer.get('_registration_frozen'):
+            frozen.set()
+        return original_clock()
+    def fallback(*args):
+        fallback_calls.append(True)
+        return original_fallback(*args)
+    def operation():
+        try:
+            if level == 'FLUSH':
+                receipts.append(log.flush_logging(producer))
+            else:
+                receipts.append(log.emit_event(producer, level, 'admitted_fixture', 'safe', {}))
+        except BaseException as error:
+            errors.append(type(error).__name__)
+    def finalize():
+        try:
+            function = log.finish_worker if worker else log.finalize_logging
+            finals.append(function(producer, execution_outcome='COMPLETED', exit_status=0))
+        except BaseException as error:
+            errors.append(type(error).__name__)
+        finally:
+            finished.set()
+    def files():
+        return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in producer['_run_root'].iterdir() if path.is_file()}
+    emitter = threading.Thread(target=operation, name='FLOG-fixture-emitter')
+    finalizer = threading.Thread(target=finalize, name='FLOG-fixture-finalizer')
+    log._send, log._clock, log._fallback = send, clock, fallback
+    try:
+        emitter.start()
+        assert entered.wait(3)
+        finalizer.start()
+        assert frozen.wait(3)
+        health = None if worker else log.check_logging_health(producer)
+        if timing == 'completion':
+            release.set()
+        assert finished.wait(3)
+        before = files()
+        snapshot = json.loads(json.dumps(finals[0]))
+        calls_before = len(fallback_calls)
+        release.set()
+        emitter.join(3)
+        finalizer.join(3)
+        assert not emitter.is_alive() and not finalizer.is_alive()
+        assert not errors
+        after = files()
+        cached = (log.finish_worker if worker else log.finalize_logging)(
+            producer, execution_outcome='COMPLETED', exit_status=0)
+        return dict(report=finals[0], snapshot=snapshot, cached_unchanged=cached == snapshot,
+            receipt=receipts[0], before=before, after=after, health_during_freeze=health,
+            fallback_calls_after_release=len(fallback_calls) - calls_before)
+    finally:
+        release.set()
+        if emitter.ident is not None:
+            emitter.join(3)
+        if finalizer.ident is not None:
+            finalizer.join(3)
+        log._send, log._clock, log._fallback = original_send, original_clock, original_fallback
+
+
 def worker_entry(bootstrap, mode='normal', count=100):
     install_guards()
     import run_logging as log
@@ -162,6 +236,12 @@ def worker_entry(bootstrap, mode='normal', count=100):
     # Construct the secret here: it is never passed in spawn arguments.
     secret = 'child-' + 'canary-719'
     producer = log.configure_worker(bootstrap, sensitive_values=(secret,))
+    if mode.startswith('race:'):
+        _, level, timing = mode.split(':')
+        result = admission_race(log, producer, level, timing, worker=True)
+        bootstrap['_fixture_reply'].send(result)
+        bootstrap['_fixture_reply'].close()
+        return
     for i in range(count):
         log.emit_event(producer, 'INFO', 'worker_progress', 'строка ' + str(i), {'page': i})
     log.emit_event(producer, 'ERROR', 'worker_error', secret, {})

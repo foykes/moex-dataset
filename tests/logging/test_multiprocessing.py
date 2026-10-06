@@ -5,7 +5,49 @@ import time
 
 import pytest
 
-from _probe import worker_entry
+from _probe import ROOT, worker_entry
+
+
+@pytest.mark.parametrize('level', ['INFO', 'ERROR', 'FLUSH'])
+@pytest.mark.parametrize('timing', ['completion', 'timeout'])
+def test_real_spawn_worker_admission_finish_race(log, level, timing, record_property):
+    import uuid
+    session = log.configure_logging(ROOT, run_id='worker-race-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='011a9d8',
+        config={'shutdown_deadline_s': 0.4, 'console_level': 'ERROR'})
+    spawn = multiprocessing.get_context('spawn')
+    receive, send = spawn.Pipe(duplex=False)
+    bootstrap = log.prepare_worker(session, 'race')
+    bootstrap['_fixture_reply'] = send
+    process = spawn.Process(target=worker_entry, args=(bootstrap, 'race:' + level + ':' + timing, 0))
+    try:
+        process.start()
+        assert receive.poll(10)
+        result = receive.recv()
+        assert not settle(log, session, 'race', process)
+        assert process.exitcode == 0
+        assert result['before'] == result['after'] and result['cached_unchanged']
+        assert result['fallback_calls_after_release'] == 0
+        if timing == 'timeout':
+            assert not result['report']['confirmed']
+            assert result['report']['cleanup_error'] == 'ADMISSION_TIMEOUT'
+        else:
+            assert result['report']['confirmed'] and result['receipt']['accepted']
+        report = log.finalize_logging(session, execution_outcome='COMPLETED', exit_status=0)
+        assert report['evidence_incomplete'] is (timing == 'timeout')
+        rows = [json.loads(line) for line in (session['_run_root'] / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        worker_rows = [r['event'] for r in rows if r['worker'] == 'race']
+        expected = [] if timing == 'timeout' else (['worker_completed'] if level == 'FLUSH' else ['admitted_fixture', 'worker_completed'])
+        assert worker_rows == expected
+        record_property('platform', sys.platform)
+        record_property('start_method', 'spawn')
+    finally:
+        if process.pid is not None and process.is_alive():
+            process.terminate()
+            process.join(5)
+        receive.close()
+        send.close()
+        log.finalize_logging(session, execution_outcome='COMPLETED', exit_status=0)
 
 
 def start_worker(log, session, worker, mode='normal', count=100):

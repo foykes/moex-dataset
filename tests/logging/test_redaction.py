@@ -2,10 +2,58 @@ import json
 import logging
 from pathlib import Path
 import uuid
+import zipfile
 
 import pytest
 
 from _probe import ROOT
+
+
+@pytest.mark.parametrize('key', ['client_key', 'client_secret', 'refresh_token', 'access_token',
+    'CLIENT KEY', 'Client-Key', 'CLIENT__KEY', 'Client Secret', 'Refresh-Token', 'ACCESS TOKEN'])
+@pytest.mark.parametrize('form', ['nested', 'assignment', 'quoted_json'])
+def test_unregistered_credential_families_all_owned_surfaces(log, monkeypatch, caplog, capsys, key, form):
+    canary = 'CREDENTIAL_REVIEW_CANARY_719'
+    session = log.configure_logging(ROOT, run_id='credentials-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='011a9d8')
+    session['_logger'].addHandler(caplog.handler)
+    raw = {key: canary} if form == 'nested' else (key + '=' + canary if form == 'assignment' else json.dumps({key: canary}))
+    error = log.make_error(session, ValueError(raw), 'fixture')
+    payloads = []
+    original_queue = session['_queue']
+    class CaptureQueue:
+        def put(self, wrapper, **kwargs):
+            payloads.append(log._bytes(wrapper).decode('utf-8'))
+            return original_queue.put(wrapper, **kwargs)
+        def put_nowait(self, wrapper):
+            payloads.append(log._bytes(wrapper).decode('utf-8'))
+            return original_queue.put_nowait(wrapper)
+        def __getattr__(self, name):
+            return getattr(original_queue, name)
+    session['_queue'] = CaptureQueue()
+    assert log.emit_event(session, 'ERROR', 'credential_fixture', error['message'], {'error': error})['confirmed']
+    # Deliberately mark delivery incomplete and exercise its sanitized fallback.
+    event = caplog.records[-1].flog_event
+    log._fallback(session, event, 'fixture-fallback')
+    report = log.finalize_logging(session, execution_outcome='FAILED', exit_status=1, application_error=error)
+    assert report['storage_sealed']
+    destination = ROOT / '.f-log/bundles' / (uuid.uuid4().hex + '.zip')
+    log.export_diagnostic_bundle(session['_run_root'], destination)
+    assert payloads and caplog.records
+    assert canary not in error['message'] + json.dumps(report) + ''.join(payloads)
+    for record in caplog.records:
+        assert canary not in record.getMessage() + json.dumps(record.flog_event)
+        assert record.args == () and record.exc_info is None
+    assert canary not in capsys.readouterr().err
+    for path in session['_run_root'].iterdir():
+        assert canary.encode() not in path.read_bytes()
+    with zipfile.ZipFile(destination) as archive:
+        for name in archive.namelist():
+            assert canary.encode() not in archive.read(name)
+    assert log._text(session, 'https://iss.moex.com/iss/securities/SBER/candles.csv?from=2020#x') == 'https://iss.moex.com/iss/securities/SBER/candles.csv'
+    for query_key in ('access_token', 'client_key'):
+        public_url = 'https://iss.moex.com/iss/securities/SBER/candles.csv?' + query_key + '=' + canary + '#fragment'
+        assert log._text(session, public_url) == 'https://iss.moex.com/iss/securities/SBER/candles.csv'
 
 
 def test_first_logrecord_and_all_sinks_redacted(log, caplog, capsys):

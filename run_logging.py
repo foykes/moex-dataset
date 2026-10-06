@@ -152,18 +152,10 @@ def _tree_files(root, boundary):
 def _secret_key(key):
     key = re.sub(r'[_\-\s]', '', key).casefold()
     return any(word in key for word in ('password', 'passwd', 'token', 'secret',
-        'credential', 'authorization', 'authentication', 'cookie', 'apikey', 'privatekey')) or key in {'key', 'auth'}
+        'credential', 'authorization', 'authentication', 'cookie', 'apikey', 'privatekey', 'clientkey')) or key in {'key', 'auth'}
 
 
 def _text(context, text):
-    for secret in context['_secrets']:
-        text = text.replace(secret, '<redacted>')
-    # Redact the remainder of a credential-bearing line. This also handles
-    # Bearer/Basic headers, quoted JSON and malformed/unclosed quoted values
-    # without a backtracking parser or interpolation of arbitrary objects.
-    text = re.sub(r'''(?im)\b(password|passwd|token|secret|api[_ -]?key|private[_ -]?key|authorization|authentication|proxy-authorization|cookie|set-cookie|credentials?)["']?\s*[:=]\s*[^\r\n]+''',
-                  lambda match: match.group(1) + '=<redacted>', text)
-
     def url(match):
         try:
             parts = urlsplit(match.group(0))
@@ -180,6 +172,13 @@ def _text(context, text):
         except ValueError:
             return '<redacted-url>'
     text = re.sub(r'(?i)(?:https?|ftp|file)://[^\s<>"\']+', url, text)
+    for secret in context['_secrets']:
+        text = text.replace(secret, '<redacted>')
+    # Strip URL query/userinfo first, so text redaction cannot leave a marker
+    # suffix on an otherwise safe public URL. Redact the whole credential line,
+    # including malformed quotes, without interpolation of arbitrary objects.
+    text = re.sub(r'''(?im)\b(password|passwd|client[_\-\s]*(?:key|secret)|(?:access|refresh)[_\-\s]*token|token|secret|api[_\-\s]*key|private[_\-\s]*key|authorization|authentication|proxy-authorization|cookie|set-cookie|credentials?)["']?\s*[:=]\s*[^\r\n]+''',
+                  lambda match: match.group(1) + '=<redacted>', text)
     root = context.get('_checkout')
     if root:
         text = text.replace(str(root) + os.sep, '').replace(str(root).replace('\\', '/') + '/', '')
@@ -467,16 +466,19 @@ def _allocate_root(checkout, config, run_id, root):
             summary = _read_summary(path)
         except (OSError, ValueError):
             summary = None
-        if summary is None or not summary['storage_sealed']:
+        if (summary is None or not summary['storage_sealed']
+                or summary['delivery_outcome'] != 'COMPLETE' or summary['evidence_incomplete'] is not False):
             reservation = _reserve(config)
             try:
                 context_path = _safe_path(path / 'context.json', checkout)
-                if context_path.stat().st_size <= config['context_bytes']:
-                    with context_path.open('rb') as handle:
-                        previous_config = validate_logging_config(json.load(handle)['safe_config'])
-                    reservation = max(reservation, _reserve(previous_config))
+                # A smaller new context cap must not hide an older reservation.
+                if context_path.stat().st_size > DEFAULTS['context_bytes']:
+                    raise ValueError('LOG_CONTEXT_LIMIT')
+                with context_path.open('rb') as handle:
+                    previous_config = validate_logging_config(json.load(handle)['safe_config'])
+                reservation = max(reservation, _reserve(previous_config))
             except (OSError, ValueError, KeyError, TypeError):
-                pass
+                raise ValueError('LOG_ROOT_BUDGET_UNAVAILABLE') from None
             used += max(size, reservation)
         else:
             used += size
@@ -486,7 +488,7 @@ def _allocate_root(checkout, config, run_id, root):
     for index, (path, summary, size) in enumerate(existing):
         old = datetime.datetime.fromisoformat(summary['finished_at_utc'].replace('Z', '+00:00')) < cutoff
         if index >= config['retained_runs'] - 1 or old:
-            shutil.rmtree(path)  # only validated, sealed runs within this root
+            shutil.rmtree(path)  # only validated, sealed COMPLETE evidence
             used -= size
     if used + _reserve(config) > config['root_budget_bytes']:
         raise ValueError('LOG_ROOT_BUDGET_UNAVAILABLE')
@@ -497,11 +499,97 @@ def _allocate_root(checkout, config, run_id, root):
 
 def _producer(bootstrap, sensitive_values):
     result = dict(**bootstrap, _secrets=_secrets(sensitive_values), _lock=threading.Lock(),
-        _seq=0, _failed=False, _closed=False, _finish=None,
+        _seq=0, _failed=False, _closed=False, _finish=None, _state='ACTIVE',
+        _admission=threading.Condition(), _drained=threading.Event(), _inflight=0, _registration_frozen=False,
+        _admission_aborted=False, _deferred_close=False, _transport_closing=False,
+        _deadline=None, _finalizer_lock=threading.Lock(),
         _counts={level: 0 for level in LEVELS}, _drops=0,
         _logger=logging.Logger('moex.flog.' + str(bootstrap['_token']), logging.DEBUG))
     result['_logger'].addHandler(logging.NullHandler())
+    result['_drained'].set()
     return result
+
+
+def _admit(context, deadline=None):
+    if deadline is None:
+        deadline = _clock() + context['config']['critical_deadline_s']
+    condition = context['_admission']
+    if not condition.acquire(timeout=max(0, deadline - _clock())):
+        context['_failed'] = True
+        context['_run_failed'].value = 1
+        return False
+    admitted = False
+    try:
+        if context['_closed'] or context['_state'] != 'ACTIVE' or context['_registration_frozen']:
+            return False
+        context['_inflight'] += 1
+        context['_drained'].clear()
+        admitted = True
+        return True
+    finally:
+        condition.release()
+        if not admitted:
+            _cleanup_abandoned(context)
+
+
+def _release(context):
+    with context['_admission']:
+        context['_inflight'] -= 1
+        if not context['_inflight']:
+            context['_drained'].set()
+    _cleanup_abandoned(context)
+
+
+def _freeze_and_wait(context):
+    condition = context['_admission']
+    acquired = condition.acquire(timeout=max(0, context['_deadline'] - _clock()))
+    if not acquired:
+        context['_registration_frozen'] = True
+        context['_state'] = 'FINALIZING'
+        context['_admission_aborted'] = True
+        context['_failed'] = True
+        context['_run_failed'].value = 1
+        return False
+    try:
+        context['_registration_frozen'] = True
+        context['_state'] = 'FINALIZING'
+    finally:
+        condition.release()
+    # Event.wait avoids Condition.wait's unbounded mutex reacquisition after
+    # its timeout. Closed admission means only the last release can signal drain.
+    if context['_drained'].wait(max(0, context['_deadline'] - _clock())):
+        return True
+    context['_admission_aborted'] = True
+    context['_failed'] = True
+    context['_run_failed'].value = 1
+    return False
+
+
+def _cleanup_abandoned(context):
+    # Only the last operation/listener to release ownership may close transport.
+    # The deadline path never closes endpoints still used by a live operation.
+    condition = context['_admission']
+    if not condition.acquire(blocking=False):
+        return
+    try:
+        ready = (context['_deferred_close'] and not context['_inflight']
+            and not context['_transport_closing']
+            and ('_thread' not in context or context['_listener_closed']))
+        if not ready:
+            return
+        context['_transport_closing'] = True
+    finally:
+        condition.release()
+    try:
+        if '_thread' in context:
+            _close_transport(context)
+        else:
+            context['_ack'].close()
+            context['_queue'].cancel_join_thread()
+            context['_queue'].close()
+    except (OSError, ValueError):
+        context['_failed'] = True
+        context['_run_failed'].value = 1
 
 
 def configure_logging(checkout_root, *, run_id, environment, producer_sha,
@@ -571,7 +659,16 @@ def configure_logging(checkout_root, *, run_id, environment, producer_sha,
 
 
 def prepare_worker(session, worker_id):
-    if session['_state'] != 'ACTIVE' or session['_registration_frozen'] or type(worker_id) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', worker_id):
+    if not _admit(session):
+        raise ValueError('LOG_WORKER_INVALID')
+    try:
+        return _prepare_worker(session, worker_id)
+    finally:
+        _release(session)
+
+
+def _prepare_worker(session, worker_id):
+    if type(worker_id) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', worker_id):
         raise ValueError('LOG_WORKER_INVALID')
     if any(secret in worker_id for secret in session['_secrets']):
         raise ValueError('LOG_WORKER_SENSITIVE')
@@ -579,9 +676,17 @@ def prepare_worker(session, worker_id):
         raise ValueError('LOG_WORKER_REGISTRATION')
     receive, send = session['_spawn'].Pipe(duplex=False)
     token = uuid.uuid4().int & ((1 << 64) - 1)
-    session['_ack_senders'][token] = send
-    session['_receivers'].append(receive)
-    session['_expected'][worker_id] = token
+    with session['_admission']:
+        aborted = session['_admission_aborted']
+        registration_failed = worker_id in session['_expected'] or len(session['_expected']) >= session['config']['max_workers']
+        if not aborted and not registration_failed:
+            session['_ack_senders'][token] = send
+            session['_receivers'].append(receive)
+            session['_expected'][worker_id] = token
+    if aborted or registration_failed:
+        receive.close()
+        send.close()
+        raise ValueError('LOG_CONTEXT_CLOSED' if aborted else 'LOG_WORKER_REGISTRATION')
     return dict(run_id=session['run_id'], environment=session['environment'],
         producer_sha=session['producer_sha'], config=session['config'], worker_id=worker_id,
         _checkout=session['_checkout'], _run_root=session['_run_root'],
@@ -597,6 +702,8 @@ def configure_worker(bootstrap, *, sensitive_values=()):
 
 
 def _fallback(context, record, sequence):
+    if context['_admission_aborted'] or context['_closed']:
+        return
     context['_failed'] = True
     context['_run_failed'].value = 1
     line = _bytes(dict(producer=context['_token'], sequence=sequence,
@@ -616,8 +723,11 @@ def _fallback(context, record, sequence):
         pass
 
 
-def _send(context, kind, record=None, *, critical=True, payload=None):
-    deadline = _clock() + context['config']['critical_deadline_s']
+def _send(context, kind, record=None, *, critical=True, payload=None, deadline=None):
+    if context['_admission_aborted'] or context['_closed']:
+        return dict(confirmed=False, accepted=False, producer=context['_token'], sequence=None)
+    if deadline is None:
+        deadline = _clock() + context['config']['critical_deadline_s']
     if context.get('_deadline') is not None:
         deadline = min(deadline, context['_deadline'])
     ok, sequence = False, None
@@ -628,7 +738,7 @@ def _send(context, kind, record=None, *, critical=True, payload=None):
             sequence = context['_seq']
             wrapper = dict(version=1, token=context['_token'], sequence=sequence,
                            kind=kind, critical=critical, event=record, payload=payload)
-            if not context['_failed']:
+            if not context['_failed'] and not context['_admission_aborted']:
                 try:
                     if critical:
                         context['_queue'].put(wrapper, timeout=max(0, deadline - _clock()))
@@ -648,40 +758,52 @@ def _send(context, kind, record=None, *, critical=True, payload=None):
     if not ok:
         context['_failed'] = True
         context['_run_failed'].value = 1
-        if record is not None:
+        if record is not None and not context['_admission_aborted']:
             if critical:
                 _fallback(context, record, sequence if sequence is not None else 'unsent-' + uuid.uuid4().hex)
             else:
-                context['_drops'] += 1
+                with context['_admission']:
+                    context['_drops'] += 1
     return dict(confirmed=ok if critical else False, accepted=ok,
                 producer=context['_token'], sequence=sequence)
 
 
 def emit_event(context, level, event, message, fields):
-    if context['_closed'] or context.get('_state', 'ACTIVE') != 'ACTIVE' or context.get('_registration_frozen', False):
+    deadline = _clock() + context['config']['critical_deadline_s']
+    if not _admit(context, deadline):
         raise ValueError('LOG_CONTEXT_CLOSED')
-    if type(event) is not str:
-        raise ValueError('LOG_EVENT_SCHEMA')
-    if event in {'run_completed', 'run_failed', 'run_interrupted', 'worker_completed', 'worker_failed', 'worker_interrupted'}:
-        raise ValueError('LOG_LIFECYCLE_RESERVED')
-    return _emit_record(context, level, event, message, fields)
+    try:
+        if type(event) is not str:
+            raise ValueError('LOG_EVENT_SCHEMA')
+        if event in {'run_completed', 'run_failed', 'run_interrupted', 'worker_completed', 'worker_failed', 'worker_interrupted'}:
+            raise ValueError('LOG_LIFECYCLE_RESERVED')
+        return _emit_record(context, level, event, message, fields, deadline=deadline)
+    finally:
+        _release(context)
 
 
-def _emit_record(context, level, event, message, fields):
+def _emit_record(context, level, event, message, fields, *, deadline=None):
     record = _event(context, level, event, message, fields)
-    context['_counts'][level] += 1
+    with context['_admission']:
+        if context['_admission_aborted']:
+            return dict(confirmed=False, accepted=False, producer=context['_token'], sequence=None)
+        context['_counts'][level] += 1
     # This is the first LogRecord boundary. It contains only sanitized primitives.
     safe_record = logging.LogRecord(context['_logger'].name, LEVELS[level], '', 0,
                                     record['message'], (), None)
     safe_record.flog_event = record
     context['_logger'].handle(safe_record)
-    return _send(context, 'event', record, critical=level == 'ERROR' or event in CRITICAL_EVENTS)
+    return _send(context, 'event', record, critical=level == 'ERROR' or event in CRITICAL_EVENTS, deadline=deadline)
 
 
 def flush_logging(context):
-    if context['_closed'] or context.get('_registration_frozen', False) or context.get('_state', 'ACTIVE') != 'ACTIVE':
+    deadline = _clock() + context['config']['critical_deadline_s']
+    if not _admit(context, deadline):
         return dict(confirmed=False, accepted=False)
-    return _send(context, 'barrier')
+    try:
+        return _send(context, 'barrier', deadline=deadline)
+    finally:
+        _release(context)
 
 
 def _rotate(session, data):
@@ -764,13 +886,32 @@ def _listen(session):
             except BaseException:
                 session['_listener_error'] = 'LOG_CLOSE_FAILED'
         session['_listener_closed'] = all(session[n].closed for n in ('_primary', '_protected'))
+        _cleanup_abandoned(session)
 
 
 def finish_worker(producer, *, execution_outcome, exit_status):
+    if not producer['_finalizer_lock'].acquire(blocking=False):
+        raise ValueError('LOG_FINALIZATION_ACTIVE')
+    try:
+        return _finish_worker(producer, execution_outcome=execution_outcome, exit_status=exit_status)
+    finally:
+        producer['_finalizer_lock'].release()
+
+
+def _finish_worker(producer, *, execution_outcome, exit_status):
     if producer['_finish'] is not None:
         return producer['_finish']
     _execution(execution_outcome, exit_status)
-    producer['_registration_frozen'] = True
+    producer['_deadline'] = _clock() + producer['config']['shutdown_deadline_s']
+    if not _freeze_and_wait(producer):
+        producer['_finish'] = dict(execution_outcome=execution_outcome, exit_status=exit_status,
+            counts=dict(producer['_counts']), drops=producer['_drops'], confirmed=False,
+            cleanup_error='ADMISSION_TIMEOUT')
+        producer['_closed'] = True
+        producer['_state'] = 'FINALIZED'
+        producer['_deferred_close'] = True
+        _cleanup_abandoned(producer)
+        return producer['_finish']
     suffix = {'COMPLETED': 'completed', 'INTERRUPTED': 'interrupted'}.get(execution_outcome, 'failed')
     receipt = _emit_record(producer, 'INFO' if exit_status == 0 else 'ERROR',
         'worker_' + suffix, 'Worker execution ' + execution_outcome, {'outcome': execution_outcome})
@@ -778,6 +919,7 @@ def finish_worker(producer, *, execution_outcome, exit_status):
                    counts=dict(producer['_counts']), drops=producer['_drops'])
     barrier = _send(producer, 'worker_final', payload=payload)
     producer['_closed'] = True
+    producer['_state'] = 'FINALIZED'
     producer['_finish'] = dict(**payload, confirmed=receipt['confirmed'] and barrier['confirmed'])
     try:
         producer['_ack'].close()
@@ -798,56 +940,85 @@ def _execution(outcome, exit_status):
 
 
 def record_worker_outcome(session, worker_id, *, started, exit_status, timed_out=False):
-    if session['_state'] != 'ACTIVE' or session['_registration_frozen'] or worker_id not in session['_expected'] or type(started) is not bool or type(timed_out) is not bool:
+    if not _admit(session):
         raise ValueError('LOG_WORKER_OUTCOME_INVALID')
-    if exit_status is not None and type(exit_status) is not int:
-        raise ValueError('LOG_WORKER_OUTCOME_INVALID')
-    session['_outcomes'][worker_id] = dict(started=started, exit_status=exit_status, timed_out=timed_out)
+    try:
+        with session['_admission']:
+            if session['_admission_aborted'] or worker_id not in session['_expected'] or type(started) is not bool or type(timed_out) is not bool:
+                raise ValueError('LOG_WORKER_OUTCOME_INVALID')
+            if exit_status is not None and type(exit_status) is not int:
+                raise ValueError('LOG_WORKER_OUTCOME_INVALID')
+            session['_outcomes'][worker_id] = dict(started=started, exit_status=exit_status, timed_out=timed_out)
+    finally:
+        _release(session)
 
 
 def check_logging_health(session):
+    stable = not session['_failed'] and session['_run_failed'].value == 0 and not session['_admission_aborted']
     if session.get('_final') is not None:
-        return dict(healthy=session['_final']['delivery_outcome'] == 'COMPLETE', state='FINALIZED')
-    healthy = not session['_failed'] and session['_run_failed'].value == 0 and session['_listener_error'] is None and session['_thread'].is_alive()
+        report = session['_final']
+        healthy = (stable and not session['_inflight'] and report['delivery_outcome'] == 'COMPLETE'
+            and report['storage_sealed'] and not report['evidence_incomplete'])
+        return dict(healthy=healthy, state='FINALIZED', code=None if healthy else 'LOGGING_INCOMPLETE')
+    healthy = stable and session['_state'] == 'ACTIVE' and not session['_registration_frozen'] and session['_listener_error'] is None and session['_thread'].is_alive()
     return dict(healthy=healthy, state=session['_state'], code=None if healthy else 'LOGGING_INCOMPLETE')
 
 
 def initialize_main_stages(session):
-    if session['_state'] != 'ACTIVE' or session['_registration_frozen'] or session['_stages']:
+    if not _admit(session):
         raise ValueError('LOG_STAGE_LEDGER_INVALID')
-    session['_stages'] = [dict(order=i, stage=name, execution_state='NOT_STARTED',
-        elapsed_ms=None, duration_ms=None, error_ref=None, state_reason='NOT_REACHED')
-        for i, name in enumerate(STAGES, 1)]
+    try:
+        with session['_admission']:
+            if session['_admission_aborted'] or session['_stages']:
+                raise ValueError('LOG_STAGE_LEDGER_INVALID')
+            session['_stages'] = [dict(order=i, stage=name, execution_state='NOT_STARTED',
+                elapsed_ms=None, duration_ms=None, error_ref=None, state_reason='NOT_REACHED')
+                for i, name in enumerate(STAGES, 1)]
+    finally:
+        _release(session)
 
 
 def observe_stage(session, stage, state, *, error=None, reason=None):
-    if session['_state'] != 'ACTIVE' or session['_registration_frozen']:
+    if not _admit(session):
         raise ValueError('LOG_STAGE_LEDGER_CLOSED')
-    row = next(item for item in session['_stages'] if item['stage'] == stage)
-    now = _clock()
-    if state == 'STARTED':
-        row.update(execution_state=state, elapsed_ms=max(0, (now - session['_started']) * 1000), state_reason=None)
-        row['_started'] = now
-    else:
-        row.update(execution_state=state, duration_ms=max(0, (now - row.pop('_started')) * 1000), state_reason=None)
+    try:
         if error is not None:
             error = _sanitize(session, error)
             _validate_error(error)
-            if error not in session['_errors']:
-                session['_errors'].append(error)
-            row['error_ref'] = '#/errors/' + str(session['_errors'].index(error))
-    if reason:
-        for pending in session['_stages']:
-            if pending['execution_state'] == 'NOT_STARTED':
-                pending['state_reason'] = reason
+        now = _clock()
+        with session['_admission']:
+            if session['_admission_aborted']:
+                raise ValueError('LOG_STAGE_LEDGER_CLOSED')
+            row = next(item for item in session['_stages'] if item['stage'] == stage)
+            if state == 'STARTED':
+                row.update(execution_state=state, elapsed_ms=max(0, (now - session['_started']) * 1000), state_reason=None)
+                row['_started'] = now
+            else:
+                row.update(execution_state=state, duration_ms=max(0, (now - row.pop('_started')) * 1000), state_reason=None)
+                if error is not None:
+                    if error not in session['_errors']:
+                        session['_errors'].append(error)
+                    row['error_ref'] = '#/errors/' + str(session['_errors'].index(error))
+            if reason:
+                for pending in session['_stages']:
+                    if pending['execution_state'] == 'NOT_STARTED':
+                        pending['state_reason'] = reason
+    finally:
+        _release(session)
 
 
 def mark_unreached(session, reason):
-    if session['_state'] != 'ACTIVE' or session['_registration_frozen']:
+    if not _admit(session):
         raise ValueError('LOG_STAGE_LEDGER_CLOSED')
-    for row in session['_stages']:
-        if row['execution_state'] == 'NOT_STARTED' and row['state_reason'] == 'NOT_REACHED':
-            row['state_reason'] = reason
+    try:
+        with session['_admission']:
+            if session['_admission_aborted']:
+                raise ValueError('LOG_STAGE_LEDGER_CLOSED')
+            for row in session['_stages']:
+                if row['execution_state'] == 'NOT_STARTED' and row['state_reason'] == 'NOT_REACHED':
+                    row['state_reason'] = reason
+    finally:
+        _release(session)
 
 
 def _collect_fallback(session):
@@ -891,15 +1062,17 @@ def _finalize_logging(session, *, execution_outcome, exit_status,
     if session['_state'] != 'ACTIVE':
         raise ValueError('LOG_FINALIZER_STATE')
     session['_deadline'] = _clock() + session['config']['shutdown_deadline_s']
-    session['_registration_frozen'] = True
-    complete = check_logging_health(session)['healthy']
     if application_error is not None:
         application_error = _sanitize(session, application_error)
         _validate_error(application_error)
-        if application_error not in session['_errors']:
-            session['_errors'].append(application_error)
     if release_result is not None:
         release_result = _sanitize(session, release_result)
+    complete = check_logging_health(session)['healthy']
+    if not _freeze_and_wait(session):
+        return _cache_unsealed(session, execution_outcome, exit_status, application_error,
+            release_result, 'ADMISSION_TIMEOUT')
+    if application_error is not None and application_error not in session['_errors']:
+        session['_errors'].append(application_error)
     settled = True
     # Registration/outcomes freeze now. Only the parent's final may still emit.
     for worker, token in session['_expected'].items():
@@ -923,6 +1096,11 @@ def _finalize_logging(session, *, execution_outcome, exit_status,
     session['_stop'].set()
     session['_thread'].join(max(0, session['_deadline'] - _clock()))
     sealed = settled and not session['_thread'].is_alive() and session['_listener_closed']
+    if not sealed:
+        reason = ('WORKERS_NOT_SETTLED' if not settled else
+            'LISTENER_TIMEOUT' if session['_thread'].is_alive() else 'OUTPUT_NOT_CLOSED')
+        return _cache_unsealed(session, execution_outcome, exit_status, application_error,
+            release_result, reason)
     complete = complete and sealed and session['_listener_error'] is None and session['_run_failed'].value == 0
     files = []
     summary_error = None
@@ -934,42 +1112,8 @@ def _finalize_logging(session, *, execution_outcome, exit_status,
         complete = False
         sealed = False
         summary_error = 'LOG_SEAL_FAILED'
-    levels = dict(session['_counts'])
-    drops = session['_drops']
-    missing = []
-    for worker, token in session['_expected'].items():
-        report = session['_worker_finals'].get(token)
-        if report:
-            for level in LEVELS:
-                levels[level] += report['counts'][level]
-            drops += report['drops']
-        else:
-            missing.append(worker)
-    for row in session['_stages']:
-        if row['execution_state'] == 'STARTED':
-            row.pop('_started', None)
-            row.update(execution_state='UNKNOWN', duration_ms=None, state_reason='TERMINAL_NOT_OBSERVED')
-    summary = dict(kind='LOGGING_SUMMARY', logging_summary_version=1,
-        run_id=session['run_id'], started_at_utc=session['_started_utc'], finished_at_utc=_utc(),
-        run_duration_ms=max(0, (_clock() - session['_started']) * 1000),
-        observed_stages=session['_stages'], execution_outcome=execution_outcome,
-        delivery_outcome='COMPLETE' if complete and drops == 0 else 'INCOMPLETE',
-        exit_status=exit_status if exit_status != 0 or complete and drops == 0 else 1,
-        release_result=release_result, null_reasons={'release_result': 'NOT_REPORTED_BY_CALLER'} if release_result is None else {},
-        event_counters={'written_primary': session['_written'], 'dropped': drops,
-                        'scope': 'LOWER_BOUND' if missing else 'ALL_REPORTED_PRODUCERS'},
-        logical_event_counts_by_level=levels, errors=session['_errors'], capacity_reports=session['_capacity'],
-        expected_producers=[dict(worker_id='parent', final_confirmed=final['confirmed'])] +
-            [dict(worker_id=worker, final_report=session['_worker_finals'].get(token)) for worker, token in session['_expected'].items()],
-        worker_outcomes=session['_outcomes'],
-        terminal_ref=session['_terminal'], retained_files=files, rotation_count=session['_rotation'],
-        storage_sealed=sealed, evidence_incomplete=not complete or bool(missing) or drops > 0)
-    if not session['_stages']:
-        summary['null_reasons']['observed_stages'] = 'NO_MAIN_BOUNDARIES'
-    if summary['terminal_ref'] is None:
-        summary['null_reasons']['terminal_ref'] = 'TERMINAL_NOT_CONFIRMED'
-    if summary['capacity_reports'] and summary['exit_status'] == 0:
-        summary['exit_status'] = 1
+    summary = _make_summary(session, execution_outcome, exit_status, release_result,
+        complete=complete, sealed=sealed, final_confirmed=final['confirmed'], files=files)
     if summary_error:
         summary['null_reasons']['authoritative_summary'] = summary_error
     # Sealing failures never claim authoritative zero. Serialization and file
@@ -995,6 +1139,75 @@ def _finalize_logging(session, *, execution_outcome, exit_status,
     if summary_error == 'LOG_SUMMARY_FAILED':
         summary['null_reasons']['authoritative_summary'] = summary_error
     return summary
+
+
+def _cache_unsealed(session, execution_outcome, exit_status, application_error, release_result, reason):
+    # No authoritative file or seal while an operation/writer may still act.
+    session['_stop'].set()
+    session['_admission_aborted'] = True
+    session['_failed'] = True
+    session['_run_failed'].value = 1
+    summary = _make_summary(session, execution_outcome, exit_status, release_result,
+        complete=False, sealed=False, final_confirmed=False, files=[], lower_bound=True)
+    summary['terminal_ref'] = None
+    summary['null_reasons'].update(terminal_ref='TERMINAL_NOT_CONFIRMED', authoritative_summary=reason)
+    if application_error is not None and application_error not in summary['errors']:
+        summary['errors'].append(application_error)
+    session['_final'] = summary
+    session['_closed'] = True
+    session['_state'] = 'FINALIZED'
+    session['_deferred_close'] = True
+    _cleanup_abandoned(session)
+    return summary
+
+
+def _make_summary(session, execution_outcome, exit_status, release_result, *,
+                  complete, sealed, final_confirmed, files, lower_bound=False):
+    # Primitive copies keep a timeout report detached from late operation/listener
+    # effects. Successful callers reach this only after producer/listener drain.
+    # No mutex wait on the timeout path: these are lower-bound primitive
+    # snapshots. After a successful freeze there are no live mutators.
+    levels = dict(session['_counts'])
+    stages = [dict(row) for row in session['_stages']]
+    outcomes = {worker: dict(value) for worker, value in dict(session['_outcomes']).items()}
+    expected = dict(session['_expected'])
+    worker_finals = dict(session['_worker_finals'])
+    drops = session['_drops']
+    missing = []
+    for worker, token in expected.items():
+        report = worker_finals.get(token)
+        if report:
+            for level in LEVELS:
+                levels[level] += report['counts'][level]
+            drops += report['drops']
+        else:
+            missing.append(worker)
+    for row in stages:
+        if row['execution_state'] == 'STARTED':
+            row.pop('_started', None)
+            row.update(execution_state='UNKNOWN', duration_ms=None, state_reason='TERMINAL_NOT_OBSERVED')
+    summary = dict(kind='LOGGING_SUMMARY', logging_summary_version=1,
+        run_id=session['run_id'], started_at_utc=session['_started_utc'], finished_at_utc=_utc(),
+        run_duration_ms=max(0, (_clock() - session['_started']) * 1000),
+        observed_stages=stages, execution_outcome=execution_outcome,
+        delivery_outcome='COMPLETE' if complete and drops == 0 else 'INCOMPLETE',
+        exit_status=exit_status if exit_status != 0 or complete and drops == 0 else 1,
+        release_result=release_result, null_reasons={'release_result': 'NOT_REPORTED_BY_CALLER'} if release_result is None else {},
+        event_counters={'written_primary': session['_written'], 'dropped': drops,
+                        'scope': 'LOWER_BOUND' if missing or lower_bound else 'ALL_REPORTED_PRODUCERS'},
+        logical_event_counts_by_level=levels, errors=list(session['_errors']), capacity_reports=list(session['_capacity']),
+        expected_producers=[dict(worker_id='parent', final_confirmed=final_confirmed)] +
+            [dict(worker_id=worker, final_report=worker_finals.get(token)) for worker, token in expected.items()],
+        worker_outcomes=outcomes,
+        terminal_ref=session['_terminal'], retained_files=files, rotation_count=session['_rotation'],
+        storage_sealed=sealed, evidence_incomplete=not complete or bool(missing) or drops > 0)
+    if not stages:
+        summary['null_reasons']['observed_stages'] = 'NO_MAIN_BOUNDARIES'
+    if summary['terminal_ref'] is None:
+        summary['null_reasons']['terminal_ref'] = 'TERMINAL_NOT_CONFIRMED'
+    if summary['capacity_reports'] and summary['exit_status'] == 0:
+        summary['exit_status'] = 1
+    return json.loads(_bytes(summary))
 
 
 def _read_summary(run_root):

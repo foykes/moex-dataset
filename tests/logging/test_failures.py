@@ -9,6 +9,246 @@ import uuid
 import pytest
 
 from _probe import ROOT
+from _probe import admission_race
+
+
+@pytest.mark.parametrize('level', ['INFO', 'ERROR', 'FLUSH'])
+@pytest.mark.parametrize('timing', ['completion', 'timeout'])
+def test_admitted_operation_finalize_race(log, level, timing):
+    context = log.configure_logging(ROOT, run_id='race-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='011a9d8',
+        config={'shutdown_deadline_s': 0.4, 'console_level': 'ERROR'})
+    result = admission_race(log, context, level, timing)
+    report = result['report']
+    assert not result['health_during_freeze']['healthy']
+    assert result['before'] == result['after'] and result['cached_unchanged']
+    assert result['fallback_calls_after_release'] == 0
+    if timing == 'timeout':
+        assert report['delivery_outcome'] == 'INCOMPLETE' and report['exit_status'] == 1
+        assert not report['storage_sealed'] and report['evidence_incomplete']
+        assert report['terminal_ref'] is None
+        assert report['null_reasons']['authoritative_summary'] == 'ADMISSION_TIMEOUT'
+        assert report['event_counters']['scope'] == 'LOWER_BOUND'
+        assert not (context['_run_root'] / 'run_summary.json').exists()
+        assert not (context['_run_root'] / 'summary.sha256').exists()
+        assert not log.check_logging_health(context)['healthy']
+    else:
+        assert report['exit_status'] == 0 and report['storage_sealed']
+        assert result['receipt']['accepted']
+        assert log._read_summary(context['_run_root']) == report
+        rows = [json.loads(line) for line in (context['_run_root'] / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        expected = ['run_completed'] if level == 'FLUSH' else ['admitted_fixture', 'run_completed']
+        assert [row['event'] for row in rows] == expected
+        assert sum(report['logical_event_counts_by_level'].values()) == len(expected)
+
+
+def test_shutdown_deadline_includes_admission_mutex(log):
+    import threading
+    context = log.configure_logging(ROOT, run_id='mutex-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='011a9d8', config={'shutdown_deadline_s': 0.2})
+    assert log._admit(context)
+    finished = threading.Event()
+    results = []
+    def finalize():
+        try:
+            results.append(log.finalize_logging(context, execution_outcome='COMPLETED', exit_status=0))
+        finally:
+            finished.set()
+    context['_admission'].acquire()
+    thread = threading.Thread(target=finalize)
+    before = time.monotonic()
+    try:
+        thread.start()
+        assert finished.wait(1)
+        assert time.monotonic() - before < 1
+        assert results[0]['null_reasons']['authoritative_summary'] == 'ADMISSION_TIMEOUT'
+        assert not results[0]['storage_sealed'] and results[0]['exit_status'] == 1
+        assert not (context['_run_root'] / 'run_summary.json').exists()
+    finally:
+        context['_admission'].release()
+        log._release(context)
+        thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_listener_owns_files_past_deadline_no_authoritative_summary(log, monkeypatch):
+    import threading
+    context = log.configure_logging(ROOT, run_id='listener-held-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='011a9d8', config={'shutdown_deadline_s': 0.2})
+    entered, release = threading.Event(), threading.Event()
+    original = log._write_record
+    def write(session, wrapper):
+        if wrapper['event']['event'] == 'listener_fixture':
+            entered.set()
+            assert release.wait(3)
+        return original(session, wrapper)
+    monkeypatch.setattr(log, '_write_record', write)
+    try:
+        assert log.emit_event(context, 'INFO', 'listener_fixture', 'safe', {})['accepted']
+        assert entered.wait(2)
+        report = log.finalize_logging(context, execution_outcome='COMPLETED', exit_status=0)
+        snapshot = json.loads(json.dumps(report))
+        assert report['exit_status'] == 1 and not report['storage_sealed']
+        assert not (context['_run_root'] / 'run_summary.json').exists()
+        assert not (context['_run_root'] / 'summary.sha256').exists()
+    finally:
+        release.set()
+        context['_thread'].join(2)
+    assert not context['_thread'].is_alive()
+    assert log.finalize_logging(context, execution_outcome='COMPLETED', exit_status=0) == snapshot
+    assert not log.check_logging_health(context)['healthy']
+
+
+def test_rejected_admission_retries_deferred_cleanup(log, monkeypatch):
+    context = log.configure_logging(ROOT, run_id='cleanup-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='011a9d8', config={'shutdown_deadline_s': 0.05})
+    assert log._admit(context)
+    log.finalize_logging(context, execution_outcome='COMPLETED', exit_status=0)
+    context['_thread'].join(2)
+    assert not context['_thread'].is_alive()
+    original = log._cleanup_abandoned
+    skipped = []
+    def contended(producer):
+        # Reproduce one lost nonblocking attempt from the last permit release.
+        if not skipped:
+            skipped.append(True)
+            return
+        return original(producer)
+    monkeypatch.setattr(log, '_cleanup_abandoned', contended)
+    log._release(context)
+    assert not context['_ack'].closed
+    with pytest.raises(ValueError, match='LOG_CONTEXT_CLOSED'):
+        log.emit_event(context, 'INFO', 'late', 'safe', {})
+    assert context['_ack'].closed and context['_transport_closing']
+
+
+@pytest.mark.parametrize('same_id', [True, False])
+def test_concurrent_registration_keeps_expected_producers_bounded(log, monkeypatch, same_id):
+    import threading
+    context = log.configure_logging(ROOT, run_id='registration-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='011a9d8', config={'max_workers': 1})
+    rendezvous = threading.Barrier(2, timeout=2)
+    original = context['_spawn'].Pipe
+    results, errors = [], []
+    def pipe(*args, **kwargs):
+        pair = original(*args, **kwargs)
+        rendezvous.wait()
+        return pair
+    monkeypatch.setattr(context['_spawn'], 'Pipe', pipe)
+    def register(worker):
+        try:
+            results.append(log.prepare_worker(context, worker))
+        except ValueError as error:
+            errors.append(str(error))
+    workers = ['same', 'same' if same_id else 'other']
+    threads = [threading.Thread(target=register, args=(worker,)) for worker in workers]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(3)
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(results) == 1 and errors == ['LOG_WORKER_REGISTRATION']
+        assert len(context['_expected']) == 1 and len(context['_ack_senders']) == 2
+        worker = next(iter(context['_expected']))
+        log.record_worker_outcome(context, worker, started=False, exit_status=None)
+    finally:
+        log.finalize_logging(context, execution_outcome='COMPLETED', exit_status=0)
+
+
+def retention_config(root, **overrides):
+    result = {'log_root': root.relative_to(ROOT).as_posix(), 'retained_runs': 1,
+        'rotation_bytes': 65536, 'rotation_segments': 1, 'protected_bytes': 65536, 'max_workers': 1,
+        'fallback_bytes_per_producer': 65536, 'context_bytes': 65536,
+        'summary_bytes': 65536, 'root_budget_bytes': 2000000}
+    result.update(overrides)
+    return result
+
+
+def retained_run(log, config, name, incomplete=False, failed=False):
+    context = log.configure_logging(ROOT, run_id=name, environment='offline', producer_sha='011a9d8', config=config)
+    (context['_run_root'] / 'sentinel').write_bytes(b'UNCHANGED_REVIEW_EVIDENCE')
+    if incomplete:
+        log.prepare_worker(context, 'never-started')
+        log.record_worker_outcome(context, 'never-started', started=False, exit_status=None)
+    report = log.finalize_logging(context, execution_outcome='FAILED' if failed else 'COMPLETED', exit_status=1 if failed else 0)
+    assert report['storage_sealed']
+    assert report['evidence_incomplete'] is incomplete
+    return context['_run_root']
+
+
+def evidence_hashes(root):
+    import hashlib
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()}
+
+
+@pytest.mark.parametrize('failed', [False, True])
+@pytest.mark.parametrize('policy', ['count', 'age'])
+def test_retention_protects_sealed_incomplete_and_prunes_complete(log, tmp_path, monkeypatch, failed, policy):
+    config = retention_config(tmp_path / 'review-retention', retained_runs=1 if policy == 'count' else 3,
+        retention_days=1)
+    protected = retained_run(log, config, 'incomplete', incomplete=True)
+    before = evidence_hashes(protected)
+    eligible = retained_run(log, config, 'complete', failed=failed)
+    assert protected.exists() and evidence_hashes(protected) == before
+    if policy == 'age':
+        original = log.datetime.datetime
+        class Future(original):
+            @classmethod
+            def now(cls, tz=None):
+                return original.now(tz) + log.datetime.timedelta(days=2)
+        monkeypatch.setattr(log.datetime, 'datetime', Future)
+    retained_run(log, config, 'next')
+    assert protected.exists() and evidence_hashes(protected) == before
+    assert not eligible.exists()
+
+
+@pytest.mark.parametrize('older_protected_bytes', [65536, 131072])
+def test_retention_incomplete_full_reservation_refuses_budget(log, tmp_path, older_protected_bytes):
+    root = tmp_path / 'review-budget'
+    old = retention_config(root, protected_bytes=older_protected_bytes)
+    protected = retained_run(log, old, 'incomplete', incomplete=True)
+    before = evidence_hashes(protected)
+    new = retention_config(root)
+    previous_reserve = 393281 if older_protected_bytes == 65536 else 458817
+    new['root_budget_bytes'] = previous_reserve + 393281 - 1
+    with pytest.raises(ValueError, match='LOG_ROOT_BUDGET_UNAVAILABLE'):
+        log.configure_logging(ROOT, run_id='refused', environment='offline', producer_sha='011a9d8', config=new)
+    assert evidence_hashes(protected) == before and not (root / 'refused').exists()
+
+
+def test_retention_previous_reservation_not_limited_by_new_context_cap(log, tmp_path):
+    root = tmp_path / 'old-context'
+    old = retention_config(root, protected_bytes=131072)
+    protected = retained_run(log, old, 'incomplete-' + 'x' * 65, incomplete=True)
+    before = evidence_hashes(protected)
+    new = retention_config(root)
+    new['context_bytes'] = (protected / 'context.json').stat().st_size - 40
+    new_reserve = 327745 + new['context_bytes']
+    new['root_budget_bytes'] = 458817 + new_reserve - 1
+    fit = dict(new, log_root=(tmp_path / 'fit-context').relative_to(ROOT).as_posix())
+    control = log.configure_logging(ROOT, run_id='next', environment='offline', producer_sha='011a9d8', config=fit)
+    assert (control['_run_root'] / 'context.json').stat().st_size <= new['context_bytes']
+    assert log.finalize_logging(control, execution_outcome='COMPLETED', exit_status=0)['exit_status'] == 0
+    with pytest.raises(ValueError, match='LOG_ROOT_BUDGET_UNAVAILABLE'):
+        log.configure_logging(ROOT, run_id='next', environment='offline', producer_sha='011a9d8', config=new)
+    assert evidence_hashes(protected) == before and not (root / 'next').exists()
+
+
+@pytest.mark.parametrize('fault', ['missing_summary', 'corrupt_seal'])
+def test_retention_preserves_corrupt_evidence_reservation(log, tmp_path, fault):
+    root = tmp_path / 'corrupt'
+    config = retention_config(root)
+    protected = retained_run(log, config, 'corrupt')
+    if fault == 'missing_summary':
+        (protected / 'run_summary.json').unlink()
+    else:
+        (protected / 'summary.sha256').write_bytes(b'0' * 64 + b'\n')
+    before = evidence_hashes(protected)
+    config['root_budget_bytes'] = 786561
+    with pytest.raises(ValueError, match='LOG_ROOT_BUDGET_UNAVAILABLE'):
+        log.configure_logging(ROOT, run_id='next', environment='offline', producer_sha='011a9d8', config=config)
+    assert evidence_hashes(protected) == before
 
 
 def test_listener_failure_no_false_success(log, session, monkeypatch):

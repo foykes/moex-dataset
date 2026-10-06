@@ -53,9 +53,14 @@ producer fallback and the 65-byte summary seal, must fit retained-run/root
 budgets. An exclusive allocation lock serializes reservation/retention. Stale
 locks require explicit diagnosis; the logger does not remove them.
 
-Retention removes only validated, sealed, finished runs in this configured
-root. Active, missing-summary and inconsistent runs are preserved and charged
-at their full reservation. Insufficient remaining budget refuses a new run.
+Retention removes only validated, sealed, finished runs with COMPLETE delivery
+and `evidence_incomplete=false` in this configured root. Application FAILED
+with complete diagnostics remains eligible. Active, missing/corrupt-summary and
+INCOMPLETE evidence is preserved, including sealed INCOMPLETE runs. Accounting
+uses the larger of actual bytes, the current full reservation and the validated
+previous full reservation. A smaller new context cap does not hide the previous
+configuration. Unavailable previous reservation or insufficient remaining budget
+refuses a new run.
 Changing roots is an explicit caller choice; archives have separate per-export
 limits. Paths and operational artifacts never enter the public dataset manifest.
 
@@ -102,6 +107,17 @@ session. Changed configuration is refused. Finalizers return their cached
 report; lifecycle final events are reserved for these finalizers. Finalization
 freezes application events, public barriers, registrations, outcomes and stage
 observations. Simultaneous finalizers are refused rather than emitting two finals.
+Admission and freeze share a local condition in each producer. An admitted
+operation owns its permit through sanitization, first LogRecord, IPC, fallback
+and fallback-handle close. Parent and worker finalizers wait for these operations
+within their single shutdown deadline before final events, close and seal.
+Admission timeout returns a detached, cached INCOMPLETE/nonzero report with
+LOWER_BOUND counters and `ADMISSION_TIMEOUT`; it publishes neither summary nor
+summary seal. Cleanup waits for the last operation and, in the parent, listener
+handle closure. New operations after freeze are refused. Cached health checks
+sticky failures and completeness rather than trusting a cached delivery string.
+Listener timeout, unclosed output or unsettled children likewise leaves only an
+in-memory unsealed report; live owners cannot invalidate a published inventory.
 
 ## Delivery and failure semantics
 
@@ -114,7 +130,8 @@ sequence, kind and a sanitized F0 event. Tokens/sequences never extend F0 JSONL.
 ERROR, stage boundaries and lifecycle finals bypass ordinary level filters.
 ACK is one fixed 14-byte frame after primary/protected/console writes and flushes.
 A barrier ACK confirms earlier accepted events from that producer. One shared
-deadline covers producer-lock acquisition, queue put and ACK wait. Finalization
+deadline starts at public operation entry and covers producer-lock acquisition,
+queue put and ACK wait. Finalization
 clips this to the remaining shutdown deadline. There is one critical request
 in flight per producer; no new requests follow an unconfirmed ACK.
 

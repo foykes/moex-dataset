@@ -247,9 +247,11 @@ handoff; later slices need new prompts and verified bases.
 ## F-LOG-01 reservation and integration handoff
 
 F-LOG-01 R3 and its independent plan review were approved in this chat; the
-human explicitly authorized implementation on 2026-10-06. The approved plan
-exists as a chat message, not a saved byte artifact, so its SHA-256 is NOT
-AVAILABLE. The reviewer R1/R2 attachments remain original source evidence.
+human explicitly authorized implementation on 2026-10-06. The 2026-10-07
+review-fix request binds APPROVED_PLAN to F-LOG-01 R3 with SHA-256
+`866499c4c289346929cf3938e7d3acd2df71b4941a0a864a42ea9723352ae776`.
+This hash is the human-supplied reviewer reference; original R3 byte-artifact
+hash recomputation is NOT VERIFIED. R1/R2 attachments remain source evidence.
 Branch: `codex/mds-f-log-01`. Checked source base:
 `c4f2210e83447d2c72f32a2adb1a3834349390c2` (F2 PR81 merged). F0 contract blob:
 `19c4d9d5786ea5bf66a0d42f1f88ff37ee5d7adc`.
@@ -309,6 +311,13 @@ exit codes, CI checks on that HEAD, environment hashes, notebook checks and
 independent review evidence are recorded in `.f-log/evidence/HANDOFF.md` and
 the PR body. This ignored evidence is local and does not enter the public
 dataset manifest. Missing/skipped CI is NOT VERIFIED, not PASS.
+The PR82 review fixes target reviewed HEAD
+`011a9d8bf87a77a9b8b99bb94221127019c7448f`: common credential families,
+admitted-operation/freeze ordering in parent and worker, and protected INCOMPLETE
+retention. The repeat-review handoff includes a portable redacted evidence ZIP
+with raw report structure, before/after hashes, regression results, overhead,
+actual fixture logs/summaries and a sealed diagnostic bundle. Export manifests
+distinguish original local bytes from redacted sharing copies.
 
 This slice leaves #78 open. It does not merge, deploy, run the production CLI,
 activate hooks/cron/CI, import the real pipeline for smoke tests, contact MOEX/
