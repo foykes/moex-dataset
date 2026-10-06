@@ -23,7 +23,6 @@ current_path = sys.path[0]
 # %%
 import data_gathering, pandas as pd
 
-
 # %%
 class data_gathering___moex_query(unittest.TestCase):
    def tests_moex_query(self):
@@ -44,7 +43,6 @@ class data_gathering___moex_query(unittest.TestCase):
         control_len = len(df_ticker_control)
         self.assertEqual(result_len, control_len)
 
-
 # %%
 class data_gathering___moex(unittest.TestCase):
    def tests_moex_(self):
@@ -60,19 +58,22 @@ class data_gathering___moex(unittest.TestCase):
     # ticker_list = list(set(ticker_list))
     self.assertTrue(len(df_ticker) > 0 )
 
+# %%
+def main():
+    # Рабочие действия выполняются только при явном запуске скрипта.
+    ticker_in = "SBER"
+    years = 1
+    interval = 24
+    ticker_type = "Акции"
+    df_ticker = data_gathering.moex(ticker_in, ticker_type, years, interval)
+    df_ticker
+
+    # запускаем тестирование
+    unittest.main()
 
 # %%
-ticker_in = "SBER"
-years = 1
-interval = 24
-ticker_type = "Акции"
-df_ticker = data_gathering.moex(ticker_in, ticker_type, years, interval)
-df_ticker
-
-# %%
-# запускаем тестирование
-if __name__ == '__main__':
-    unittest.main() 
+if __name__ == "__main__":
+    main()
 
 # %%
 # SBERP

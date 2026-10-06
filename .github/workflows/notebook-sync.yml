@@ -1,0 +1,86 @@
+name: F2 notebook pairs and offline Windows regressions
+
+on:
+  pull_request:
+    paths:
+      - '**.py'
+      - '**.ipynb'
+      - '.pre-commit-config.yaml'
+      - '.github/workflows/notebook-sync.yml'
+      - 'pyproject.toml'
+  push:
+    branches: [main, codex/mds-f2-01]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notebook-sync:
+    # Actual setup activation belongs to the coordinator, including free quota.
+    # A skipped job is NOT VERIFIED and must never satisfy a required merge gate.
+    if: vars.MDS_F2_CI_SETUP_APPROVED == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify actual source revision
+        shell: pwsh
+        env:
+          TASK_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $taskHead = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify source HEAD' }
+          if ($taskHead -ne $env:TASK_EXPECTED_SHA) { throw 'Source SHA mismatch' }
+      - name: SETUP approved F1 Windows dev lock in fresh F2 roots
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath '.f2') { throw 'CI requires fresh F2 roots' }
+          New-Item -ItemType Directory -Path '.f2/downloads','.f2/tmp','.f2/cache','.f2/evidence' -Force | Out-Null
+          $env:TEMP = (Resolve-Path '.f2/tmp').Path
+          $env:TMP = $env:TEMP
+          $env:PIP_CONFIG_FILE = 'nul'
+          $taskArchive = '.f2/downloads/python-3.14.8-amd64.zip'
+          Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.14.8/python-3.14.8-amd64.zip' -OutFile $taskArchive -ErrorAction Stop
+          $taskHash = (Get-FileHash -LiteralPath $taskArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($taskHash -ne '4873947a8afc037846b180312b83c744a4146a851cfd316a75c3125a4d8299da') { throw 'Python archive hash mismatch' }
+          Expand-Archive -LiteralPath $taskArchive -DestinationPath '.f2/python' -ErrorAction Stop
+          $taskBase = (Resolve-Path '.f2/python/python.exe').Path
+          & $taskBase -I -B -S -c 'import struct,sys,sysconfig; assert sys.version_info[:3]==(3,14,8); assert struct.calcsize("P")==8; assert sysconfig.get_config_var("Py_GIL_DISABLED")==0; assert sys._is_gil_enabled()'
+          if ($LASTEXITCODE -ne 0) { throw 'Interpreter profile failed' }
+          & $taskBase -I -B -m venv '.f2/venv-dev'
+          if ($LASTEXITCODE -ne 0) { throw 'Fresh venv failed' }
+          $taskPython = (Resolve-Path '.f2/venv-dev/Scripts/python.exe').Path
+          $taskPip = & $taskPython -I -B -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw 'pip provenance failed' }
+          if ($taskPip -notmatch '^pip 26\.2\.1 ') { throw 'Unexpected bootstrap pip' }
+          & $taskPython -I -B -m pip --isolated --no-cache-dir download --only-binary=:all: --index-url https://pypi.org/simple --require-hashes --dest '.f2/wheelhouse' -r 'requirements/windows-cp314-dev.lock'
+          if ($LASTEXITCODE -ne 0) { throw 'Hash-locked wheel download failed' }
+          & $taskPython -I -B -m pip --isolated --no-cache-dir install --no-index --find-links '.f2/wheelhouse' --only-binary=:all: --require-hashes -r 'requirements/windows-cp314-dev.lock'
+          if ($LASTEXITCODE -ne 0) { throw 'Offline lock install failed' }
+          & $taskPython -I -B -m pip --isolated check
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency check failed' }
+          "MDS_F2_PYTHON=$taskPython" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: OFFLINE REGRESSION exact SHA and scoped fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:TEMP = (Resolve-Path '.f2/tmp').Path
+          $env:TMP = $env:TEMP
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          [Environment]::SetEnvironmentVariable('PYTEST_ADDOPTS', $null, 'Process')
+          [Environment]::SetEnvironmentVariable('PYTEST_PLUGINS', $null, 'Process')
+          $taskHead = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'HEAD read failed' }
+          & $env:MDS_F2_PYTHON -I -B -X utf8 tools/notebook_sync.py check --ref $taskHead
+          if ($LASTEXITCODE -ne 0) { throw 'Exact-SHA notebook check failed' }
+          & $env:MDS_F2_PYTHON -I -B -X utf8 -m pytest -c pyproject.toml --confcutdir tests/f2 tests/f2 -q --basetemp '.f2/tmp/pytest-ci' -o cache_dir='.f2/cache/pytest'
+          if ($LASTEXITCODE -ne 0) { throw 'F2 offline regression failed' }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'Source checkout changed during checks' }

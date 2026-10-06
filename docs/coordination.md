@@ -195,3 +195,51 @@ NO_AUTO_MERGE: true
 ```
 
 Stop after the current slice and its handoff. The next package needs separate approval and a freshly checked base. Findings publication, merge, issue closure, production reload and cron activation are outside this slice.
+
+## F2-01 reservation and integration handoff
+
+F2-01 R2 was explicitly approved on 2026-10-05 from `PLAN (6).md`, SHA-256
+`93f525cdfd3ca54b7acd0f6d8113fb3a88fe1a9abd750d50f534a29b536ee1a3`,
+independent plan review `PLAN_ACCEPT`. Its branch is `codex/mds-f2-01`; source
+base is `683a25ece7a6abe17407aed5eb642bf918e9914a` (F1 PR80 merged).
+
+This approval temporarily transfers the five diagnostic pairs (`1year`, `all`,
+`tests`, `count_check`, `main_tests`) to F2 as indivisible ownership zones.
+F2 also owns this slice of `main.py`, `tools/notebook_sync.py`,
+`.pre-commit-config.yaml`, `.github/workflows/notebook-sync.yml`, `tests/f2/`,
+`docs/notebook_sync.md`, this F2 handoff section and the `.f2/` ignore rule.
+Other changes to these shared files require a separate handoff. `pyproject.toml`,
+settings, datasets, credentials, F1 locks/guards and research PR3 are read-only.
+F retains the ten pair reservations until explicit release under condition H;
+this PR does not start A/B/C/D or transfer their files automatically.
+
+The safeguard checks all ten pairs on worktree/index/exact source revisions;
+only the five approved diagnostic pairs are edited. Development synchronization
+does not execute notebooks and never auto-stages or auto-commits. Each commit
+attempt captures its current HEAD as `SYNC_BASE_SHA`, distinct from the branch
+base. A notebook-only export fails with `RESTAGE_REQUIRED`, preserving the old
+index/HEAD until the author explicitly stages both members. See
+[notebook sync protocol](notebook_sync.md) for the per-command profile.
+
+Actual hook activation, shared setup and the CI setup approval variable remain
+coordinator-owned. Disposable real Git/pre-commit tests do not activate a hook
+in the application worktree. A skipped/unavailable CI job is NOT VERIFIED;
+required merge/deployment enforcement remains coordinator/F3. Exact tested
+source HEAD, actual commands/results, AC evidence and activation status belong
+in the review handoff, not inferred from this reservation document.
+
+Open hookups: F2-02 owns #4 and the full public runtime path contract of #45
+(including the existing machine root in `1year`). A owns the separate #5
+cold-start signature defect. F-LOG owns shared logger integration; F3/coordinator
+owns actual activation and required ETL/merge/deployment enforcement. Other OS
+evidence remains #67/R1. A8/B3/D4 can use fixtures without circular dependencies.
+The eleven guarded module-import probes use the declared launcher root for
+legacy library settings reads; their offline profile disables urllib3's optional
+IPv6 loopback capability probe. They do not prove foreign runtime-root behavior
+or authorize live diagnostic wrappers. Public functions, schemas, column order,
+filenames, RSI calculations, Google targets and publication policy are preserved.
+
+This slice references #44/#45/#46 and audit #76; it does not close these issues,
+implement F2-02/#5/F-LOG/general F3, merge, deploy, enable cron or write remote
+datasets. PR1 is not duplicated. Stop after the independent F2-01 code review
+handoff; later slices need new prompts and verified bases.

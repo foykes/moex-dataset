@@ -1,18 +1,13 @@
-import os,sys, time, datetime
+import time, datetime
+from pathlib import Path
 
-print("Запуск скрипта: {}".format(datetime.datetime.now()))
-start_time = time.time()
 
-current_path = sys.path[0]
+def main():
+    # Notebook-пары проверяются в dev/CI до запуска, production их не конвертирует.
+    print("Запуск скрипта: {}".format(datetime.datetime.now()))
+    start_time = time.time()
+    current_path = str(Path(__file__).resolve().parent)
 
-## Экспортирование актуальных версий скриптов
-os.system(('jupyter nbconvert --to script {}/data_gathering.ipynb').format(current_path))
-os.system(('jupyter nbconvert --to script {}/tech.ipynb').format(current_path))
-os.system(('jupyter nbconvert --to script {}/dividends.ipynb').format(current_path))
-os.system(('jupyter nbconvert --to script {}/dohodru_data.ipynb').format(current_path))
-os.system(('jupyter nbconvert --to script {}/upload.ipynb').format(current_path))
-
-if __name__ == "__main__":
     import data_gathering, dividends, tech, dohodru_data, upload
 
     data_gathering.main(current_path)
@@ -33,3 +28,7 @@ if __name__ == "__main__":
     mins, secs = divmod(elapsed_time, 60)
     hours, mins = divmod(mins, 60)
     print('Скрипт полностью закончил работу.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
+
+
+if __name__ == "__main__":
+    main()
