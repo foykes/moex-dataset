@@ -1,0 +1,587 @@
+{
+  "source_contract_blob": "19c4d9d5786ea5bf66a0d42f1f88ff37ee5d7adc",
+  "illustrative": true,
+  "objects": [
+    {
+      "source_example": "E12",
+      "name": "assessment",
+      "type": "capacity_assessment",
+      "value": {
+        "format": "google_sheets",
+        "status": "NOT_VERIFIED",
+        "capabilities_ref": "ILLUSTRATIVE/caps/google_sheets",
+        "source_shape": {
+          "data_rows": 3,
+          "data_columns": 10,
+          "header_rows": 1,
+          "index_columns": 0
+        },
+        "required_rows": 4,
+        "required_columns": 10,
+        "required_cells": 40,
+        "row_limit": null,
+        "column_limit": null,
+        "cell_limit": null,
+        "workbook_cells_before": null,
+        "workbook_cells_after": null,
+        "limit_evidence_ref": null,
+        "grid_evidence_ref": null,
+        "errors": [
+          {
+            "category": "CAPACITY_NOT_VERIFIED",
+            "code": "EFFECTIVE_CAPABILITY_NOT_VERIFIED",
+            "stage": "preflight",
+            "retryable": false,
+            "final": true,
+            "message": "ILLUSTRATIVE effective limit/grid/evidence unavailable",
+            "run_id": null,
+            "snapshot_id": null,
+            "dataset_id": null,
+            "instrument": null,
+            "interval": null,
+            "page": null,
+            "file": null,
+            "artifact_id": null,
+            "target_id": null,
+            "endpoint": null,
+            "attempt": null,
+            "exception_type": null,
+            "null_reasons": {
+              "run_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "snapshot_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "dataset_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "instrument": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "interval": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "page": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "file": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "artifact_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "target_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "endpoint": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "attempt": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "exception_type": "NOT_AVAILABLE_OR_NOT_APPLICABLE"
+            }
+          }
+        ],
+        "null_reasons": {
+          "workbook_cells_before": "NOT_VERIFIED_OR_NOT_MEASURED",
+          "cell_limit": "NOT_VERIFIED_OR_NOT_MEASURED",
+          "limit_evidence_ref": "NOT_VERIFIED_OR_NOT_MEASURED",
+          "workbook_cells_after": "NOT_VERIFIED_OR_NOT_MEASURED",
+          "row_limit": "NOT_VERIFIED_OR_NOT_MEASURED",
+          "column_limit": "NOT_VERIFIED_OR_NOT_MEASURED",
+          "grid_evidence_ref": "NOT_VERIFIED_OR_NOT_MEASURED"
+        }
+      }
+    },
+    {
+      "source_example": "E16",
+      "name": "ordinary_error",
+      "type": "event",
+      "value": {
+        "timestamp_utc": "2026-10-04T09:05:00Z",
+        "level": "ERROR",
+        "event": "source_request_failed",
+        "stage": "candles",
+        "message": "ILLUSTRATIVE redacted original error",
+        "run_id": "ILLUSTRATIVE_RUN_A",
+        "producer_sha": "ILLUSTRATIVE_SHA",
+        "process": "main",
+        "worker": "collector",
+        "snapshot_id": "ILLUSTRATIVE_SNAPSHOT_A",
+        "release_id": null,
+        "dataset_id": "10years_data_1d_interval",
+        "instrument": "ILLUSTRATIVE_SECID",
+        "interval": 24,
+        "page": 2,
+        "file": null,
+        "artifact_id": null,
+        "target_id": null,
+        "outcome": "FAILED",
+        "elapsed_ms": 3200,
+        "duration_ms": 1100,
+        "counts": {
+          "rows_received": 0,
+          "rows_accepted": null,
+          "rows_quarantined": null,
+          "pages": 2,
+          "instruments": 1,
+          "null_reasons": {
+            "rows_accepted": "NOT_MEASURED_AFTER_FAILED_COLLECTION",
+            "rows_quarantined": "NOT_MEASURED_AFTER_FAILED_COLLECTION"
+          }
+        },
+        "retries": {
+          "attempt": 3,
+          "limit": 3
+        },
+        "error": {
+          "category": "SOURCE",
+          "code": "RETRY_EXHAUSTED",
+          "stage": "candles",
+          "retryable": false,
+          "final": true,
+          "message": "ILLUSTRATIVE redacted RETRY_EXHAUSTED",
+          "run_id": "ILLUSTRATIVE_RUN_A",
+          "snapshot_id": "ILLUSTRATIVE_SNAPSHOT_A",
+          "dataset_id": "10years_data_1d_interval",
+          "instrument": "ILLUSTRATIVE_SECID",
+          "interval": 24,
+          "page": 2,
+          "file": null,
+          "artifact_id": null,
+          "target_id": null,
+          "endpoint": "https://iss.moex.com/iss/engines/stock/markets/shares/securities/ILLUSTRATIVE_SECID/candles.csv",
+          "attempt": 3,
+          "exception_type": null,
+          "null_reasons": {
+            "file": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+            "artifact_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+            "target_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+            "exception_type": "NOT_AVAILABLE_OR_NOT_APPLICABLE"
+          }
+        },
+        "fields": {},
+        "null_reasons": {
+          "release_id": "NO_RELEASE_SELECTED",
+          "file": "NO_FILE_SELECTED",
+          "artifact_id": "NO_ARTIFACT_REQUIRED_FOR_SOURCE_EVENT",
+          "target_id": "NO_PUBLICATION_TARGET"
+        }
+      }
+    },
+    {
+      "source_example": "E16",
+      "name": "startup_error",
+      "type": "event",
+      "value": {
+        "timestamp_utc": "2026-10-04T09:05:00Z",
+        "level": "ERROR",
+        "event": "startup_failed",
+        "stage": "startup",
+        "message": "ILLUSTRATIVE redacted original error",
+        "run_id": null,
+        "producer_sha": null,
+        "process": null,
+        "worker": null,
+        "snapshot_id": null,
+        "release_id": null,
+        "dataset_id": null,
+        "instrument": null,
+        "interval": null,
+        "page": null,
+        "file": null,
+        "artifact_id": null,
+        "target_id": null,
+        "outcome": "FAILED",
+        "elapsed_ms": null,
+        "duration_ms": null,
+        "counts": null,
+        "retries": null,
+        "error": {
+          "category": "CONFIG",
+          "code": "OUTPUT_ROOT_UNAVAILABLE",
+          "stage": "startup",
+          "retryable": false,
+          "final": true,
+          "message": "ILLUSTRATIVE output root unavailable; original error remains reportable",
+          "run_id": null,
+          "snapshot_id": null,
+          "dataset_id": null,
+          "instrument": null,
+          "interval": null,
+          "page": null,
+          "file": null,
+          "artifact_id": null,
+          "target_id": null,
+          "endpoint": null,
+          "attempt": null,
+          "exception_type": null,
+          "null_reasons": {
+            "run_id": "STARTUP_CONTEXT_UNAVAILABLE",
+            "snapshot_id": "STARTUP_CONTEXT_UNAVAILABLE",
+            "dataset_id": "STARTUP_CONTEXT_UNAVAILABLE",
+            "instrument": "STARTUP_CONTEXT_UNAVAILABLE",
+            "interval": "STARTUP_CONTEXT_UNAVAILABLE",
+            "page": "STARTUP_CONTEXT_UNAVAILABLE",
+            "file": "STARTUP_CONTEXT_UNAVAILABLE",
+            "artifact_id": "STARTUP_CONTEXT_UNAVAILABLE",
+            "target_id": "STARTUP_CONTEXT_UNAVAILABLE",
+            "endpoint": "STARTUP_CONTEXT_UNAVAILABLE",
+            "attempt": "STARTUP_CONTEXT_UNAVAILABLE",
+            "exception_type": "STARTUP_CONTEXT_UNAVAILABLE"
+          }
+        },
+        "fields": {},
+        "null_reasons": {
+          "run_id": "STARTUP_CONTEXT_UNAVAILABLE",
+          "producer_sha": "STARTUP_CONTEXT_UNAVAILABLE",
+          "process": "STARTUP_CONTEXT_UNAVAILABLE",
+          "worker": "STARTUP_CONTEXT_UNAVAILABLE",
+          "snapshot_id": "STARTUP_CONTEXT_UNAVAILABLE",
+          "release_id": "STARTUP_CONTEXT_UNAVAILABLE",
+          "dataset_id": "STARTUP_CONTEXT_UNAVAILABLE",
+          "instrument": "STARTUP_CONTEXT_UNAVAILABLE",
+          "interval": "STARTUP_CONTEXT_UNAVAILABLE",
+          "page": "STARTUP_CONTEXT_UNAVAILABLE",
+          "file": "STARTUP_CONTEXT_UNAVAILABLE",
+          "artifact_id": "STARTUP_CONTEXT_UNAVAILABLE",
+          "target_id": "STARTUP_CONTEXT_UNAVAILABLE",
+          "elapsed_ms": "STARTUP_CONTEXT_UNAVAILABLE",
+          "duration_ms": "STARTUP_CONTEXT_UNAVAILABLE",
+          "counts": "STARTUP_CONTEXT_UNAVAILABLE",
+          "retries": "STARTUP_CONTEXT_UNAVAILABLE"
+        }
+      }
+    },
+    {
+      "source_example": "E17",
+      "name": "xlsx_boundary_pass",
+      "type": "capacity_assessment",
+      "value": {
+        "format": "xlsx",
+        "status": "PASS",
+        "capabilities_ref": "ILLUSTRATIVE/caps/xlsx",
+        "source_shape": {
+          "data_rows": 1048575,
+          "data_columns": 10,
+          "header_rows": 1,
+          "index_columns": 0
+        },
+        "required_rows": 1048576,
+        "required_columns": 10,
+        "required_cells": 10485760,
+        "row_limit": 1048576,
+        "column_limit": 16384,
+        "cell_limit": null,
+        "workbook_cells_before": null,
+        "workbook_cells_after": null,
+        "limit_evidence_ref": "ILLUSTRATIVE/limits/xlsx",
+        "grid_evidence_ref": null,
+        "errors": [],
+        "null_reasons": {
+          "workbook_cells_before": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+          "cell_limit": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+          "grid_evidence_ref": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+          "workbook_cells_after": "NOT_APPLICABLE_TO_SELECTED_FORMAT"
+        }
+      }
+    },
+    {
+      "source_example": "E17",
+      "name": "xlsx_boundary_fail",
+      "type": "capacity_assessment",
+      "value": {
+        "format": "xlsx",
+        "status": "FAIL",
+        "capabilities_ref": "ILLUSTRATIVE/caps/xlsx",
+        "source_shape": {
+          "data_rows": 1048576,
+          "data_columns": 10,
+          "header_rows": 1,
+          "index_columns": 0
+        },
+        "required_rows": 1048577,
+        "required_columns": 10,
+        "required_cells": 10485770,
+        "row_limit": 1048576,
+        "column_limit": 16384,
+        "cell_limit": null,
+        "workbook_cells_before": null,
+        "workbook_cells_after": null,
+        "limit_evidence_ref": "ILLUSTRATIVE/limits/xlsx",
+        "grid_evidence_ref": null,
+        "errors": [
+          {
+            "category": "CAPACITY",
+            "code": "REQUIRED_EXPORT_OVERFLOW",
+            "stage": "preflight",
+            "retryable": false,
+            "final": true,
+            "message": "ILLUSTRATIVE redacted REQUIRED_EXPORT_OVERFLOW",
+            "run_id": null,
+            "snapshot_id": null,
+            "dataset_id": null,
+            "instrument": null,
+            "interval": null,
+            "page": null,
+            "file": null,
+            "artifact_id": null,
+            "target_id": null,
+            "endpoint": null,
+            "attempt": null,
+            "exception_type": null,
+            "null_reasons": {
+              "run_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "snapshot_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "dataset_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "instrument": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "interval": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "page": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "file": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "artifact_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "target_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "endpoint": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "attempt": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "exception_type": "NOT_AVAILABLE_OR_NOT_APPLICABLE"
+            }
+          }
+        ],
+        "null_reasons": {
+          "workbook_cells_before": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+          "cell_limit": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+          "grid_evidence_ref": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+          "workbook_cells_after": "NOT_APPLICABLE_TO_SELECTED_FORMAT"
+        }
+      }
+    },
+    {
+      "source_example": "E17",
+      "name": "sheets_boundary_pass",
+      "type": "capacity_assessment",
+      "value": {
+        "format": "google_sheets",
+        "status": "PASS",
+        "capabilities_ref": "ILLUSTRATIVE/caps/google_sheets/boundary",
+        "source_shape": {
+          "data_rows": 9,
+          "data_columns": 10,
+          "header_rows": 1,
+          "index_columns": 0
+        },
+        "required_rows": 10,
+        "required_columns": 10,
+        "required_cells": 100,
+        "row_limit": null,
+        "column_limit": null,
+        "cell_limit": 101,
+        "workbook_cells_before": 101,
+        "workbook_cells_after": 101,
+        "limit_evidence_ref": "ILLUSTRATIVE/limits/google_sheets",
+        "grid_evidence_ref": "ILLUSTRATIVE/complete-workbook-grid",
+        "errors": [],
+        "null_reasons": {
+          "row_limit": "NOT_APPLICABLE_TO_ILLUSTRATIVE_CELL_ONLY_ORACLE",
+          "column_limit": "NOT_APPLICABLE_TO_ILLUSTRATIVE_CELL_ONLY_ORACLE"
+        }
+      }
+    },
+    {
+      "source_example": "E17",
+      "name": "sheets_boundary_fail",
+      "type": "capacity_assessment",
+      "value": {
+        "format": "google_sheets",
+        "status": "FAIL",
+        "capabilities_ref": "ILLUSTRATIVE/caps/google_sheets/plus-one",
+        "source_shape": {
+          "data_rows": 9,
+          "data_columns": 10,
+          "header_rows": 1,
+          "index_columns": 0
+        },
+        "required_rows": 10,
+        "required_columns": 10,
+        "required_cells": 100,
+        "row_limit": null,
+        "column_limit": null,
+        "cell_limit": 101,
+        "workbook_cells_before": 102,
+        "workbook_cells_after": 102,
+        "limit_evidence_ref": "ILLUSTRATIVE/limits/google_sheets",
+        "grid_evidence_ref": "ILLUSTRATIVE/complete-workbook-grid",
+        "errors": [
+          {
+            "category": "CAPACITY",
+            "code": "REQUIRED_EXPORT_OVERFLOW",
+            "stage": "preflight",
+            "retryable": false,
+            "final": true,
+            "message": "ILLUSTRATIVE redacted REQUIRED_EXPORT_OVERFLOW",
+            "run_id": null,
+            "snapshot_id": null,
+            "dataset_id": null,
+            "instrument": null,
+            "interval": null,
+            "page": null,
+            "file": null,
+            "artifact_id": null,
+            "target_id": null,
+            "endpoint": null,
+            "attempt": null,
+            "exception_type": null,
+            "null_reasons": {
+              "run_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "snapshot_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "dataset_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "instrument": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "interval": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "page": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "file": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "artifact_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "target_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "endpoint": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "attempt": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+              "exception_type": "NOT_AVAILABLE_OR_NOT_APPLICABLE"
+            }
+          }
+        ],
+        "null_reasons": {
+          "row_limit": "NOT_VERIFIED_OR_NOT_MEASURED",
+          "column_limit": "NOT_VERIFIED_OR_NOT_MEASURED"
+        }
+      }
+    },
+    {
+      "source_example": "E18",
+      "name": "capacity_event",
+      "type": "event",
+      "value": {
+        "timestamp_utc": "2026-10-04T09:05:00Z",
+        "level": "ERROR",
+        "event": "required_export_capacity_failed",
+        "stage": "preflight",
+        "message": "ILLUSTRATIVE redacted original error",
+        "run_id": "ILLUSTRATIVE_RUN_A",
+        "producer_sha": "ILLUSTRATIVE_SHA",
+        "process": "main",
+        "worker": "collector",
+        "snapshot_id": "ILLUSTRATIVE_SNAPSHOT_A",
+        "release_id": null,
+        "dataset_id": "10years_data_1d_interval",
+        "instrument": null,
+        "interval": 24,
+        "page": null,
+        "file": "10years_data_1d_interval.xlsx",
+        "artifact_id": "ILLUSTRATIVE_SNAPSHOT_A_XLSX",
+        "target_id": "ILLUSTRATIVE_HOST_XLSX",
+        "outcome": "FAILED",
+        "elapsed_ms": 3200,
+        "duration_ms": 1100,
+        "counts": null,
+        "retries": null,
+        "error": {
+          "category": "CAPACITY",
+          "code": "REQUIRED_EXPORT_OVERFLOW",
+          "stage": "preflight",
+          "retryable": false,
+          "final": true,
+          "message": "ILLUSTRATIVE redacted REQUIRED_EXPORT_OVERFLOW",
+          "run_id": "ILLUSTRATIVE_RUN_A",
+          "snapshot_id": "ILLUSTRATIVE_SNAPSHOT_A",
+          "dataset_id": "10years_data_1d_interval",
+          "instrument": null,
+          "interval": 24,
+          "page": null,
+          "file": "10years_data_1d_interval.xlsx",
+          "artifact_id": "ILLUSTRATIVE_SNAPSHOT_A_XLSX",
+          "target_id": "ILLUSTRATIVE_HOST_XLSX",
+          "endpoint": null,
+          "attempt": null,
+          "exception_type": null,
+          "null_reasons": {
+            "instrument": "NOT_APPLICABLE",
+            "page": "NOT_APPLICABLE",
+            "endpoint": "NOT_APPLICABLE",
+            "attempt": "NOT_APPLICABLE",
+            "exception_type": "NOT_APPLICABLE"
+          }
+        },
+        "fields": {
+          "capacity": {
+            "assessment": {
+              "format": "xlsx",
+              "status": "FAIL",
+              "capabilities_ref": "ILLUSTRATIVE/caps/xlsx",
+              "source_shape": {
+                "data_rows": 1048576,
+                "data_columns": 10,
+                "header_rows": 1,
+                "index_columns": 0
+              },
+              "required_rows": 1048577,
+              "required_columns": 10,
+              "required_cells": 10485770,
+              "row_limit": 1048576,
+              "column_limit": 16384,
+              "cell_limit": null,
+              "workbook_cells_before": null,
+              "workbook_cells_after": null,
+              "limit_evidence_ref": "ILLUSTRATIVE/limits/xlsx",
+              "grid_evidence_ref": null,
+              "errors": [
+                {
+                  "category": "CAPACITY",
+                  "code": "REQUIRED_EXPORT_OVERFLOW",
+                  "stage": "preflight",
+                  "retryable": false,
+                  "final": true,
+                  "message": "ILLUSTRATIVE redacted REQUIRED_EXPORT_OVERFLOW",
+                  "run_id": null,
+                  "snapshot_id": null,
+                  "dataset_id": null,
+                  "instrument": null,
+                  "interval": null,
+                  "page": null,
+                  "file": null,
+                  "artifact_id": null,
+                  "target_id": null,
+                  "endpoint": null,
+                  "attempt": null,
+                  "exception_type": null,
+                  "null_reasons": {
+                    "run_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "snapshot_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "dataset_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "instrument": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "interval": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "page": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "file": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "artifact_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "target_id": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "endpoint": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "attempt": "NOT_AVAILABLE_OR_NOT_APPLICABLE",
+                    "exception_type": "NOT_AVAILABLE_OR_NOT_APPLICABLE"
+                  }
+                }
+              ],
+              "null_reasons": {
+                "workbook_cells_before": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+                "cell_limit": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+                "grid_evidence_ref": "NOT_APPLICABLE_TO_SELECTED_FORMAT",
+                "workbook_cells_after": "NOT_APPLICABLE_TO_SELECTED_FORMAT"
+              }
+            },
+            "horizon": "10years",
+            "candidate_snapshot_id": "ILLUSTRATIVE_SNAPSHOT_A",
+            "saved_candidate_artifact_ids": [],
+            "saved_candidate_rows": null,
+            "previous_release_id": "ILLUSTRATIVE_PREVIOUS_RELEASE",
+            "previous_as_of": "2026-10-03T09:00:00Z",
+            "previous_verification": "UNVERIFIED",
+            "previous_freshness": "STALE",
+            "preservation_outcome": "NOT_TOUCHED",
+            "preservation_evidence_ref": null,
+            "export_status": "NOT_RUN",
+            "publication_status": "NOT_ATTEMPTED",
+            "readback_status": "NOT_ATTEMPTED",
+            "observed_generation": "UNKNOWN",
+            "failed_required_exports": [
+              "ILLUSTRATIVE_REQUIRED_CSV",
+              "ILLUSTRATIVE_REQUIRED_XLSX",
+              "ILLUSTRATIVE_REQUIRED_GOOGLE_SHEETS"
+            ],
+            "release_status": "BLOCKED",
+            "exit_status": 1
+          }
+        },
+        "null_reasons": {
+          "release_id": "NOT_APPLICABLE_OR_NOT_MEASURED",
+          "instrument": "NOT_APPLICABLE_OR_NOT_MEASURED",
+          "page": "NOT_APPLICABLE_OR_NOT_MEASURED",
+          "counts": "NOT_APPLICABLE_OR_NOT_MEASURED",
+          "retries": "NOT_APPLICABLE_OR_NOT_MEASURED"
+        }
+      }
+    }
+  ]
+}
