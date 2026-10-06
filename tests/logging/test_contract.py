@@ -109,3 +109,15 @@ def test_execution_contradiction_rejected(log, session, outcome, status):
 def test_lifecycle_reserved_for_idempotent_finalizers(log, session, event):
     with pytest.raises(ValueError, match='LOG_LIFECYCLE_RESERVED'):
         log.emit_event(session, 'INFO', event, 'premature final', {})
+
+
+def test_event_type_rejected_before_hashing(log, session):
+    class HashTrap:
+        def __hash__(self):
+            raise AssertionError('event object must not be hashed')
+
+    for event in ([], {}, None, HashTrap()):
+        with pytest.raises(ValueError, match='LOG_EVENT_SCHEMA'):
+            log.emit_event(session, 'INFO', event, 'safe', {})
+    assert log.flush_logging(session)['confirmed']
+    assert records(session) == []

@@ -660,6 +660,8 @@ def _send(context, kind, record=None, *, critical=True, payload=None):
 def emit_event(context, level, event, message, fields):
     if context['_closed'] or context.get('_state', 'ACTIVE') != 'ACTIVE' or context.get('_registration_frozen', False):
         raise ValueError('LOG_CONTEXT_CLOSED')
+    if type(event) is not str:
+        raise ValueError('LOG_EVENT_SCHEMA')
     if event in {'run_completed', 'run_failed', 'run_interrupted', 'worker_completed', 'worker_failed', 'worker_interrupted'}:
         raise ValueError('LOG_LIFECYCLE_RESERVED')
     return _emit_record(context, level, event, message, fields)
