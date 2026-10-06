@@ -121,3 +121,52 @@ def test_event_type_rejected_before_hashing(log, session):
             log.emit_event(session, 'INFO', event, 'safe', {})
     assert log.flush_logging(session)['confirmed']
     assert records(session) == []
+
+
+@pytest.mark.parametrize('assessment_name', ['xlsx_boundary_fail', 'sheets_boundary_fail', 'assessment'])
+@pytest.mark.parametrize('previous', ['UNVERIFIED', 'VERIFIED', 'ABSENT', 'PARTIAL', 'UNKNOWN'])
+def test_capacity_both_formats_previous_truth(log, session, capsys, tmp_path, assessment_name, previous):
+    fixture = json.loads((Path(__file__).parent / 'fixtures/capacity.json').read_text(encoding='utf-8'))
+    objects = {item['name']: copy.deepcopy(item['value']) for item in fixture['objects']}
+    envelope = objects['capacity_event']
+    fields = {k: v for k, v in envelope.items() if k not in {'timestamp_utc', 'level', 'event', 'message', 'run_id', 'producer_sha', 'process', 'worker'}}
+    capacity = fields['fields']['capacity']
+    capacity['assessment'] = objects[assessment_name]
+    capacity['exit_status'] = None  # The final status has not yet been observed.
+    if capacity['assessment']['format'] == 'google_sheets':
+        fields.update(file='10years_data_1d_interval.csv', artifact_id='ILLUSTRATIVE_SHEETS_CANDIDATE', target_id='ILLUSTRATIVE_SHEETS_TARGET')
+    error = copy.deepcopy(capacity['assessment']['errors'][0])
+    error.update({key: fields[key] for key in ('snapshot_id', 'dataset_id', 'interval', 'file', 'artifact_id', 'target_id')})
+    error['run_id'] = session['run_id']
+    for key in ('run_id', 'snapshot_id', 'dataset_id', 'interval', 'file', 'artifact_id', 'target_id'):
+        error['null_reasons'].pop(key, None)
+    fields['error'] = error
+    if previous == 'VERIFIED':
+        capacity.update(previous_verification='VERIFIED', preservation_outcome='PRESERVED_VERIFIED',
+                        preservation_evidence_ref='ILLUSTRATIVE/previous-readback', observed_generation='PREVIOUS')
+    elif previous == 'ABSENT':
+        capacity.update(previous_release_id=None, previous_as_of=None, previous_verification='ABSENT',
+                        previous_freshness='UNKNOWN', preservation_outcome='NOT_APPLICABLE', observed_generation='EMPTY')
+    elif previous in {'PARTIAL', 'UNKNOWN'}:
+        capacity.update(previous_verification='UNKNOWN', previous_freshness='UNKNOWN', preservation_outcome='UNKNOWN',
+                        publication_status='ACKNOWLEDGED' if previous == 'PARTIAL' else 'UNKNOWN',
+                        readback_status='MISMATCH' if previous == 'PARTIAL' else 'UNKNOWN',
+                        observed_generation='CANDIDATE' if previous == 'PARTIAL' else 'UNKNOWN')
+    before = copy.deepcopy(capacity)
+    sentinel = tmp_path / 'previous-sentinel.json'
+    sentinel.write_bytes(b'ILLUSTRATIVE previous bytes and old freshness')
+    assert log.emit_event(session, 'ERROR', envelope['event'], error['message'], fields)['confirmed']
+    rows = records(session)
+    assert rows[0]['level'] == 'ERROR' and rows[0]['event'] == 'required_export_capacity_failed'
+    assert rows[0]['fields']['capacity'] == before
+    assert rows[0]['error']['category'] == ('CAPACITY_NOT_VERIFIED' if assessment_name == 'assessment' else 'CAPACITY')
+    assert 'ERROR ' + error['message'] in capsys.readouterr().err
+    report = log.finalize_logging(session, execution_outcome='COMPLETED', exit_status=0)
+    assert report['exit_status'] == 1 and report['release_result'] is None
+    assert report['capacity_reports'] == [before]
+    assert report['capacity_reports'][0]['release_status'] == 'BLOCKED'
+    assert report['capacity_reports'][0]['failed_required_exports'] == ['ILLUSTRATIVE_REQUIRED_CSV', 'ILLUSTRATIVE_REQUIRED_XLSX', 'ILLUSTRATIVE_REQUIRED_GOOGLE_SHEETS']
+    assert report['logical_event_counts_by_level']['ERROR'] == 1
+    assert sentinel.read_bytes() == b'ILLUSTRATIVE previous bytes and old freshness'
+    assert capacity == before
+    assert json.loads((session['_run_root'] / 'run_summary.json').read_text(encoding='utf-8')) == report
