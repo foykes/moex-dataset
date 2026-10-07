@@ -243,3 +243,84 @@ This slice references #44/#45/#46 and audit #76; it does not close these issues,
 implement F2-02/#5/F-LOG/general F3, merge, deploy, enable cron or write remote
 datasets. PR1 is not duplicated. Stop after the independent F2-01 code review
 handoff; later slices need new prompts and verified bases.
+
+## F-LOG-01 reservation and integration handoff
+
+F-LOG-01 R3 and its independent plan review were approved in this chat; the
+human explicitly authorized implementation on 2026-10-06. The 2026-10-07
+review-fix request binds APPROVED_PLAN to F-LOG-01 R3 with SHA-256
+`866499c4c289346929cf3938e7d3acd2df71b4941a0a864a42ea9723352ae776`.
+This hash is the human-supplied reviewer reference; original R3 byte-artifact
+hash recomputation is NOT VERIFIED. R1/R2 attachments remain source evidence.
+Branch: `codex/mds-f-log-01`. Checked source base:
+`c4f2210e83447d2c72f32a2adb1a3834349390c2` (F2 PR81 merged). F0 contract blob:
+`19c4d9d5786ea5bf66a0d42f1f88ff37ee5d7adc`.
+
+This approval is the condition-H transfer of only these shared zones:
+`main.py` logger bootstrap/boundaries/observations/safe CLI, this appended F-LOG
+handoff section and the `.f-log/` ignore rule. Parent is the sole writer in this
+isolated worktree; delegated reviewers are read-only. Existing F0/F2 reservations,
+the ten notebook pairs, settings, credentials, datasets, F1 environment/guards,
+CI/setup approval controls and unrelated PRs remain outside the slice.
+
+The exact 15-path allowlist is:
+
+```text
+run_logging.py
+main.py
+tests/logging/conftest.py
+tests/logging/_probe.py
+tests/logging/test_contract.py
+tests/logging/test_redaction.py
+tests/logging/test_multiprocessing.py
+tests/logging/test_failures.py
+tests/logging/test_entrypoint.py
+tests/logging/test_bundle.py
+tests/logging/test_overhead.py
+tests/logging/fixtures/capacity.json
+docs/logging.md
+docs/coordination.md
+.gitignore
+```
+
+F-LOG supplies the procedural logger, bounded single parent writer/producer ACKs,
+redaction before IPC, health gates, parent-local stage timings, summary-last
+sealing and explicit immutable bundle export. See [logging protocol](logging.md).
+Stage return, execution result, delivery result and publication verification
+remain distinct. No-argument `main()` preserves its existing contract.
+
+Issue #78 acceptance is tracked as a foundation plus remaining hooks, never
+closed automatically:
+
+| AC family | This slice's evidence | Remaining owner/hook |
+|---|---|---|
+| Stage lifecycle/progress/correlation | Five main boundaries and exact timing ledger | F-LOG-02/A/B/C/D internal progress and snapshot links |
+| Ticker/interval/page/file and empty/failure cause | F0 envelope/null/retry/error fixture checks | A/B/C actual collection/quality paths |
+| Exit, children and publication truth | Actual Windows spawn/exit/ACK faults; no inferred release | D/R coordinator publication aggregation |
+| DEBUG detail without output schema change | Independent levels, console/file/protected checks | Internal producer adoption |
+| Retry/schema/page/revision/quarantine/capacity/transfer/rollback | Synthetic shared error/capacity tests | A/B/C/D domain fixtures and runtime hooks |
+| Privacy in all owned evidence | LogRecord/IPC/console/JSONL/error/ZIP canaries | Adopt producers; manually review sharing |
+| Multiprocessing safety | Two real spawn workers; missing/lost/stale/cross/duplicate/late finals | Real ETL worker wiring |
+| Bounded resources and failures | Queue/disk/flush/close/rotation/path/budget/summary fixtures | Deployment filesystem/load evidence |
+| Diagnostic bundle | Sealed snapshot, byte hashes, privacy/mutation checks | Manual review and support handoff |
+| Measured overhead | Delivered synthetic 2,000-event median/baseline | Representative ETL overhead |
+| Separate staging acceptance | Offline fixtures only | E3/R3 credential-isolated staging; no production inference |
+
+Actual exact tested HEAD, draft PR URL, changed-path verification, test commands/
+exit codes, CI checks on that HEAD, environment hashes, notebook checks and
+independent review evidence are recorded in `.f-log/evidence/HANDOFF.md` and
+the PR body. This ignored evidence is local and does not enter the public
+dataset manifest. Missing/skipped CI is NOT VERIFIED, not PASS.
+The PR82 review fixes target reviewed HEAD
+`011a9d8bf87a77a9b8b99bb94221127019c7448f`: common credential families,
+admitted-operation/freeze ordering in parent and worker, and protected INCOMPLETE
+retention. The repeat-review handoff includes a portable redacted evidence ZIP
+with raw report structure, before/after hashes, regression results, overhead,
+actual fixture logs/summaries and a sealed diagnostic bundle. Export manifests
+distinguish original local bytes from redacted sharing copies.
+
+This slice leaves #78 open. It does not merge, deploy, run the production CLI,
+activate hooks/cron/CI, import the real pipeline for smoke tests, contact MOEX/
+FTP/Google or enable paid services. Rollback is a revert of the F-LOG slice;
+datasets and remote targets are unchanged. Later integration requires its own
+prompt, freshly verified base and condition-H ownership transfer.
