@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import pytest
+from _probe import offline_guard
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,10 @@ def _load_tool():
     specification = importlib.util.spec_from_file_location("f2_sync_under_test", TOOL_PATH)
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
+    assert len(module.PAIRS) == len(set(module.PAIRS))
+    assert set(module.PAIRS) == set(PAIR_NAMES)
+    assert all((PROJECT_ROOT / (stem + suffix)).is_file()
+               for stem in PAIR_NAMES for suffix in ('.py', '.ipynb'))
     return module
 
 
@@ -165,15 +170,7 @@ def repository(tmp_path, tool, record_property):
             insertion_line = node.end_lineno
         else:
             break
-    bootstrap = (
-        "\n# Test-only guard bootstrap; original production body remains unchanged.\n"
-        "import importlib.util as _f2_guard_util\n"
-        f"_f2_guard_spec = _f2_guard_util.spec_from_file_location('f2_fixture_guard', {str(PROJECT_ROOT / 'tests/f2/_probe.py')!r})\n"
-        "_f2_guard_module = _f2_guard_util.module_from_spec(_f2_guard_spec)\n"
-        "_f2_guard_spec.loader.exec_module(_f2_guard_module)\n"
-        f"_f2_guard_module.install_guards(_f2_guard_module.Path({str(PROJECT_ROOT)!r}), 'harness')\n"
-        "# End test-only guard bootstrap.\n\n"
-    ).encode("utf-8")
+    bootstrap = offline_guard().fixture_bootstrap_source(PROJECT_ROOT, lane='f2', role='f2-notebook').encode('utf-8')
     original_lines = original_body.splitlines(keepends=True)
     instrumented = b"".join(original_lines[:insertion_line]) + bootstrap + b"".join(original_lines[insertion_line:])
     assert instrumented.replace(bootstrap, b"", 1) == original_body
@@ -442,6 +439,7 @@ def test_manual_sync_exports_without_execution_then_is_noop(repository):
 def test_cold_converter_import_does_not_launch_optional_probe_and_restores_popen(repository):
     launcher = repository / ".f2" / "tmp" / "cold_converter_import.py"
     launcher.write_text(
+        offline_guard().fixture_bootstrap_source(PROJECT_ROOT, lane='f2', role='f2-script') +
         "import importlib.util\n"
         "import subprocess\n"
         "import sys\n"
@@ -462,6 +460,8 @@ def test_cold_converter_import_does_not_launch_optional_probe_and_restores_popen
         "print('CONVERTER_IMPORT_NO_EXTERNAL_PROCESS_POPEN_RESTORED')\n",
         encoding="utf-8",
     )
+    offline_guard().register_fixture_script(
+        launcher, [str(repository / "tools" / "notebook_sync.py")])
     result = _run(
         repository,
         [sys.executable, "-I", "-B", str(launcher), str(repository / "tools" / "notebook_sync.py")],

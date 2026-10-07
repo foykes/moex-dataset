@@ -14,6 +14,22 @@ import sys
 import time
 
 
+_guard_counts = None
+_guard_identity = None
+
+
+def offline_guard():
+    """Load the stdlib reporting adapter once, without importing project code."""
+    name = 'mds_offline_guard'
+    if name not in sys.modules:
+        path = Path(__file__).resolve().parents[2] / 'tools/offline_guard.py'
+        specification = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(specification)
+        sys.modules[name] = module
+        specification.loader.exec_module(module)
+    return sys.modules[name]
+
+
 MODULES = ('main', '1year', 'all', 'tests', 'count_check', 'main_tests',
            'data_gathering', 'tech', 'dividends', 'dohodru_data', 'upload')
 
@@ -52,15 +68,24 @@ def safe_tree(path, boundary, recursive=True):
 
 def install_guards(root, mode='import'):
     """Probes forbid all children/writers; harness permits bounded local fixtures."""
+    global _guard_counts, _guard_identity
     root = Path(root).resolve()
+    identity = (root, mode)
+    if _guard_counts is not None:
+        if _guard_identity != identity:
+            raise ValueError('F2 guard context cannot change in one interpreter')
+        return _guard_counts
     boundary = root / '.f2'
     counts = dict(network=0, conversion=0, writers=0, secrets=0, dataset_reads=0)
+    guard = offline_guard()
+    guard.attach_native(Path(__file__).resolve().parents[2], 'f2', 'f2-probe', counts)
     git = shutil.which('git')
     interpreter = os.path.normcase(os.path.abspath(sys.executable))
     active_launch = 0
 
     def reject(kind):
         counts[kind] += 1
+        guard.native_notice(kind)
         raise RuntimeError('F2_OFFLINE_' + kind.upper())
 
     def owned(value):
@@ -69,7 +94,21 @@ def install_guards(root, mode='import'):
         except (TypeError, ValueError):
             return False
 
+    def evidence_write(value):
+        """Native fixtures may write their roots, never an earlier run's reports."""
+        try:
+            path = Path(os.path.abspath(value))
+            current = guard.report_root(Path(__file__).resolve().parents[2], 'f2')
+            for candidate in (path, path.resolve()):
+                if candidate.is_relative_to(boundary / 'evidence') and not candidate.is_relative_to(current):
+                    return False
+            return True
+        except (TypeError, ValueError):
+            return False
+
     def audit(event, args):
+        if guard.internal_report_io(event, args):
+            return
         if event.startswith('socket.') and event in {'socket.connect', 'socket.bind', 'socket.getaddrinfo', 'socket.gethostbyname', 'socket.gethostbyaddr', 'socket.sendto'}:
             reject('network')
         if event == 'open':
@@ -80,12 +119,24 @@ def install_guards(root, mode='import'):
                     reject('secrets')
                 writing = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
                 null_sink = os.path.normcase(os.path.abspath(value)) == os.path.normcase(os.path.abspath(os.devnull))
+                if writing and not null_sink and not evidence_write(value):
+                    reject('writers')
+                if writing and mode == 'harness':
+                    try:
+                        info = Path(os.fsdecode(value)).lstat()
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                            reject('writers')
                 if writing and not null_sink and not (mode == 'harness' and owned(value)):
                     reject('writers')
                 if mode == 'import' and not writing and 'datasets' in parts:
                     reject('dataset_reads')
         if event in {'os.remove', 'os.rmdir', 'os.mkdir', 'os.rename', 'os.chmod', 'os.link', 'os.symlink'}:
             destinations = args[:2] if event in {'os.rename', 'os.link', 'os.symlink'} else args[:1]
+            if not all(evidence_write(value) for value in destinations):
+                reject('writers')
             if not (mode == 'harness' and all(owned(value) for value in destinations)):
                 reject('writers')
         if event in {'os.system', 'os.exec', 'os.spawn', 'os.posix_spawn', 'os.startfile'}:
@@ -101,7 +152,9 @@ def install_guards(root, mode='import'):
         if mode != 'harness' or positional or kwargs.get('shell') or not isinstance(argv, (list, tuple)):
             reject('conversion')
         command = [os.fsdecode(item) for item in argv]
-        binary = os.path.normcase(os.path.abspath(kwargs.get('executable') or command[0]))
+        executable = kwargs.get('executable') or command[0]
+        executable = shutil.which(executable, path=(kwargs.get('env') or os.environ).get('PATH')) or executable
+        binary = os.path.normcase(os.path.abspath(executable))
         actual_cwd = Path(kwargs.get('cwd') or os.getcwd()).resolve()
         allowed_git = git is not None and binary == os.path.normcase(os.path.abspath(git))
         if allowed_git:
@@ -110,7 +163,8 @@ def install_guards(root, mode='import'):
                 position += 2
             verb = command[position] if position < len(command) else ''
             read_verbs = {'rev-parse', 'symbolic-ref', 'ls-files', 'diff', 'show', 'cat-file'}
-            fixture_verbs = {'init', 'config', 'add', 'commit', 'rm', 'mv', 'update-index', 'hash-object'}
+            fixture_verbs = {'init', 'config', 'add', 'commit', 'rm', 'mv', 'update-index', 'hash-object',
+                             'write-tree', 'diff-index', 'checkout', 'apply'}
             if verb not in read_verbs | fixture_verbs:
                 reject('conversion')
             if verb in fixture_verbs and not actual_cwd.is_relative_to(boundary):
@@ -129,12 +183,47 @@ def install_guards(root, mode='import'):
                     for script in scripts)
         if not (allowed_git or allowed_python) or not (actual_cwd == root or actual_cwd.is_relative_to(boundary) or actual_cwd.is_relative_to(root / 'tests/f2')):
             reject('conversion')
+        actual_argv, actual_env, ticket = guard.notify_child(
+            argv, cwd=actual_cwd, env=kwargs.get('env'))
+        kwargs['env'] = actual_env
+        guard.begin_native_launch(ticket)
         active_launch += 1
         try:
-            original_popen_init(self, argv, **kwargs)
+            original_popen_init(self, actual_argv, **kwargs)
+            guard.attach_process(self, ticket)
         finally:
             active_launch -= 1
+            guard.end_native_launch()
     subprocess.Popen.__init__ = guarded_popen
+    if mode == 'harness':
+        original_start = multiprocessing.process.BaseProcess.start
+
+        def guarded_start(process):
+            nonlocal active_launch
+            if process._target is not spawn_one:
+                reject('conversion')
+            ticket = guard.prepare_spawn(process, 'f2-spawn')
+            guard.begin_native_launch(ticket)
+            active_launch += 1
+            try:
+                result = original_start(process)
+                guard.attach_spawn(process, ticket)
+                return result
+            finally:
+                active_launch -= 1
+                guard.end_native_launch()
+
+        multiprocessing.process.BaseProcess.start = guarded_start
+        if sys.platform == 'win32':
+            import _winapi
+            original_create = _winapi.CreateProcess
+
+            def guarded_create(*args, **kwargs):
+                if not active_launch:
+                    reject('conversion')
+                return guard.native_create_process(original_create, args, kwargs)
+
+            _winapi.CreateProcess = guarded_create
     sys.addaudithook(audit)
     # urllib3's import-time IPv6 capability probe binds a loopback socket.
     # The offline profile disables that capability before requests is imported;
@@ -152,6 +241,8 @@ def install_guards(root, mode='import'):
         if sys.platform == 'win32':
             import _winapi
             _winapi.CreateProcess = lambda *a, **k: reject('conversion')
+    _guard_counts, _guard_identity = counts, identity
+    guard.mark_guard_ready()
     return counts
 
 
@@ -173,13 +264,16 @@ def import_one(root, name):
     return result
 
 
-def spawn_one(root, connection):
+def spawn_one(root, connection, ticket=None):
+    if ticket is not None:
+        offline_guard().bind_spawn_ticket(ticket)
     try:
         result = import_one(root, 'main')
         result['sentinel'] = 'F2_SPAWN_OK'
         connection.send(result)
     finally:
         connection.close()
+        offline_guard().finish()
 
 
 def main():
@@ -189,6 +283,7 @@ def main():
         print('F2_RESULT:' + json.dumps(result, ensure_ascii=False))
         return 0 if result['outcome'] == 'PASS' and not any(result['counts'].values()) else 1
     if action == 'spawn':
+        install_guards(sys.argv[2], 'harness')
         context = multiprocessing.get_context('spawn')
         records = []
         for _ in range(2):
@@ -227,6 +322,7 @@ def main():
     if action == 'preflight':
         import re
         root = Path(sys.argv[2]).absolute()
+        install_guards(root, 'harness')
         label = sys.argv[3]
         if not re.fullmatch('[A-Za-z0-9-]+', label):
             raise ValueError('Invalid evidence label')
@@ -263,4 +359,12 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    code = 1
+    try:
+        code = main()
+    except SystemExit as error:
+        code = error.code if isinstance(error.code, int) else 1
+        raise
+    finally:
+        offline_guard().finish(code)
+    raise SystemExit(code)

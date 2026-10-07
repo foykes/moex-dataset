@@ -14,6 +14,42 @@
 # ---
 
 # %%
+import argparse, importlib.util
+from pathlib import Path
+import sys
+
+
+def _diagnostic_gate():
+    parser = argparse.ArgumentParser(description='Явный staging-профиль диагностики дат торгов')
+    parser.add_argument('--allow-live-diagnostics', action='store_true')
+    parser.add_argument('--profile', choices=['staging'])
+    parser.add_argument('--output-root')
+    arguments = parser.parse_args()
+    if not arguments.allow_live_diagnostics or arguments.profile != 'staging' or not arguments.output_root:
+        parser.error('Нужны --allow-live-diagnostics --profile staging --output-root; отдельно согласуйте ограниченный профиль')
+    parser.error('Ограниченный staging-профиль не согласован; параметры CLI не дают разрешения на запуск')
+
+
+def _offline_bootstrap():
+    root = Path(__file__).resolve().parent
+    guard = sys.modules.get('mds_offline_guard')
+    if guard is None:
+        specification = importlib.util.spec_from_file_location('mds_offline_guard', root / 'tools/offline_guard.py')
+        guard = importlib.util.module_from_spec(specification)
+        sys.modules['mds_offline_guard'] = guard
+        specification.loader.exec_module(guard)
+    guard.ensure_context(root, lane='f3', role='entry', mode='run')
+
+
+_offline_bootstrap()
+if __name__ == '__main__':
+    try:
+        _diagnostic_gate()
+    except SystemExit as error:
+        sys.modules['mds_offline_guard'].finish(error.code)
+        raise
+
+# %%
 import datetime, pandas as pd, requests, csv, sys, time, os, json
 header = {'User-Agent': ''}
 
