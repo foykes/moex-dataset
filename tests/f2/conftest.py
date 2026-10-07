@@ -5,7 +5,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _probe import install_guards, safe_tree
+from _probe import install_guards, safe_tree, offline_guard
 
 ROOT = Path(__file__).resolve().parents[2]
 install_guards(ROOT, 'harness')
@@ -37,6 +37,9 @@ def pytest_configure(config):
             raise ValueError('Disable third-party pytest autoload and inherited options')
         # These children inherit only the task-specific cache/temp profile.
         os.environ['F2_TASK_ROOT'] = str(ROOT)
+        destination_root = offline_guard().report_root(ROOT, 'f2')
+        safe_tree(destination_root, boundary)
+        config._f2_report_root = destination_root
     except ValueError as error:
         raise pytest.UsageError(str(error)) from error
 
@@ -50,13 +53,12 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    boundary = ROOT / '.f2'
-    safe_tree(boundary / 'evidence', boundary)
-    destination = boundary / 'evidence/pytest.json'
-    if destination.exists() and (destination.is_symlink() or destination.stat().st_nlink != 1):
-        raise ValueError('Unsafe F2 evidence destination')
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    directory = getattr(session.config, '_f2_report_root', None)
+    if directory is None:
+        return
+    destination = directory / 'pytest.json'
     result = {'finished_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'exit_code': int(exitstatus), 'network': 'forbidden',
               'profile': 'Windows offline F2, controlled fixture children', 'reports': _reports}
-    destination.write_text(json.dumps(result, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    result.update(offline_guard().report_metadata())
+    offline_guard().exclusive_json(destination, result)
