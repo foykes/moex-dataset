@@ -3,7 +3,7 @@ import statistics
 import time
 import uuid
 
-from _probe import ROOT
+from _probe import ROOT, offline_guard
 
 
 def test_report_bounded_delivered_overhead(log, record_property, capsys):
@@ -34,4 +34,6 @@ def test_report_bounded_delivered_overhead(log, record_property, capsys):
         samples_ms=observed, measured_through='delivery_shutdown_and_closed_inventory_before_summary',
         threshold='none', console='pytest capture INFO', file_level='DEBUG')
     record_property('overhead', result)
-    (ROOT / '.f-log/evidence/overhead.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+    evidence = dict(result)
+    evidence.update(offline_guard().report_metadata())
+    offline_guard().exclusive_json(offline_guard().report_root(ROOT, 'flog') / 'overhead.json', evidence)
