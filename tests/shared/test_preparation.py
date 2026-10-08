@@ -2,12 +2,18 @@
 
 import hashlib
 import importlib.util
+import io
 from io import StringIO
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
+import mds_offline_guard as guard
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,3 +136,156 @@ def test_ticker_dates_valid_and_malformed_structure(monkeypatch, bond_payload,
     assert sleeps == expected_sleeps
     assert config_reads == [('settings/user_agents.json', 'r', 'utf-8')]
     assert _hashes() == before
+
+
+def _review_control(case, root, ticket):
+    """Fixed pre-guard source probes; only synthetic issued fixture files."""
+    cases = {'source-identity-ftp', 'source-identity-nested',
+             'source-identity-alias', 'source-identity-normal'}
+    assert case in cases and guard._CONTEXT is None
+    temporary = guard.checked_path(ticket['roots'][0], root / '.f3/tmp')
+    replica = temporary / 'source-replica'
+    replica.mkdir(exist_ok=False)
+    ordinary = replica / 'ordinary.py'
+    ordinary.write_bytes(b'NORMAL_SOURCE = 1\n')
+    (replica / '.gitignore').write_bytes(b'.f3/\n')
+    git = shutil.which('git')
+    assert git is not None
+    environment = {name: value for name, value in os.environ.items()
+                   if not name.startswith('GIT_')}
+    environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+                       GIT_TERMINAL_PROMPT='0')
+    for arguments in [
+        ['init', '--initial-branch=codex/fixture'],
+        ['config', '--local', 'user.name', 'F2 disposable fixture'],
+        ['config', '--local', 'user.email', 'fixture@example.invalid'],
+        ['config', '--local', 'core.autocrlf', 'false'],
+        ['add', '--', '.'], ['commit', '-m', 'N0 P0 baseline'],
+    ]:
+        completed = subprocess.run([git, *arguments], cwd=replica, env=environment,
+                                   capture_output=True, timeout=10)
+        assert completed.returncode == 0
+
+    secret = b'F3_CODE03_SYNTHETIC_SECRET_VALUE'
+    target = ordinary
+    if case == 'source-identity-ftp':
+        target = replica / 'ftp_credentials.py'
+        target.write_bytes(secret)
+    elif case == 'source-identity-nested':
+        target = replica / 'tools/secrets/canary.py'
+        target.parent.mkdir(parents=True)
+        target.write_bytes(secret)
+    elif case == 'source-identity-alias':
+        canary = temporary / 'ftp_credentials.py'
+        canary.write_bytes(secret)
+        target = replica / 'ordinary_alias.py'
+        os.link(canary, target)
+
+    open_calls, leaf_calls = [], []
+    original_open = io.open
+
+    class ObservedReader:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+        def __exit__(self, *arguments):
+            return self.stream.__exit__(*arguments)
+        def read(self, *arguments):
+            leaf_calls.append(1)
+            return self.stream.read(*arguments)
+
+    def observe_open(path, *arguments, **keywords):
+        mode = arguments[0] if arguments else keywords.get('mode', 'r')
+        match = (not isinstance(path, int)
+                 and os.path.abspath(os.fsdecode(path)) == str(target)
+                 and not any(flag in mode for flag in 'wax+'))
+        if match:
+            open_calls.append(1)
+        stream = original_open(path, *arguments, **keywords)
+        return ObservedReader(stream) if match else stream
+
+    io.open = observe_open
+    result = {'case': case}
+    try:
+        if case == 'source-identity-normal':
+            first = guard.source_identity(replica)
+            ordinary.write_bytes(b'NORMAL_SOURCE = 2\n')
+            changed = guard.source_identity(replica)
+            ordinary.write_bytes(b'NORMAL_SOURCE = 1\n')
+            restored = guard.source_identity(replica)
+            extra = replica / 'tools/extra.py'
+            extra.parent.mkdir()
+            extra.write_bytes(b'EXTRA_SOURCE = 3\n')
+            untracked = guard.source_identity(replica)
+            assert first[1] == restored[1] == 'commit'
+            assert changed[1] == untracked[1] == 'working-tree'
+            assert first[0] == changed[0] == restored[0] == untracked[0]
+            assert first[2] == restored[2]
+            assert first[2] != changed[2] and first[2] != untracked[2]
+            assert len(open_calls) == len(leaf_calls) == 4
+            result.update(source_modes=[value[1] for value in
+                                        (first, changed, restored, untracked)],
+                          ordinary_content_hashed=True, manifest_changes=True)
+        else:
+            names = {'MDS_OFFLINE_TICKET', 'MDS_OFFLINE_ROOT',
+                     'MDS_OFFLINE_REPORT_ROOT', 'MDS_ENVIRONMENT_OUTPUT_ROOT',
+                     'MDS_OFFLINE_TESTED_SHA', 'MDS_OFFLINE_SOURCE_MODE',
+                     'MDS_OFFLINE_SOURCE_DIGEST', 'MDS_OFFLINE_RUN_ID'}
+            inherited = {name: os.environ[name] for name in names if name in os.environ}
+            for name in names:
+                os.environ.pop(name, None)
+            try:
+                assert 'MDS_OFFLINE_TICKET' not in os.environ
+                with pytest.raises(ValueError) as rejected:
+                    guard.ensure_context(replica)
+                expected = ('OFFLINE_PATH_ALIAS' if case == 'source-identity-alias'
+                            else 'OFFLINE_SOURCE_PRIVATE_DATA')
+                assert str(rejected.value) == expected
+                assert guard._CONTEXT is None
+                assert open_calls == leaf_calls == []
+                result.update(ticketless=True, preflight_refused=True,
+                              rejection=str(rejected.value), context_created=False)
+            finally:
+                for name in names:
+                    os.environ.pop(name, None)
+                os.environ.update(inherited)
+    finally:
+        io.open = original_open
+    result.update(open_calls=len(open_calls), leaf_reader_calls=len(leaf_calls))
+    assert guard._CONTEXT is None
+    context = guard.ensure_context(root)
+    assert context.process_id == ticket['ticket_id'] and context.counts == {}
+    print(json.dumps(result, sort_keys=True))
+    guard.finish(0)
+    return 0
+
+
+def _source_identity_control(case, tmp_path):
+    command = [sys.executable, '-I', '-B', '-X', 'utf8',
+               str(ROOT / 'tools/offline_guard.py'), 'control', case]
+    result = guard.run_child(command, role='f3-control', roots=[tmp_path], timeout=30)
+    assert result.actual_exit == result.returncode == 0
+    assert result.validated and result.report_errors == []
+    assert result.report['counters'] == {}
+    canary = b'F3_CODE03_SYNTHETIC_SECRET_VALUE'
+    assert canary not in result.stdout + result.stderr
+    for report in Path(result.ticket['report_dir']).rglob('*.json'):
+        assert canary not in report.read_bytes()
+    return json.loads(result.stdout.decode('utf-8').splitlines()[-1])
+
+
+@pytest.mark.parametrize('case', ['source-identity-ftp', 'source-identity-nested',
+                                 'source-identity-alias', 'source-identity-normal'])
+def test_source_identity_preflight_checks_before_content_read(case, tmp_path):
+    result = _source_identity_control(case, tmp_path)
+    assert result['case'] == case
+    if case == 'source-identity-normal':
+        assert result['ordinary_content_hashed'] and result['manifest_changes']
+        assert result['source_modes'] == ['commit', 'working-tree', 'commit', 'working-tree']
+        assert result['open_calls'] == result['leaf_reader_calls'] == 4
+    else:
+        assert result['ticketless'] and result['preflight_refused']
+        assert not result['context_created']
+        assert result['open_calls'] == result['leaf_reader_calls'] == 0

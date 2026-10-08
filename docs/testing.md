@@ -155,3 +155,31 @@ fail closed without a separately approved bounded target/profile. Classification
 and flags do not authorize a real run. See [coordination](coordination.md) for
 the A/B/C/D/F/R residual acceptance and the distinction between F-ready,
 final #47 and production.
+
+## PR #83 guard regressions
+
+Native Git admission checks complete argument forms, not just the command name.
+Only the notebook fixtures' and installed pre-commit's read queries are admitted;
+`diff --output`, ref-changing `symbolic-ref`, arbitrary object/input forms and
+unlisted configuration values fail before launch. Fixture writes retain their
+existing exact commands and disposable-root restrictions. Admission rejection
+updates the attached native counter and common journal together.
+
+F3 handles the `os.truncate` audit event for both path and FD operations.
+Truncation requires an issued path or a registered writable regular-file FD
+whose current file identity still matches the issued path. Read-only, closed,
+foreign and aliased descriptors fail before the OS action. Ordinary owned path
+and duplicated writable-FD truncation remain real operations in positive tests.
+
+Ticketless source fingerprinting inventories metadata before reading candidates
+or running Git status. Recognized credential payloads and source aliases cause
+preflight failure; their contents are not hashed. Ordinary tracked and relevant
+untracked source still contributes to the manifest and source-mode distinction.
+
+Shared regressions use fixed fresh-process controls and synthetic Git/file
+replicas. They check actual F2 admission, caught violations, unchanged bytes,
+lengths, hashes and refs, zero forbidden leaf calls, and current run-bound
+reports. Expected payload rejection is distinct from enclosing test success.
+Windows red-before/green evidence is retained separately for all three findings.
+New exact-head checks require repeat independent review; earlier successful runs
+do not establish acceptance of the revised guard boundary.

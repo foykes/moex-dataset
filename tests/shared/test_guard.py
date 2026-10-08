@@ -134,6 +134,252 @@ def test_hardlink_write_is_refused_and_external_fixture_hash_survives(tmp_path):
     assert hashlib.sha256(sentinel.read_bytes()).hexdigest() == before
 
 
+def _canary_snapshot(path):
+    content = path.read_bytes()
+    return content, path.stat().st_size, hashlib.sha256(content).hexdigest()
+
+
+def _assert_refused_mutation(operation, kind):
+    context = guard.ensure_context(ROOT)
+    before = context.counts.get(kind, 0)
+    sequence = len(context.violations)
+    with guard.expect_fault(kind):
+        with pytest.raises(guard.OfflineViolation, match='F3_OFFLINE_' + kind.upper()):
+            operation()
+    assert context.counts[kind] == before + 1
+    assert len(context.violations) == sequence + 1
+    violation = context.violations[-1]
+    assert violation['kind'] == kind
+    journal = context.report_dir / 'processes' / (
+        context.process_id + '.violation.' + str(violation['sequence']) + '.json')
+    assert json.loads(journal.read_text(encoding='utf-8')) == violation
+
+
+@pytest.mark.parametrize('variant, kind', [('path', 'writers'), ('fd', 'descriptors')])
+def test_truncate_hardlink_alias_preserves_synthetic_canary(variant, kind, tmp_path):
+    sentinel = tmp_path / 'truncate-canary.bin'
+    sentinel.write_bytes(b'F3_TRUNCATE_CANARY_MUST_SURVIVE\x00\xff\n')
+    before = _canary_snapshot(sentinel)
+    descriptor = os.open(sentinel, os.O_RDWR)
+    alias = tmp_path / 'truncate-alias-current'
+    os.link(sentinel, alias)
+    try:
+        operation = (lambda: os.truncate(alias, 0)) if variant == 'path' else (
+            lambda: os.ftruncate(descriptor, 0))
+        _assert_refused_mutation(operation, kind)
+    finally:
+        # Removing the owned final link preserves its external object's bytes.
+        alias.unlink()
+        os.close(descriptor)
+    assert _canary_snapshot(sentinel) == before
+
+
+@pytest.mark.parametrize('variant', ['readonly', 'closed', 'unknown'])
+def test_ftruncate_requires_a_current_owned_writable_descriptor(variant, tmp_path):
+    sentinel = tmp_path / 'descriptor-canary.bin'
+    sentinel.write_bytes(b'F3_DESCRIPTOR_CANARY_MUST_SURVIVE\n')
+    before = _canary_snapshot(sentinel)
+    if variant == 'unknown':
+        descriptor = 65535
+    else:
+        descriptor = os.open(sentinel, os.O_RDONLY if variant == 'readonly' else os.O_RDWR)
+        if variant == 'closed':
+            os.close(descriptor)
+    try:
+        _assert_refused_mutation(lambda: os.ftruncate(descriptor, 0), 'descriptors')
+    finally:
+        if variant == 'readonly':
+            os.close(descriptor)
+    assert _canary_snapshot(sentinel) == before
+
+
+@pytest.mark.parametrize('replacement', ['readonly_dup2', 'closed_fdopen'])
+def test_ftruncate_rejects_readonly_same_file_descriptor_reuse(replacement, tmp_path):
+    sentinel = tmp_path / 'reuse-canary.bin'
+    sentinel.write_bytes(b'F3_DESCRIPTOR_MODE_MUST_SURVIVE\n')
+    before = _canary_snapshot(sentinel)
+    writable = os.open(sentinel, os.O_RDWR)
+    if replacement == 'readonly_dup2':
+        readonly = os.open(sentinel, os.O_RDONLY)
+        os.dup2(readonly, writable)
+        descriptor = writable
+    else:
+        stream = os.fdopen(writable, 'wb')
+        stream.close()
+        reader = open(sentinel, 'rb')
+        descriptor = reader.fileno()
+        assert descriptor == writable
+    leaf_calls = []
+    observing = [True]
+
+    def observe_truncate(event, args):
+        if observing[0] and event == 'os.truncate' and args[0] == descriptor:
+            leaf_calls.append(1)
+
+    # The guard's earlier audit hook must refuse the operation before this leaf.
+    sys.addaudithook(observe_truncate)
+    try:
+        _assert_refused_mutation(lambda: os.ftruncate(descriptor, 0), 'descriptors')
+    finally:
+        observing[0] = False
+        if replacement == 'readonly_dup2':
+            os.close(writable)
+            os.close(readonly)
+        else:
+            reader.close()
+    assert leaf_calls == []
+    assert _canary_snapshot(sentinel) == before
+
+
+def test_real_owned_path_and_writable_descriptor_truncate_without_violations(tmp_path):
+    context = guard.ensure_context(ROOT)
+    before = dict(context.counts)
+    sentinel = tmp_path / 'owned-truncate.bin'
+    original = b'F3_OWNED_TRUNCATE\x00\xff\n'
+    sentinel.write_bytes(original)
+    os.truncate(sentinel, 7)
+    assert _canary_snapshot(sentinel) == (
+        original[:7], 7, hashlib.sha256(original[:7]).hexdigest())
+    descriptor = os.open(sentinel, os.O_RDWR)
+    duplicate = os.dup(descriptor)
+    try:
+        os.ftruncate(duplicate, 3)
+    finally:
+        os.close(duplicate)
+        os.close(descriptor)
+    assert _canary_snapshot(sentinel) == (
+        original[:3], 3, hashlib.sha256(original[:3]).hexdigest())
+    assert context.counts == before
+
+
+def test_real_owned_dup2_and_fdopen_truncate_without_violations(tmp_path):
+    context = guard.ensure_context(ROOT)
+    before = dict(context.counts)
+    sentinel = tmp_path / 'owned-dup2-truncate.bin'
+    original = b'F3_OWNED_DESCRIPTOR_LIFECYCLE\x00\xff\n'
+    sentinel.write_bytes(original)
+    writable = os.open(sentinel, os.O_RDWR)
+    replacement = os.open(sentinel, os.O_RDONLY)
+    try:
+        os.dup2(writable, replacement)
+        os.ftruncate(replacement, 7)
+        with os.fdopen(replacement, 'r+b') as stream:
+            os.ftruncate(stream.fileno(), 3)
+        replacement = None
+    finally:
+        if replacement is not None:
+            os.close(replacement)
+        os.close(writable)
+    assert _canary_snapshot(sentinel) == (
+        original[:3], 3, hashlib.sha256(original[:3]).hexdigest())
+    assert context.counts == before
+
+
+def _review_control(case, root, ticket):
+    """Fixed child payload; only new synthetic objects are seeded before guard."""
+    variant, scenario = case.split('-', 1)
+    assert variant in {'truncate', 'ftruncate'}
+    assert scenario in {'external', 'source', 'previous', 'alias'}
+    issued = Path(ticket['roots'][0])
+    # Keep synthetic fixture paths below Windows' ordinary path length limit.
+    # The enclosing pytest root is unique; mkdir refuses any existing fixture.
+    replica = issued.parent / ('r-' + ticket['ticket_id'][:8])
+    relative = {
+        'external': 'external-canary.bin',
+        'source': 'synthetic-source/sample.py',
+        'previous': '.f3/evidence/runs/old/p.json',
+        'alias': 'external-canary.bin',
+    }[scenario]
+    sentinel = replica / relative
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_bytes(b'F3_CHILD_TRUNCATE_CANARY_MUST_SURVIVE\x00\xff\n')
+    before = _canary_snapshot(sentinel)
+    issued.mkdir(parents=True, exist_ok=True)
+    target = sentinel
+    if scenario == 'alias':
+        target = issued / 'truncate-alias-current'
+        os.link(sentinel, target)
+    descriptor = os.open(target, os.O_RDWR) if variant == 'ftruncate' else None
+
+    def synthetic_fence(event, args):
+        if event == 'os.truncate':
+            value = args[0]
+            permitted = value == descriptor if isinstance(value, int) else (
+                Path(value).absolute() == target.absolute())
+            if not permitted:
+                raise RuntimeError('F3_TRUNCATE_SYNTHETIC_FENCE')
+    sys.addaudithook(synthetic_fence)
+    context = guard.ensure_context(root, role='f3-control')
+    leaf_calls = []
+
+    def after_guard_audit(event, args):
+        # Audit callbacks run in registration order. A refused operation never
+        # reaches this observer immediately preceding the real OS leaf.
+        if event == 'os.truncate':
+            leaf_calls.append(1)
+    sys.addaudithook(after_guard_audit)
+    caught = False
+    try:
+        os.ftruncate(descriptor, 0) if descriptor is not None else os.truncate(target, 0)
+    except guard.OfflineViolation:
+        caught = True
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if scenario == 'alias':
+            target.unlink()
+    after = _canary_snapshot(sentinel)
+    proof = dict(case=case, caught=caught, leaf_calls=len(leaf_calls),
+                 before_size=before[1], after_size=after[1],
+                 before_sha256=before[2], after_sha256=after[2],
+                 canary_preserved=after == before)
+    print(json.dumps(proof, sort_keys=True))
+    guard.finish(0)
+    return 0
+
+
+@pytest.mark.parametrize('scenario', ['external', 'source', 'previous', 'alias'])
+@pytest.mark.parametrize('variant, kind', [('truncate', 'writers'), ('ftruncate', 'descriptors')])
+def test_truncate_in_permitted_child_preserves_forbidden_canary(variant, kind, scenario, tmp_path):
+    context = guard.ensure_context(ROOT)
+    issued = tmp_path / 'issued'
+    issued.mkdir()
+    case = variant + '-' + scenario
+    command = [sys.executable, '-I', '-B', '-X', 'utf8',
+               str(ROOT / 'tools/offline_guard.py'), 'control', case]
+    result = guard.run_child(command, role='f3-control', roots=[issued], timeout=30)
+    assert result.actual_exit == 0, result.stderr.decode('utf-8')
+    assert result.returncode != 0 and not result.validated
+    assert result.report_errors == ['UNEXPECTED_COUNTERS']
+    assert result.report['counters'] == {kind: 1}
+    assert result.report['violations'] == 1
+    assert result.report['role'] == 'f3-control'
+    assert result.report['run_id'] == context.run_id
+    assert result.report['tested_sha'] == context.tested_sha
+    assert result.report['source_digest'] == context.source_digest
+    proof = json.loads(result.stdout.decode('utf-8').splitlines()[-1])
+    assert proof['case'] == case and proof['caught']
+    assert proof['leaf_calls'] == 0
+    assert proof['canary_preserved']
+    expected = b'F3_CHILD_TRUNCATE_CANARY_MUST_SURVIVE\x00\xff\n'
+    assert proof['before_size'] == proof['after_size'] == 40
+    assert proof['before_sha256'] == proof['after_sha256']
+    identifier = result.ticket['ticket_id']
+    relative = {
+        'external': 'external-canary.bin',
+        'source': 'synthetic-source/sample.py',
+        'previous': '.f3/evidence/runs/old/p.json',
+        'alias': 'external-canary.bin',
+    }[scenario]
+    sentinel = issued.parent / ('r-' + identifier[:8]) / relative
+    assert _canary_snapshot(sentinel) == (expected, 40, hashlib.sha256(expected).hexdigest())
+    assert proof['after_sha256'] == hashlib.sha256(expected).hexdigest()
+    journal = context.report_dir / 'processes' / (identifier + '.violation.1.json')
+    violation = json.loads(journal.read_text(encoding='utf-8'))
+    assert violation['kind'] == kind and violation['ticket_id'] == identifier
+    assert violation['run_id'] == context.run_id
+
+
 def test_real_report_allocator_and_exclusive_writer_preserve_previous_runs(monkeypatch, tmp_path):
     replica = tmp_path / 'evidence-replica'
     replica.mkdir()

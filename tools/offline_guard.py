@@ -22,6 +22,7 @@ import threading
 import time
 from types import SimpleNamespace
 import uuid
+import weakref
 
 
 sys.modules.setdefault('mds_offline_guard', sys.modules[__name__])
@@ -38,6 +39,7 @@ _ORIGINAL_OS_OPEN = os.open
 _ORIGINAL_FDOPEN = os.fdopen
 _ORIGINAL_OS_CLOSE = os.close
 _OWN_FDS = {0, 1, 2}
+_WRITABLE_FDS = {}
 _INSTALLED = False
 _THREAD_STATE = threading.local()
 _CHILD_JOBS = {}
@@ -151,9 +153,36 @@ def _normal_argv(argv):
     return result
 
 
+def _source_inventory(root):
+    """Check metadata and deny rules before any candidate content or Git status."""
+    paths = []
+    pending = [(root, False), (root / 'tools', True), (root / 'tests', True),
+               (root / '.github/workflows', True)]
+    while pending:
+        directory, recursive = pending.pop()
+        checked_path(directory, root)
+        if not directory.exists():
+            continue
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                info = path.lstat()
+                candidate = path.suffix.lower() in {'.py', '.ipynb', '.toml', '.yml', '.yaml'}
+                if _secret(path) and (candidate or recursive and stat.S_ISDIR(info.st_mode)):
+                    raise ValueError('OFFLINE_SOURCE_PRIVATE_DATA')
+                if candidate or recursive and (stat.S_ISDIR(info.st_mode) or _linked(info)):
+                    checked_path(path, root)
+                if recursive and stat.S_ISDIR(info.st_mode):
+                    pending.append((path, True))
+                elif candidate and stat.S_ISREG(info.st_mode):
+                    paths.append(path)
+    return sorted(set(paths))
+
+
 def source_identity(root):
-    """Local Git only, before workload guards; datasets/secrets are never read."""
+    """Local Git only; unsafe source inventory fails before content reads."""
     root = checked_path(root)
+    inventory = _source_inventory(root)
     git = shutil.which('git')
     if not git:
         raise ValueError('OFFLINE_GIT_MISSING')
@@ -172,12 +201,11 @@ def source_identity(root):
     result = subprocess.run([*prefix, 'status', '--porcelain', '--untracked-files=all'],
                             cwd=root, env=environment, capture_output=True, timeout=10, check=True)
     paths = []
-    for directory in (root, root / 'tools', root / 'tests', root / '.github/workflows'):
-        for path in directory.glob('**/*') if directory != root else directory.glob('*'):
-            if path.is_file() and path.suffix in {'.py', '.ipynb', '.toml', '.yml', '.yaml'}:
-                relative = path.relative_to(root).as_posix()
-                if relative.split('/')[0] not in {'secrets', 'datasets', '.worktrees'}:
-                    paths.append((relative, hashlib.sha256(path.read_bytes()).hexdigest()))
+    for path in inventory:
+        checked_path(path, root)
+        if _secret(path):
+            raise ValueError('OFFLINE_SOURCE_PRIVATE_DATA')
+        paths.append((path.relative_to(root).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest()))
     return sha, 'working-tree' if result.stdout else 'commit', _digest(sorted(set(paths)))
 
 
@@ -479,6 +507,30 @@ def _read_allowed(path):
     return False
 
 
+def _descriptor_writable(descriptor):
+    """A numeric FD alone does not grant mutation of its current object."""
+    record = _WRITABLE_FDS.get(descriptor)
+    if record is None:
+        return False
+    path, identity, owner = record
+    try:
+        checked_path(path)
+        info, current = os.fstat(descriptor), path.stat()
+        stream = owner() if owner is not None else None
+        valid = ((owner is None or stream is not None and not stream.closed)
+                 and _owned(path) and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                 and (info.st_dev, info.st_ino) == identity
+                 and (current.st_dev, current.st_ino) == identity)
+    except (OSError, ValueError):
+        valid = False
+    return valid
+
+
+def _writable_descriptor(descriptor):
+    if not _descriptor_writable(descriptor):
+        reject('descriptors')
+
+
 def _audit(event, args):
     if internal_report_io(event, args):
         return
@@ -508,7 +560,11 @@ def _audit(event, args):
             checked_path(path)
         except ValueError:
             reject('aliases')
-    if event in {'os.mkdir', 'os.remove', 'os.rmdir', 'os.rename', 'os.chmod', 'os.link', 'os.symlink'}:
+    if event == 'os.truncate' and isinstance(args[0], int):
+        _writable_descriptor(args[0])
+    if event in {'os.mkdir', 'os.remove', 'os.rmdir', 'os.rename', 'os.chmod', 'os.link', 'os.symlink', 'os.truncate'}:
+        if event == 'os.truncate' and isinstance(args[0], int):
+            return
         paths = args[:2] if event in {'os.rename', 'os.link', 'os.symlink'} else args[:1]
         # Unlinking pytest's owned final *current link does not follow its target.
         if event == 'os.remove':
@@ -549,23 +605,57 @@ def install_guards():
     time.sleep = workload_sleep
 
     def guarded_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None:
+            reject('descriptors')
         descriptor = _ORIGINAL_OS_OPEN(path, flags, mode, dir_fd=dir_fd)
         _OWN_FDS.add(descriptor)
+        _WRITABLE_FDS.pop(descriptor, None)
+        if flags & (os.O_WRONLY | os.O_RDWR) and _owned(path):
+            info = os.fstat(descriptor)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                _WRITABLE_FDS[descriptor] = (checked_path(path), (info.st_dev, info.st_ino), None)
         return descriptor
 
     def guarded_close(fd):
         _OWN_FDS.discard(fd)
+        _WRITABLE_FDS.pop(fd, None)
         return _ORIGINAL_OS_CLOSE(fd)
     os.open = guarded_open
     os.close = guarded_close
+    def guarded_fdopen(fd, *args, **kwargs):
+        stream = _ORIGINAL_FDOPEN(fd, *args, **kwargs)
+        record = _WRITABLE_FDS.pop(fd, None)
+        if record is not None and stream.writable():
+            _WRITABLE_FDS[fd] = (record[0], record[1], weakref.ref(stream))
+        return stream
+    os.fdopen = guarded_fdopen
     original_dup = os.dup
     def guarded_dup(fd):
         if fd not in _OWN_FDS:
             reject('descriptors')
+        if fd in _WRITABLE_FDS:
+            _writable_descriptor(fd)
         descriptor = original_dup(fd)
         _OWN_FDS.add(descriptor)
+        _WRITABLE_FDS.pop(descriptor, None)
+        if fd in _WRITABLE_FDS:
+            record = _WRITABLE_FDS[fd]
+            _WRITABLE_FDS[descriptor] = (record[0], record[1], None)
         return descriptor
     os.dup = guarded_dup
+    original_dup2 = os.dup2
+    def guarded_dup2(fd, target, inheritable=True):
+        # Preserve capture/stdio redirection. Duplication itself grants no
+        # truncate permission unless its source still has a valid write grant.
+        record = _WRITABLE_FDS.get(fd) if _descriptor_writable(fd) else None
+        result = original_dup2(fd, target, inheritable=inheritable)
+        if fd in _OWN_FDS:
+            _OWN_FDS.add(target)
+        _WRITABLE_FDS.pop(target, None)
+        if record is not None:
+            _WRITABLE_FDS[target] = record if fd == target else (record[0], record[1], None)
+        return result
+    os.dup2 = guarded_dup2
 
     def guarded_popen(self, argv, *args, **kwargs):
         if not getattr(_THREAD_STATE, 'launch', 0):
@@ -702,6 +792,48 @@ def attach_process(process, ticket):
     return process
 
 
+def _git_read_arguments(tail):
+    """Only the queries used by notebook fixtures and installed pre-commit."""
+    verb, arguments = tail[0], tuple(tail[1:])
+    pairs = {'1year', 'all', 'count_check', 'data_gathering', 'dividends',
+             'dohodru_data', 'main_tests', 'tech', 'tests', 'upload'}
+    members = {name + suffix for name in pairs for suffix in ('.py', '.ipynb')}
+    members.update({'tools/notebook_sync.py', '.pre-commit-config.yaml', 'pyproject.toml'})
+    def member(value):
+        revision, separator, path = value.partition(':')
+        return bool(separator and path in members and
+                    (revision in {'', 'HEAD'} or re.fullmatch('[0-9a-f]{40}', revision)))
+    if verb == 'rev-parse':
+        fixed = {('HEAD',), ('--show-toplevel',), ('--absolute-git-dir',),
+                 ('--show-cdup',), ('--is-inside-git-dir',), ('--git-dir',),
+                 ('--git-common-dir',), ('--git-path', 'index')}
+        return (arguments in fixed or len(arguments) == 1 and member(arguments[0])
+                or len(arguments) == 2 and arguments[0] == '--verify'
+                and bool(re.fullmatch(r'(HEAD|[0-9a-fA-F]{40})\^\{commit\}', arguments[1])))
+    if verb == 'symbolic-ref':
+        return arguments in {('HEAD',), ('--quiet', '--short', 'HEAD')}
+    if verb == 'ls-files':
+        return arguments in {('--stage',), ('--stage', '-z'), ('--unmerged',), ('-z',)}
+    if verb == 'show':
+        reviewed_callbacks = {
+            ('07945ed4ded747145b40d7a7c25e8ce97abeaa0d:tests/f2/conftest.py',),
+            ('07945ed4ded747145b40d7a7c25e8ce97abeaa0d:tests/logging/conftest.py',),
+            ('07945ed4ded747145b40d7a7c25e8ce97abeaa0d:tests/f2/_probe.py',),
+            ('07945ed4ded747145b40d7a7c25e8ce97abeaa0d:tests/logging/_probe.py',),
+        }
+        return arguments in reviewed_callbacks or len(arguments) == 1 and member(arguments[0])
+    if verb == 'diff':
+        return arguments in {
+            ('--cached', '--binary', '--no-ext-diff'),
+            ('--cached', '--name-status', '--find-renames', '-z', 'HEAD', '--'),
+            ('--no-ext-diff', '--ignore-submodules', '--diff-filter=A', '--name-only', '-z'),
+            ('--staged', '--name-only', '--no-ext-diff', '-z', '--diff-filter=ACMRTUXB'),
+            ('--quiet', '--no-ext-diff', '.pre-commit-config.yaml'),
+            ('--no-ext-diff', '--no-textconv', '--ignore-submodules'),
+        }
+    return False
+
+
 def _child_command(argv, cwd, environment):
     c = _CONTEXT
     command = [os.fsdecode(p) for p in argv]
@@ -720,11 +852,13 @@ def _child_command(argv, cwd, environment):
         if not tail:
             raise ValueError('OFFLINE_GIT_ARGV')
         verb = tail[0]
-        readers = {'rev-parse', 'symbolic-ref', 'ls-files', 'diff', 'show', 'cat-file'}
+        readers = {'rev-parse', 'symbolic-ref', 'ls-files', 'diff', 'show'}
         writers = {'init', 'config', 'add', 'commit', 'rm', 'mv', 'update-index', 'hash-object',
                    'write-tree', 'diff-index', 'checkout', 'apply'}
         if verb not in readers | writers:
             raise ValueError('OFFLINE_GIT_VERB')
+        if verb in readers and not _git_read_arguments(tail):
+            raise ValueError('OFFLINE_GIT_READ_ARGV')
         if any(x in {'--ext-diff', '--textconv', '--no-index'} for x in tail):
             raise ValueError('OFFLINE_GIT_EXTERNAL_HELPER')
         if verb in {'show', 'cat-file'}:
@@ -763,15 +897,21 @@ def _child_command(argv, cwd, environment):
                     'partially staged hook controller', 'unsafe cache alias'}
         if verb == 'commit' and (len(tail) != 3 or tail[1] != '-m' or tail[2] not in messages):
             raise ValueError('OFFLINE_GIT_FIXTURE_COMMIT')
-        if any(value.split('=', 1)[0] not in {'core.quotePath', 'core.hooksPath', 'core.autocrlf', 'submodule.recurse'} for value in configs):
+        if len({value.split('=', 1)[0] for value in configs}) != len(configs):
             raise ValueError('OFFLINE_GIT_CONFIG')
         for value in configs:
             if value.startswith('core.hooksPath='):
+                if verb != 'commit':
+                    raise ValueError('OFFLINE_GIT_CONFIG')
                 hook_root = checked_path(value.split('=', 1)[1], cwd)
                 if hook_root not in {cwd / '.f2/hooks', cwd / '.f2/empty-hooks'}:
                     raise ValueError('OFFLINE_GIT_HOOK_ROOT')
                 if verb == 'commit' and hook_root.name == 'hooks':
                     _verify_fixture_hook(hook_root / 'pre-commit', cwd)
+            elif not ((value == 'core.quotePath=false' and verb in readers)
+                      or (value == 'core.autocrlf=false' and verb == 'apply')
+                      or (value == 'submodule.recurse=0' and verb == 'checkout')):
+                raise ValueError('OFFLINE_GIT_CONFIG')
         if verb == 'init' and tail not in [['init', '--initial-branch=codex/fixture'], ['init', '--initial-branch=codex/foreign-fixture']]:
             raise ValueError('OFFLINE_GIT_INIT')
         if verb == 'checkout' and (tail != ['checkout', '--', '.'] or 'submodule.recurse=0' not in configs):
@@ -892,7 +1032,10 @@ def notify_child(argv, cwd=None, env=None, role=None):
     try:
         detected, actual, native, required = _child_command(argv, cwd, environment)
     except (ValueError, TypeError):
-        native_notice('children' if _CONTEXT.lane == 'flog' else 'conversion')
+        kind = 'children' if _CONTEXT.lane == 'flog' else 'conversion'
+        if _CONTEXT.native_counts is not None:
+            _CONTEXT.native_counts[kind] = _CONTEXT.native_counts.get(kind, 0) + 1
+        native_notice(kind)
         raise RuntimeError('OFFLINE_CHILD_NOT_ADMITTED') from None
     if role is not None and role != detected:
         raise ValueError('OFFLINE_CHILD_ROLE_MISMATCH')
@@ -1115,7 +1258,20 @@ CONTROL_KINDS = {
     'secrets': 'secrets', 'dataset-read': 'dataset_reads', 'extra-child': 'children',
     'missing-report': None, 'corrupt-report': None, 'foreign-report': None,
     'stale-report': None, 'duplicate-report': None, 'timeout': None,
+    'git-diff-output-equals': 'conversion', 'git-diff-output-separated': 'conversion',
+    'git-symbolic-ref-mutates': 'conversion',
+    **{kind + '-' + target: 'writers' if kind == 'truncate' else 'descriptors'
+       for kind in ('truncate', 'ftruncate') for target in ('external', 'source', 'previous', 'alias')},
+    **{'source-identity-' + case: None for case in ('ftp', 'nested', 'alias', 'normal')},
 }
+
+
+def _control_scope(case, node):
+    if case.startswith(('truncate-', 'ftruncate-')):
+        return node.split('[', 1)[0] == 'tests/shared/test_guard.py::test_truncate_in_permitted_child_preserves_forbidden_canary'
+    if case.startswith('source-identity-'):
+        return node.split('[', 1)[0] == 'tests/shared/test_preparation.py::test_source_identity_preflight_checks_before_content_read'
+    return node.startswith('tests/shared/test_children.py::')
 
 
 def _control_case(argv):
@@ -1174,7 +1330,7 @@ def run_child(argv, role='f3-control', roots=None, timeout=30, expected_counts=N
                               expected_exit=expected_exit, gate=True)
         if case and case != 'normal':
             node = getattr(_CONTEXT, 'nodeid', os.environ.get('PYTEST_CURRENT_TEST', '').split(' (')[0])
-            if not node.startswith('tests/shared/test_children.py::'):
+            if not _control_scope(case, node):
                 raise ValueError('OFFLINE_CONTROL_SCOPE')
             # No ticket rewrite: a separate exclusive declared-fixture record.
             exclusive_json(Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.control.json'),
@@ -1405,7 +1561,7 @@ def _expected_control(ticket, errors, final):
     if (ticket['role'] != 'f3-control' or case not in CONTROL_KINDS
             or not ticket.get('argv') or case != ticket['argv'][-1]
             or record.get('expected_kind') != CONTROL_KINDS.get(case)
-            or not record.get('nodeid', '').startswith('tests/shared/test_children.py::')
+            or not _control_scope(case, record.get('nodeid', ''))
             or record.get('run_id') != ticket['run_id'] or record.get('ticket_id') != ticket['ticket_id']):
         return False
     kind = CONTROL_KINDS[case]
@@ -1517,6 +1673,14 @@ def _control(case):
     ticket = _load_ticket(root)
     if ticket is None or ticket['role'] != 'f3-control' or case not in CONTROL_KINDS:
         raise ValueError('OFFLINE_CONTROL_TICKET')
+    module = ('test_guard.py' if case.startswith(('truncate-', 'ftruncate-')) else
+              'test_preparation.py' if case.startswith('source-identity-') else
+              'test_children.py' if case.startswith('git-') else None)
+    if module:
+        if not _control_scope(case, ticket.get('nodeid', '')):
+            raise ValueError('OFFLINE_CONTROL_SCOPE')
+        fixture = checked_path(root / 'tests/shared' / module, root)
+        return runpy.run_path(str(fixture))['_review_control'](case, root, ticket)
     # Only synthetic bytes, seeded in the issued disposable root before guard.
     temporary = checked_path(ticket['roots'][0])
     temporary.mkdir(parents=True, exist_ok=True)

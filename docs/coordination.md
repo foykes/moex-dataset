@@ -427,3 +427,12 @@ targets/diagnostics/deployment/readback/recovery evidence. No merge, issue closu
 production invocation, next slice or automatic reservation transfer occurs here.
 Rollback is a separately authorized thematic revert; retained evidence,
 environments, worktrees and secrets are not deleted.
+
+PR #83 independent review of `439874348f2fbb33a2c8e3bde84935982f463929`
+requested F3-CODE-01/02/03 changes: exact native Git admission, truncate/FD
+mutation controls and source-inventory checks before fingerprint reads.
+Corrections stay in F3-01 with preserved commits, environments and evidence.
+The handoff records Windows red/green regressions and new-head local/hosted
+checks. Its next gate is READY_FOR_REPEAT_REVIEW; guard acceptance requires the
+new independent code review. The residual AC matrix and issue states above
+remain unchanged.
