@@ -1,2 +1,12 @@
 [tool.jupytext]
 formats = "ipynb,py:percent"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/shared"]
+python_files = ["test_*.py"]
+addopts = "--strict-markers --import-mode=importlib"
+markers = [
+  "offline: deterministic fixtures; grants no live permission",
+  "live_read: live-read diagnostic classification; grants no execution permission",
+  "staging: staging diagnostic classification; grants no execution permission",
+]

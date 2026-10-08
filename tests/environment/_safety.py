@@ -1,6 +1,7 @@
 """Process-wide guards for the isolated, offline environment checks."""
 
 import os
+import importlib.util
 from contextlib import contextmanager
 import multiprocessing.process
 from pathlib import Path
@@ -16,14 +17,48 @@ class OfflineViolation(RuntimeError):
 
 
 _installed = False
+_counts = dict(network=0, children=0)
+
+
+def offline_guard():
+    name = 'mds_offline_guard'
+    if name not in sys.modules:
+        root = Path(__file__).resolve().parents[2]
+        specification = importlib.util.spec_from_file_location(name, root / 'tools/offline_guard.py')
+        module = importlib.util.module_from_spec(specification)
+        sys.modules[name] = module
+        specification.loader.exec_module(module)
+    return sys.modules[name]
 
 
 def _blocked(*args, **kwargs):
     # Аргументы могут содержать приватный URL; не включаем их в сообщение.
+    _counts['children'] += 1
+    offline_guard().native_notice('children')
+    raise OfflineViolation("F1 checks forbid network access and child processes")
+
+
+def _network_blocked(*args, **kwargs):
+    _counts['network'] += 1
+    offline_guard().native_notice('network')
     raise OfflineViolation("F1 checks forbid network access and child processes")
 
 
 def _audit_guard(event, args):
+    # Reporting adapter protects previous originals; native fixture IO and all
+    # existing F1 validators/controls remain unchanged.
+    guard = offline_guard()
+    context = guard._CONTEXT
+    if context is not None and event in {'open', 'os.mkdir', 'os.remove', 'os.rmdir', 'os.rename'}:
+        writing = event != 'open' or bool(args[2] & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
+        values = args[:2] if event == 'os.rename' else args[:1]
+        if writing and not guard.internal_report_io(event, args):
+            for value in values:
+                if isinstance(value, (str, bytes, os.PathLike)):
+                    path = Path(os.path.abspath(value))
+                    if path.is_relative_to(context.root / '.f1/evidence') and not path.is_relative_to(context.report_dir):
+                        guard.native_notice('writers')
+                        raise OfflineViolation('F1 previous evidence is read-only')
     if event in {
         "socket.connect", "socket.bind", "socket.getaddrinfo",
         "socket.gethostbyname", "socket.gethostbyaddr", "socket.getnameinfo",
@@ -31,7 +66,7 @@ def _audit_guard(event, args):
         "os.exec", "os.startfile", "os.startfile/2", "os.fork", "os.forkpty",
         "_winapi.CreateProcess",
     }:
-        _blocked()
+        (_network_blocked if event.startswith('socket.') else _blocked)()
 
 
 def install_guards():
@@ -40,15 +75,20 @@ def install_guards():
     if _installed:
         return
 
+    offline_guard().attach_native(Path(__file__).resolve().parents[2], 'f1', 'entry', _counts)
+    # urllib3 probes IPv6 by binding at import time; the offline lane disables
+    # that optional capability before imports while all bind hooks stay active.
+    socket.has_ipv6 = False
+
     # Блокируем DNS, соединения и UDP, включая вызовы из импортируемых пакетов.
     for name in (
         "create_connection", "getaddrinfo", "gethostbyname", "gethostbyname_ex",
         "gethostbyaddr", "getnameinfo",
     ):
-        setattr(socket, name, _blocked)
+        setattr(socket, name, _network_blocked)
     for name in ("connect", "connect_ex", "bind", "sendto", "sendmsg"):
         if hasattr(socket.socket, name):
-            setattr(socket.socket, name, _blocked)
+            setattr(socket.socket, name, _network_blocked)
     # asyncio наследуется от Popen при импорте: сохраняем сам класс.
     subprocess.Popen.__init__ = _blocked
     # Windows multiprocessing запускает child напрямую через _winapi.
@@ -69,6 +109,7 @@ def install_guards():
             setattr(os, name, _blocked)
     sys.addaudithook(_audit_guard)
     _installed = True
+    offline_guard().mark_guard_ready()
 
 
 def _is_link(info):

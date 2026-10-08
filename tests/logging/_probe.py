@@ -13,6 +13,18 @@ import sys
 import types
 
 ROOT = Path(__file__).resolve().parents[2]
+_guard_counts = None
+
+
+def offline_guard():
+    """Use the same stdlib adapter in the harness and fresh native children."""
+    name = 'mds_offline_guard'
+    if name not in sys.modules:
+        specification = importlib.util.spec_from_file_location(name, ROOT / 'tools/offline_guard.py')
+        module = importlib.util.module_from_spec(specification)
+        sys.modules[name] = module
+        specification.loader.exec_module(module)
+    return sys.modules[name]
 
 
 def safe_tree(path):
@@ -40,18 +52,27 @@ def safe_tree(path):
 
 
 def install_guards():
+    global _guard_counts
+    if _guard_counts is not None:
+        return _guard_counts
     boundary = ROOT / '.f-log'
     counts = dict(network=0, writers=0, secrets=0, children=0)
+    guard = offline_guard()
+    guard.attach_native(ROOT, 'flog', 'flog-probe', counts)
     active_launch = 0
 
     def reject(kind):
         counts[kind] += 1
+        guard.native_notice(kind)
         raise RuntimeError('FLOG_OFFLINE_' + kind.upper())
 
     def owned(value):
         try:
             path = Path(os.path.abspath(value))
             if not path.is_relative_to(boundary) or boundary.resolve() != boundary:
+                return False
+            if (path.is_relative_to(boundary / 'evidence')
+                    and not path.is_relative_to(guard.report_root(ROOT, 'flog'))):
                 return False
             current = boundary
             for part in ('', *path.relative_to(boundary).parts):
@@ -68,6 +89,8 @@ def install_guards():
             return False
 
     def audit(event, args):
+        if guard.internal_report_io(event, args):
+            return
         if event in {'socket.connect', 'socket.bind', 'socket.getaddrinfo',
                      'socket.gethostbyname', 'socket.gethostbyaddr', 'socket.sendto'}:
             reject('network')
@@ -108,11 +131,17 @@ def install_guards():
                 or command[1:6] != ['-I', '-B', '-X', 'utf8', str(Path(__file__).resolve())]
                 or command[6] not in {'error', 'normal'}):
             reject('children')
+        actual_argv, actual_env, ticket = guard.notify_child(
+            argv, cwd=kwargs.get('cwd'), env=kwargs.get('env'))
+        kwargs['env'] = actual_env
+        guard.begin_native_launch(ticket)
         active_launch += 1
         try:
-            return original_popen(self, argv, **kwargs)
+            original_popen(self, actual_argv, **kwargs)
+            guard.attach_process(self, ticket)
         finally:
             active_launch -= 1
+            guard.end_native_launch()
 
     original_start = multiprocessing.process.BaseProcess.start
 
@@ -120,11 +149,16 @@ def install_guards():
         nonlocal active_launch
         if process._target is not worker_entry:
             reject('children')
+        ticket = guard.prepare_spawn(process, 'flog-worker')
+        guard.begin_native_launch(ticket)
         active_launch += 1
         try:
-            return original_start(process)
+            result = original_start(process)
+            guard.attach_spawn(process, ticket)
+            return result
         finally:
             active_launch -= 1
+            guard.end_native_launch()
 
     subprocess.Popen.__init__ = guarded_popen
     multiprocessing.process.BaseProcess.start = guarded_start
@@ -135,7 +169,7 @@ def install_guards():
         def create(*args, **kwargs):
             if not active_launch:
                 reject('children')
-            return original_create(*args, **kwargs)
+            return guard.native_create_process(original_create, args, kwargs)
         def junction(source, destination):
             if not owned(source) or not owned(destination):
                 reject('writers')
@@ -151,6 +185,8 @@ def install_guards():
     sys.addaudithook(audit)
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(ROOT))
+    _guard_counts = counts
+    guard.mark_guard_ready()
     return counts
 
 
@@ -229,7 +265,25 @@ def admission_race(log, producer, level, timing, worker=False):
 
 
 def worker_entry(bootstrap, mode='normal', count=100):
+    bootstrap = dict(bootstrap)
+    ticket = bootstrap.pop('_f3_guard_ticket', None)
+    if ticket is not None:
+        offline_guard().bind_spawn_ticket(ticket)
     install_guards()
+    code = 0
+    try:
+        return _worker_body(bootstrap, mode, count)
+    except SystemExit as error:
+        code = error.code if isinstance(error.code, int) else 1
+        raise
+    except BaseException:
+        code = 1
+        raise
+    finally:
+        offline_guard().finish(code)
+
+
+def _worker_body(bootstrap, mode, count):
     import run_logging as log
     if mode == 'before':
         raise SystemExit(7)
@@ -271,4 +325,14 @@ def cli_probe(mode):
 
 
 if __name__ == '__main__':
-    cli_probe(sys.argv[1])
+    code = 0
+    try:
+        cli_probe(sys.argv[1])
+    except SystemExit as error:
+        code = error.code if isinstance(error.code, int) else 1
+        raise
+    except BaseException:
+        code = 1
+        raise
+    finally:
+        offline_guard().finish(code)

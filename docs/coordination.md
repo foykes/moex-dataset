@@ -324,3 +324,115 @@ activate hooks/cron/CI, import the real pipeline for smoke tests, contact MOEX/
 FTP/Google or enable paid services. Rollback is a revert of the F-LOG slice;
 datasets and remote targets are unchanged. Later integration requires its own
 prompt, freshly verified base and condition-H ownership transfer.
+
+## F3-01 reservation and review handoff
+
+The human authorized implementation of F3-01 R3 in this chat. Source base:
+`07945ed4ded747145b40d7a7c25e8ce97abeaa0d`, tree
+`381f1f83ab74ac549c39f3a77d0570714c350c19`; branch `codex/mds-f3-01`.
+The owning source root is a new isolated worktree. Absolute local paths belong
+only in ignored evidence, not this repository. R3 plan artifact SHA-256:
+`7d443da6bed980604685a24f0f4433186ef978e260b58590394ac40b8a563484`.
+
+The exact 30-path write reservation is:
+
+```text
+.gitignore
+pyproject.toml
+conftest.py
+test_offline.py
+tools/offline_tests.py
+tools/offline_guard.py
+tests/conftest.py
+tests/shared/test_collection.py
+tests/shared/test_guard.py
+tests/shared/test_children.py
+tests/shared/test_preparation.py
+tests/shared/test_logging_contract.py
+tests/fixtures/shared/candles.csv
+tests/fixtures/shared/ticker_dates.json
+tests/environment/_safety.py
+tests/f2/_probe.py
+tests/f2/test_notebook_sync.py
+tests/logging/_probe.py
+tests.py
+tests.ipynb
+main_tests.py
+main_tests.ipynb
+.github/workflows/offline-tests.yml
+.github/workflows/notebook-sync.yml
+docs/testing.md
+docs/coordination.md
+README.md
+tests/f2/conftest.py
+tests/logging/conftest.py
+tests/logging/test_overhead.py
+```
+
+The three additions to R1 are exactly the two native conftests and logging
+overhead test. Their changes only route/validate current-run evidence; native
+workloads/assertions remain intact. Production notebook-sync, logger,
+calculations, settings, dependency locks and dataset interfaces remain read-only.
+The indivisible mutable pairs are `tests` and `main_tests`; all ten pair names
+and all 20 members are checked, including `upload`. The eight other pairs remain
+unchanged. Existing worktrees, environments, secrets and evidence are preserved.
+
+F3 implements test-only guards, fixed independent native lanes, legacy quarantine,
+run-bound fail-closed descendant reports, exclusive destinations and shared
+literal smoke. See [offline testing](testing.md). Expected faults are scoped;
+native F-LOG timing and F1/F2 guards are not replaced by the F3 workload policy.
+Initial local failures remain evidence, not reclassified success. The handoff
+records actual clean tested SHA, manifest digest, commands/counts/exits/skips,
+guard graph/counters, previous hashes, exact pair inventory and check URLs.
+Unavailable execution evidence is NOT AVAILABLE or NOT VERIFIED.
+
+Implementation/local offline validation does not grant workflow activation or
+hosted network SETUP. Those two gated workflows require separate approval before
+the first triggering push. The setup scope is fresh standard Windows hosted
+runner, exact checkout, the existing CPython 3.14.8 archive hash/pip 26.2.1 and
+hash-locked dev wheels, then immutable OFFLINE. No production secrets or paid
+resources. Required-check enforcement needs later owner permission after actual
+successful exact-head checks; branch protection/rulesets are unchanged.
+
+### Literal AC #47 and residual work
+
+Issues [#47](https://github.com/foykes/moex-dataset/issues/47) and
+[#78](https://github.com/foykes/moex-dataset/issues/78) remain **OPEN**.
+
+| Literal AC #47 | F3 contribution | Residual acceptance |
+|---|---|---|
+| Default pytest/unittest запускает содержательные deterministic tests без сети и productionwrites. | Actual default commands, guards, positive disposable I/O and reports | Successful local/exact-head execution evidence |
+| Live/staging probes отдельно помечены и требуют явного разрешения. | Import quarantine, strict markers and fail-closed CLI gates tested with doubles | Separate approved bounded profiles/targets |
+| CI выполняет coverage/pagination/update/RSI/publication fault regressions и notebook sync check на точном SHA. | Four lane checks and exact-set notebook check prepared | Hosted activation plus reviewed A/B/C/D integration and executed domain matrix |
+
+F connects real reviewed A/B/C/D regression paths in a separately scoped integration
+change: namespace/guard compatibility, default collection and CI targets, actual
+local and exact-head checks. Unconnected regressions are NOT CONNECTED / NOT RUN;
+placeholders do not count as coverage. A8/B3/D4 final acceptance does not create a
+circular prerequisite for this bootstrap.
+
+Open hookups: A — source/history/universe/coverage/pagination/update and A8;
+B — indicators/warm-up/window/RSI and B3; C — dividends/catalog/source;
+D — publication/capacity/fault/recovery/previous/readback and D4;
+F — hookups/config/check enforcement/domain logging; R — independent review and
+final end-to-end acceptance. Known domain gaps (#6/#20/#21/#22/#24, metadata #11)
+are not fixed by smoke. Malformed response structure does not establish calendar
+date validation. #78 foundation/redaction smoke does not establish every domain
+failure's logging context, capacity ERROR/nonzero or production observability.
+
+F-ready requires the implemented slice, unchanged native assertions, local
+evidence and successful current exact-head CI/notebook checks. Final #47 also
+requires all domain AC regressions. Production requires separately approved
+targets/diagnostics/deployment/readback/recovery evidence. No merge, issue closure,
+production invocation, next slice or automatic reservation transfer occurs here.
+Rollback is a separately authorized thematic revert; retained evidence,
+environments, worktrees and secrets are not deleted.
+
+PR #83 independent review of `439874348f2fbb33a2c8e3bde84935982f463929`
+requested F3-CODE-01/02/03 changes: exact native Git admission, truncate/FD
+mutation controls and source-inventory checks before fingerprint reads.
+Corrections stay in F3-01 with preserved commits, environments and evidence.
+The handoff records Windows red/green regressions and new-head local/hosted
+checks. Its next gate is READY_FOR_REPEAT_REVIEW; guard acceptance requires the
+new independent code review. The residual AC matrix and issue states above
+remain unchanged.

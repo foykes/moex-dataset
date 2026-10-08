@@ -1,18 +1,39 @@
-name: Exact-SHA notebook pairs
+name: F3 offline Windows checks
 
 on:
-  workflow_call:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
-  notebook-sync:
+  offline:
+    # Activation/network SETUP require a separate grant. Skipped is NOT VERIFIED.
     if: vars.MDS_F3_CI_SETUP_APPROVED == 'true'
-    name: notebook-sync
+    name: offline-${{ matrix.check }}
     runs-on: windows-2025
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - lane: f1
+            check: f1
+          - lane: f2
+            check: f2
+          - lane: flog
+            check: f-log
+          - lane: f3
+            check: f3
     env:
+      TASK_LANE: ${{ matrix.lane }}
       TASK_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       TASK_EVENT_SHA: ${{ github.sha }}
       TASK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
@@ -32,6 +53,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Checkout line-ending policy failed' }
           $taskHead = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $taskHead -ne $env:TASK_EXPECTED_SHA) { throw 'Exact source SHA mismatch' }
+      - name: SETUP exact reviewed baseline for offline regressions
+        if: matrix.lane == 'f3'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $taskBaseline = '07945ed4ded747145b40d7a7c25e8ce97abeaa0d'
+          git -c core.hooksPath=NUL fetch --no-tags --depth=1 origin $taskBaseline
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed baseline fetch failed' }
+          $taskFetched = git rev-parse "$taskBaseline^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $taskFetched -ne $taskBaseline) { throw 'Reviewed baseline identity mismatch' }
+          $taskHead = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $taskHead -ne $env:TASK_EXPECTED_SHA) { throw 'SETUP changed exact source SHA' }
       - name: SETUP approved hash-locked Windows dev environment
         shell: pwsh
         run: |
@@ -70,7 +103,7 @@ jobs:
             "$taskRelative $taskHash"
           }
           [IO.File]::WriteAllLines((Join-Path (Get-Location) '.f1/evidence/setup/environment-manifest.txt'), $taskManifest, [Text.UTF8Encoding]::new($false))
-      - name: OFFLINE exact-SHA notebook check
+      - name: OFFLINE guarded native lane
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -78,8 +111,8 @@ jobs:
           $env:PYTHONDONTWRITEBYTECODE = '1'
           [Environment]::SetEnvironmentVariable('PYTEST_ADDOPTS', $null, 'Process')
           [Environment]::SetEnvironmentVariable('PYTEST_PLUGINS', $null, 'Process')
-          & $env:MDS_F3_PYTHON -I -B -X utf8 tools/offline_tests.py --notebook-check --ref $env:TASK_EXPECTED_SHA
-          if ($LASTEXITCODE -ne 0) { throw 'Exact-SHA notebook or guard evidence failed' }
+          & $env:MDS_F3_PYTHON -I -B -X utf8 tools/offline_tests.py --lane $env:TASK_LANE
+          if ($LASTEXITCODE -ne 0) { throw 'Offline lane or guard evidence failed' }
       - name: Verify immutable environment and unchanged source
         if: always()
         shell: pwsh
@@ -100,3 +133,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Tracked source changed during checks' }
           $taskFingerprint = (Get-FileHash -LiteralPath '.f1/evidence/setup/environment-manifest.txt' -Algorithm SHA256).Hash.ToLowerInvariant()
           "tested_sha=$taskHead; event_sha=$env:TASK_EVENT_SHA; pr_head_sha=$env:TASK_PR_HEAD_SHA; environment_sha256=$taskFingerprint" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+  notebook-sync:
+    # Dependent invocation keeps total active hosted jobs <=2 even on failure.
+    needs: offline
+    if: always() && vars.MDS_F3_CI_SETUP_APPROVED == 'true'
+    uses: ./.github/workflows/notebook-sync.yml

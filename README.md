@@ -61,3 +61,5 @@
 
 Парсинг данных о дивидендах с доход.ру:
 /dividends/dohod.ru
+
+[Offline tests and safety boundaries](docs/testing.md)

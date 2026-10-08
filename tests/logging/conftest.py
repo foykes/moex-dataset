@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _probe import ROOT, install_guards, safe_tree
+from _probe import ROOT, install_guards, safe_tree, offline_guard
 
 GUARDS = install_guards()
 
@@ -29,6 +29,12 @@ def pytest_configure(config):
             raise pytest.UsageError('Collect only tests/logging')
     if os.environ.get('PYTEST_DISABLE_PLUGIN_AUTOLOAD') != '1' or os.environ.get('PYTEST_ADDOPTS') or os.environ.get('PYTEST_PLUGINS'):
         raise pytest.UsageError('Disable inherited pytest plugins/options')
+    try:
+        directory = offline_guard().report_root(ROOT, 'flog')
+        safe_tree(directory)
+        config._flog_report_root = directory
+    except ValueError as error:
+        raise pytest.UsageError(str(error)) from error
 
 
 @pytest.fixture
@@ -59,8 +65,10 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    directory = ROOT / '.f-log/evidence'
-    safe_tree(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / 'pytest.json').write_text(json.dumps({'exit_code': int(exitstatus),
-        'platform': sys.platform, 'guards': GUARDS, 'reports': REPORTS}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    directory = getattr(session.config, '_flog_report_root', None)
+    if directory is None:
+        return
+    result = {'exit_code': int(exitstatus), 'platform': sys.platform,
+              'guards': GUARDS, 'reports': REPORTS}
+    result.update(offline_guard().report_metadata())
+    offline_guard().exclusive_json(directory / 'pytest.json', result)
