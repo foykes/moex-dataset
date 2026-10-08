@@ -48,6 +48,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # Preserve Windows checkout normalization when offline Git ignores system config.
+          git config --local core.autocrlf true
+          if ($LASTEXITCODE -ne 0) { throw 'Checkout line-ending policy failed' }
           $taskHead = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $taskHead -ne $env:TASK_EXPECTED_SHA) { throw 'Exact source SHA mismatch' }
       - name: SETUP exact reviewed baseline for offline regressions
