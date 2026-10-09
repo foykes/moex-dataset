@@ -87,49 +87,173 @@ def get_next_header(current_header=None):
 
 
 # %%
+def _prepare_ticker_catalogue(source):
+    """Отдельная рабочая копия: исходный каталог и его экспорт не меняются."""
+    if not isinstance(source, pd.DataFrame) or any(
+            list(source.columns).count(name) != 1 for name in ('TRADE_CODE', 'SUPERTYPE')):
+        raise ValueError('A1_TICKER_CATALOGUE_STRUCTURE')
+
+    groups = {}
+    for position, value in enumerate(source['TRADE_CODE']):
+        if isinstance(value, str):
+            key = value.strip()
+            if key:
+                groups.setdefault(key, []).append(position)
+        elif pd.api.types.is_scalar(value) and pd.isna(value):
+            continue
+        else:
+            # Не превращаем число/контейнер в новый строковый идентификатор.
+            raise ValueError('A1_TICKER_CATALOGUE_STRUCTURE')
+
+    positions = []
+    for key, group in groups.items():
+        raw_codes = {source.iloc[position]['TRADE_CODE'] for position in group}
+        if len(raw_codes) > 1:
+            # Проверяем всю новую strip-группу до выбора первой строки. Старые
+            # exact-code дубли и произвольные различия NAME/CURRENCY не ремонтируем.
+            routes = [source.iloc[position]['SUPERTYPE'] for position in group]
+            if any(not isinstance(route, str) or not route.strip() for route in routes) or any(
+                    route != routes[0] for route in routes[1:]):
+                raise ValueError('A1_AMBIGUOUS_TICKER_ROUTING')
+            for name in ('ISIN', 'INSTRUMENT_ID'):
+                if list(source.columns).count(name) != 1:
+                    continue
+                hints = []
+                for position in group:
+                    value = source.iloc[position][name]
+                    if not pd.api.types.is_scalar(value) or pd.isna(value):
+                        continue
+                    if isinstance(value, str) and not value.strip():
+                        continue
+                    hints.append(value)
+                if hints and any(value != hints[0] for value in hints[1:]):
+                    raise ValueError('A1_AMBIGUOUS_TICKER_IDENTITY')
+        positions.append(group[0])
+
+    if not positions:
+        raise ValueError('A1_EMPTY_TICKER_CATALOGUE')
+    processing = source.iloc[positions].copy(deep=True)
+    processing['TRADE_CODE'] = list(groups)
+    processing.reset_index(drop=True, inplace=True)
+    return processing
+
+
+def _a1_counts(received, accepted, instruments):
+    return dict(rows_received=received, rows_accepted=accepted,
+                rows_quarantined=None, pages=None, instruments=instruments,
+                null_reasons={'rows_quarantined': 'NOT_ASSESSED', 'pages': 'NOT_MEASURED'})
+
+
+def _a1_event(logging_context, level, event, fields):
+    if logging_context is None:
+        return
+    try:
+        import run_logging
+        receipt = run_logging.emit_event(logging_context, level, event,
+            'Сбор данных A1: ' + event, dict(stage='data_gathering', **fields))
+        healthy = run_logging.check_logging_health(logging_context)['healthy']
+        if not receipt['accepted'] or not healthy or level == 'ERROR' and not receipt['confirmed']:
+            raise RuntimeError('LOGGING_INCOMPLETE')
+    except BaseException:
+        # Не цепляем вторичную ошибку с потенциальными секретами к новому сигналу.
+        raise RuntimeError('LOGGING_INCOMPLETE') from None
+
+
+def _a1_failure(logging_context, error, fields):
+    if logging_context is None:
+        return
+    try:
+        notes = getattr(error, '__notes__', [])
+        if type(notes) is list and 'A1_LOGGING_FAILURE: LOGGING_INCOMPLETE' in notes:
+            return
+    except BaseException:
+        pass
+    try:
+        import run_logging
+        codes = {'A1_TICKER_CATALOGUE_STRUCTURE', 'A1_EMPTY_TICKER_CATALOGUE',
+                 'A1_AMBIGUOUS_TICKER_ROUTING', 'A1_AMBIGUOUS_TICKER_IDENTITY',
+                 'A1_STORED_TICKER_INCOMPATIBLE'}
+        code = error.args[0] if (type(error) is ValueError and len(error.args) == 1 and isinstance(error.args[0], str)
+                                 and error.args[0] in codes) else 'APPLICATION_ERROR'
+        record = run_logging.make_error(logging_context, error, 'data_gathering', code=code)
+        _a1_event(logging_context, 'ERROR', 'a1_failed',
+                  dict(fields, outcome='FAILED', error=record))
+    except BaseException:
+        # Два независимых bounded сигнала; ни один fallback не заменяет primary.
+        try:
+            print('A1_LOGGING_FAILURE: LOGGING_INCOMPLETE', file=sys.stderr)
+        except BaseException:
+            pass
+        try:
+            BaseException.add_note(error, 'A1_LOGGING_FAILURE: LOGGING_INCOMPLETE')
+        except BaseException:
+            pass
+
+
+def _check_stored_ticker_identity(dataset, keys):
+    for value in dataset['ticker']:
+        if isinstance(value, str) and value != value.strip() and value.strip() in keys:
+            # Проверка всего read dataset до удаления RSI/30-day filter. Это отказ,
+            # а не скрытая миграция старых свечей или historical mapping.
+            raise ValueError('A1_STORED_TICKER_INCOMPATIBLE')
+
+
 ### Выгрузка датасета доступного на мосбирже
-def moex_tickerlists (current_path):
-    CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
-    global header
+def moex_tickerlists (current_path, *, logging_context=None):
+    operation_started = time.perf_counter()
+    active_fields = dict(file='ticker_lists/moex_full.csv')
+    _a1_event(logging_context, 'INFO', 'a1_moex_tickerlists_started', active_fields)
+    try:
+        CSV_URL = 'https://www.moex.com/ru/listing/securities-list-csv.aspx?type=1'
+        global header
 
-    with requests.Session() as s:
-        download = s.get(CSV_URL, headers = header)
+        with requests.Session() as s:
+            download = s.get(CSV_URL, headers = header)
 
-        decoded_content = download.content.decode('cp1251')
+            decoded_content = download.content.decode('cp1251')
 
-        cr = csv.reader(decoded_content.splitlines(), delimiter=',')
-        my_list = list(cr)
+            cr = csv.reader(decoded_content.splitlines(), delimiter=',')
+            my_list = list(cr)
 
 
-    df_moex = pd.DataFrame(my_list)
-    new_header = df_moex.iloc[0]
-    df_moex = df_moex[1:]
-    df_moex.columns = new_header
+        if not my_list:
+            raise ValueError('A1_EMPTY_TICKER_CATALOGUE')
+        df_moex = pd.DataFrame(my_list)
+        new_header = df_moex.iloc[0]
+        df_moex = df_moex[1:]
+        df_moex.columns = new_header
 
-    print("Общее количество объектов на Мосбирже: {}".format(len(df_moex)))
-    df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
-    df_moex.to_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path))
+        # Guard до первого writer, но raw source rows/values/order/index сохраняются.
+        all_stocks_ru = _prepare_ticker_catalogue(df_moex)
+        _a1_event(logging_context, 'INFO', 'a1_catalogue_prepared',
+            dict(file='ticker_lists/moex_full.csv',
+                 counts=_a1_counts(len(df_moex), len(all_stocks_ru), len(all_stocks_ru))))
 
-    df_moex_stocks = df_moex[(df_moex['SUPERTYPE'] == "Акции")|(df_moex['SUPERTYPE'] == "Депозитарные расписки")]
-    df_moex_stocks.reset_index(drop=True, inplace=True)
+        print("Общее количество объектов на Мосбирже: {}".format(len(df_moex)))
+        active_fields = dict(file='ticker_lists/moex_full.xlsx')
+        df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
+        active_fields = dict(file='ticker_lists/moex_full.csv')
+        df_moex.to_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path))
 
-    ## moex_stocks_list['CURRENCY'] == '' это заблокированные акции
+        df_moex_stocks = df_moex[(df_moex['SUPERTYPE'] == "Акции")|(df_moex['SUPERTYPE'] == "Депозитарные расписки")]
+        df_moex_stocks.reset_index(drop=True, inplace=True)
 
-    print("Количество акций и депозитарных расписок: {}".format(len(df_moex_stocks)))
-    # df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(current_path))
-    df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(current_path))
+        ## moex_stocks_list['CURRENCY'] == '' это заблокированные акции
 
-    ## Запуск только для акций и депозитарных расписок
-    all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
-    all_stocks_ru = all_stocks_ru.loc[~all_stocks_ru.duplicated(), :]
+        print("Количество акций и депозитарных расписок: {}".format(len(df_moex_stocks)))
+        # df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(current_path))
+        active_fields = dict(file='ticker_lists/moex_stocks.csv')
+        df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(current_path))
 
-    ## Запуск для всего
-    all_stocks_ru = df_moex.filter(['TRADE_CODE'], axis = 1)
-    all_stocks_ru = df_moex.loc[~all_stocks_ru.duplicated(), :]
-
-    df_moex_stocks.reset_index(drop=True, inplace=True)
-
-    return all_stocks_ru
+        _a1_event(logging_context, 'INFO', 'a1_catalogue_returned',
+            dict(file='ticker_lists/moex_full.csv', outcome='RETURNED',
+                 duration_ms=max(0, (time.perf_counter() - operation_started) * 1000),
+                 counts=_a1_counts(len(df_moex), len(all_stocks_ru), len(all_stocks_ru))))
+        return all_stocks_ru
+    except BaseException as error:
+        _a1_failure(logging_context, error,
+            dict(active_fields, duration_ms=max(0, (time.perf_counter() - operation_started) * 1000)))
+        raise
 
 # %%
 ### Функция запроса к API по тикеру, датам и нужному интервалу
@@ -426,157 +550,249 @@ def build_tickers_dates(all_stocks_ru, current_path):
 
 # %%
 ### Функция для выгрузки данных с нуля
-def full_reload (all_stocks_ru, interval, years, filename, word, current_path, tickers_dates):
-    df_full = pd.DataFrame()
-    today = datetime.datetime.now()
-    start_date = today
+def full_reload (all_stocks_ru, interval, years, filename, word, current_path, tickers_dates, *, logging_context=None):
+    operation_started = time.perf_counter()
+    active_fields = dict(dataset_id=filename, interval=interval, file=filename + '.csv')
+    _a1_event(logging_context, 'INFO', 'a1_full_reload_started', active_fields)
+    try:
+        input_rows = len(all_stocks_ru)
+        all_stocks_ru = _prepare_ticker_catalogue(all_stocks_ru)
+        _a1_event(logging_context, 'INFO', 'a1_catalogue_prepared',
+            dict(active_fields, counts=_a1_counts(input_rows, len(all_stocks_ru), len(all_stocks_ru))))
+        df_full = pd.DataFrame()
+        today = datetime.datetime.now()
+        start_date = today
 
-    ##определяем границу нужного диапазона выгрузки
-    if years != 0:
-        date_shift_needed = start_date - datetime.timedelta(days=years*365)
-        date_shift_needed = date_shift_needed.strftime('%Y-%m-%d')
-    else:
-        date_shift_needed = '0'
-
-
-    for i in range(0,len(all_stocks_ru)):
-        ticker_in = all_stocks_ru['TRADE_CODE'][i]
-        ticker_type = all_stocks_ru['SUPERTYPE'][i]
-
-        if len(ticker_in) > 0: #проверка что тикер выгрузился и есть
-
-            #определение левой границы выгрузки: или дата листинга или самое раннее нужное значение
-            end_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['issue_date'].values[0]
-            end_date_mx = str(end_date_mx)[:10]
-            if date_shift_needed > end_date_mx:
-                end_date_mx = date_shift_needed
-
-            if tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].isna().values[0] == True:
-                start_date_mx = start_date.strftime('%Y-%m-%d')
-            else:
-                start_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].values[0]
-                start_date_mx = str(start_date_mx)[:10]
-
-            df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
-            if len(df) > 0: df_full = pd.concat([df_full,df])
+        ##определяем границу нужного диапазона выгрузки
+        if years != 0:
+            date_shift_needed = start_date - datetime.timedelta(days=years*365)
+            date_shift_needed = date_shift_needed.strftime('%Y-%m-%d')
         else:
-            print(ticker_in)
+            date_shift_needed = '0'
 
-    print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, len(df_full)))
-    if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename + '.xlsx')),index = False)
-    if len(df_full) > 0: df_full.to_csv(('{}/datasets/{}'.format(current_path, filename + '.csv')),index = False)
+
+        for i in range(0,len(all_stocks_ru)):
+            ticker_in = all_stocks_ru.iloc[i]['TRADE_CODE']
+            ticker_type = all_stocks_ru.iloc[i]['SUPERTYPE']
+            active_fields = dict(dataset_id=filename, interval=interval,
+                                 instrument=ticker_in, file=filename + '.csv')
+
+            if len(ticker_in) > 0: #проверка что тикер выгрузился и есть
+
+                #определение левой границы выгрузки: или дата листинга или самое раннее нужное значение
+                end_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['issue_date'].values[0]
+                end_date_mx = str(end_date_mx)[:10]
+                if date_shift_needed > end_date_mx:
+                    end_date_mx = date_shift_needed
+
+                if tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].isna().values[0] == True:
+                    start_date_mx = start_date.strftime('%Y-%m-%d')
+                else:
+                    start_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].values[0]
+                    start_date_mx = str(start_date_mx)[:10]
+
+                _a1_event(logging_context, 'INFO', 'a1_instrument_started',
+                    dict(dataset_id=filename, interval=interval, instrument=ticker_in, file=filename + '.csv'))
+                query_started = time.perf_counter()
+                df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+                _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
+                    dict(active_fields, outcome='RETURNED',
+                         duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
+                         counts=_a1_counts(len(df), len(df), 1)))
+                if len(df) > 0: df_full = pd.concat([df_full,df])
+            else:
+                print(ticker_in)
+
+        print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, len(df_full)))
+        active_fields = dict(dataset_id=filename, interval=interval, file=filename + '.xlsx')
+        if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename + '.xlsx')),index = False)
+        active_fields = dict(dataset_id=filename, interval=interval, file=filename + '.csv')
+        if len(df_full) > 0: df_full.to_csv(('{}/datasets/{}'.format(current_path, filename + '.csv')),index = False)
+        _a1_event(logging_context, 'INFO', 'a1_full_reload_returned',
+            dict(dataset_id=filename, interval=interval, file=filename + '.csv', outcome='RETURNED',
+                 duration_ms=max(0, (time.perf_counter() - operation_started) * 1000), counts=_a1_counts(len(df_full), len(df_full), len(all_stocks_ru))))
+    except BaseException as error:
+        _a1_failure(logging_context, error,
+            dict(active_fields, duration_ms=max(0, (time.perf_counter() - operation_started) * 1000)))
+        raise
 
 # %%
 ### Функция для обновления текущих датасетов по конфигу
-def data_update (config, current_path, all_stocks_ru):
-    today = datetime.datetime.now()
-    moex_full_catalogue = pd.read_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path), index_col=0)
-    
-    ## обновление готовых файлов
-    for j in range(0,len(config)):
-        filename_j = config[j]['filename']
-        interval = config[j]['interval']
-        years = config[j]['years']
-        word = config[j]['word']
+def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_context=None):
+    operation_started = time.perf_counter()
+    active_fields = {}
+    _a1_event(logging_context, 'INFO', 'a1_data_update_started', active_fields)
+    try:
+        today = datetime.datetime.now()
+        input_rows = len(all_stocks_ru)
+        all_stocks_ru = _prepare_ticker_catalogue(all_stocks_ru)
+        _a1_event(logging_context, 'INFO', 'a1_catalogue_prepared',
+            dict(counts=_a1_counts(input_rows, len(all_stocks_ru), len(all_stocks_ru))))
+        moex_full_catalogue = pd.read_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path), index_col=0)
+        lookup = _prepare_ticker_catalogue(moex_full_catalogue)
+        _a1_event(logging_context, 'INFO', 'a1_lookup_prepared',
+            dict(file='ticker_lists/moex_full.csv',
+                 counts=_a1_counts(len(moex_full_catalogue), len(lookup), len(lookup))))
+        catalogue_keys = set(all_stocks_ru['TRADE_CODE']) | set(lookup['TRADE_CODE'])
 
-        dataset_path = current_path + "datasets/{}.csv".format(filename_j)
+        ## обновление готовых файлов
+        for j in range(0,len(config)):
+            filename_j = config[j]['filename']
+            interval = config[j]['interval']
+            years = config[j]['years']
+            word = config[j]['word']
+            active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv')
+            _a1_event(logging_context, 'INFO', 'a1_dataset_started', active_fields)
 
-        # проверка что файл существует
-        if os.path.isfile(dataset_path) == False:
-            print("Файла не существует, не могу его обновить: \n{}".format(dataset_path))
-            print("Начинаю выгружать его с нуля")
-            full_reload (all_stocks_ru, interval, years, filename_j, word, current_path)
+            dataset_path = current_path + "datasets/{}.csv".format(filename_j)
 
-        else:
-            if dataset_path.endswith('csv') and "~$" not in dataset_path:
-                df = pd.read_csv(dataset_path)
-            elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
-                df = pd.read_excel(dataset_path)
+            # проверка что файл существует
+            if os.path.isfile(dataset_path) == False:
+                print("Файл текущего набора отсутствует, не могу его обновить")
+                print("Начинаю выгружать его с нуля")
+                _a1_event(logging_context, 'INFO', 'a1_cold_start',
+                    dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv', outcome='MISSING_DATASET'))
+                full_reload (all_stocks_ru, interval, years, filename_j, word, current_path, tickers_dates,
+                             logging_context=logging_context)
 
-            print("Длина {} до обновления {}".format(filename_j, len(df)))
+            else:
+                if dataset_path.endswith('csv') and "~$" not in dataset_path:
+                    df = pd.read_csv(dataset_path)
+                elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
+                    df = pd.read_excel(dataset_path)
 
-            # убираем ненужные колонки теханализа - их потом с нуля пересчитаем
-            ## ПРОВЕРИТЬ ЧТО ЕСЛИ ЭТО НЕ ДЕЛАТЬ
-            columns = df.columns
-            white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
-                'ticker']
-            columns_to_remove = [i for i in columns if i not in white_list_columns]
-            columns_to_remove
-            df.drop(columns_to_remove, axis=1,inplace=True)
-            # df.head(2)
+                _check_stored_ticker_identity(df, catalogue_keys)
+                print("Записей до обновления: {}".format(len(df)))
 
-            # для каждого тикера выбираем последнюю дату за которую есть выгрузка 
-            df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
-            df_last_date = df_last_date.loc[:,['end','ticker']]
-            df_last_date.drop_duplicates(inplace=True)
-            df_last_date.reset_index(inplace=True,drop=True)
+                # убираем ненужные колонки теханализа - их потом с нуля пересчитаем
+                ## ПРОВЕРИТЬ ЧТО ЕСЛИ ЭТО НЕ ДЕЛАТЬ
+                columns = df.columns
+                white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
+                    'ticker']
+                columns_to_remove = [i for i in columns if i not in white_list_columns]
+                columns_to_remove
+                df.drop(columns_to_remove, axis=1,inplace=True)
+                # df.head(2)
 
-            # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
-            filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
-            df_last_date = df_last_date[df_last_date['end'] >= filter_date]
+                # для каждого тикера выбираем последнюю дату за которую есть выгрузка
+                df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
+                df_last_date = df_last_date.loc[:,['end','ticker']]
+                df_last_date.drop_duplicates(inplace=True)
+                df_last_date.reset_index(inplace=True,drop=True)
+
+                # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
+                filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+                df_last_date = df_last_date[df_last_date['end'] >= filter_date]
 
 
 
-            # обновление текущих данных
-            for i in range(0,len(df_last_date)):
-                end_date = df_last_date.iloc[i]['end']
-                ticker_in = df_last_date.iloc[i]['ticker']
-                start_date = today
-                ticker_type = moex_full_catalogue[moex_full_catalogue['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
+                # обновление текущих данных
+                for i in range(0,len(df_last_date)):
+                    end_date = df_last_date.iloc[i]['end']
+                    ticker_in = df_last_date.iloc[i]['ticker']
+                    active_fields = dict(dataset_id=filename_j, interval=interval,
+                                         instrument=ticker_in, file=filename_j + '.csv')
+                    start_date = today
+                    ticker_type = lookup[lookup['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
 
-                start_date_mx = start_date.strftime('%Y-%m-%d')
-                end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
+                    start_date_mx = start_date.strftime('%Y-%m-%d')
+                    end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
 
-                df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
-                df = pd.concat([df, df_ticker])
-
-            
-            ### Проверка не появилось ли новых тикеров с момента последнего обновления
-
-            ticker_list_actual = list(set(all_stocks_ru['TRADE_CODE'].to_list()))
-            ticker_list_actual.remove('')
-
-            ticker_list_actual_dataset = list(set(df['ticker'].to_list()))
-
-            delta = list(set(ticker_list_actual) - set(ticker_list_actual_dataset))
-            if len(delta) > 0:
-                for t in range (0,len(delta)):
-                    ticker_in = delta[t]
-                    start_date_mx = today.strftime('%Y-%m-%d')
-                    end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
-                    ticker_type = moex_full_catalogue[moex_full_catalogue['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
-
+                    _a1_event(logging_context, 'INFO', 'a1_instrument_started',
+                        dict(dataset_id=filename_j, interval=interval, instrument=ticker_in, file=filename_j + '.csv'))
+                    query_started = time.perf_counter()
                     df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+                    _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
+                        dict(active_fields, outcome='RETURNED',
+                             duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
+                             counts=_a1_counts(len(df_ticker), len(df_ticker), 1)))
                     df = pd.concat([df, df_ticker])
-            
-            df.sort_values(by=['ticker','begin'],inplace=True)
-            df.drop_duplicates(inplace=True)
-            df.reset_index(inplace=True,drop=True)
-            print("Длина {} после обновления {}".format(filename_j, len(df)))
 
-            if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
-            if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+
+                ### Проверка не появилось ли новых тикеров с момента последнего обновления
+
+                ticker_list_actual = all_stocks_ru['TRADE_CODE'].to_list()
+                ticker_list_actual_dataset = set(df['ticker'].to_list())
+                delta = [ticker for ticker in ticker_list_actual if ticker not in ticker_list_actual_dataset]
+                if len(delta) > 0:
+                    for t in range (0,len(delta)):
+                        ticker_in = delta[t]
+                        active_fields = dict(dataset_id=filename_j, interval=interval,
+                                             instrument=ticker_in, file=filename_j + '.csv')
+                        start_date_mx = today.strftime('%Y-%m-%d')
+                        end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
+                        ticker_type = lookup[lookup['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
+
+                        _a1_event(logging_context, 'INFO', 'a1_instrument_started',
+                            dict(dataset_id=filename_j, interval=interval, instrument=ticker_in, file=filename_j + '.csv'))
+                        query_started = time.perf_counter()
+                        df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+                        _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
+                            dict(active_fields, outcome='RETURNED',
+                                 duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
+                                 counts=_a1_counts(len(df_ticker), len(df_ticker), 1)))
+                        df = pd.concat([df, df_ticker])
+
+                df.sort_values(by=['ticker','begin'],inplace=True)
+                df.drop_duplicates(inplace=True)
+                df.reset_index(inplace=True,drop=True)
+                print("Записей после обновления: {}".format(len(df)))
+
+                active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.xlsx')
+                if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
+                active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv')
+                if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+        _a1_event(logging_context, 'INFO', 'a1_data_update_returned',
+            dict(outcome='RETURNED',
+                 duration_ms=max(0, (time.perf_counter() - operation_started) * 1000)))
+    except BaseException as error:
+        _a1_failure(logging_context, error,
+            dict(active_fields, duration_ms=max(0, (time.perf_counter() - operation_started) * 1000)))
+        raise
 
 # %%
-def main(current_path, force_reload = False):
+def main(current_path, force_reload = False, *, logging_context=None):
     global exception_list
     global config
-    
-    all_stocks_ru = moex_tickerlists (current_path)
-    all_stocks_ru.reset_index(drop=True, inplace=True)
 
-    tickers_dates = build_tickers_dates(all_stocks_ru, current_path)
-    
-    if force_reload == True: ## Если нужно с нуля перевыгрузить данные, то это этот необязательный параметр нужно передать как True
-        for k in range(0, len(config)):
-            full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path, tickers_dates)
-        
-    else:
-        data_update(config,current_path, all_stocks_ru)
+    operation_started = time.perf_counter()
+    active_fields = {}
+    _a1_event(logging_context, 'INFO', 'a1_main_started', active_fields)
+    try:
+        all_stocks_ru = moex_tickerlists (current_path, logging_context=logging_context)
+        input_rows = len(all_stocks_ru)
+        all_stocks_ru = _prepare_ticker_catalogue(all_stocks_ru)
+        _a1_event(logging_context, 'INFO', 'a1_catalogue_prepared',
+            dict(counts=_a1_counts(input_rows, len(all_stocks_ru), len(all_stocks_ru))))
+
+        _a1_event(logging_context, 'INFO', 'a1_metadata_started', dict(file='ticker_lists/tickers_dates.csv'))
+        metadata_started = time.perf_counter()
+        active_fields = dict(file='ticker_lists/tickers_dates.csv')
+        tickers_dates = build_tickers_dates(all_stocks_ru, current_path)
+        _a1_event(logging_context, 'INFO', 'a1_metadata_returned',
+            dict(file='ticker_lists/tickers_dates.csv', outcome='RETURNED',
+                 duration_ms=max(0, (time.perf_counter() - metadata_started) * 1000)))
+        active_fields = {}
+
+        if force_reload == True: ## Если нужно с нуля перевыгрузить данные, то это этот необязательный параметр нужно передать как True
+            _a1_event(logging_context, 'INFO', 'a1_force_reload', dict(outcome='FORCE_RELOAD'))
+            for k in range(0, len(config)):
+                full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path, tickers_dates,
+                            logging_context=logging_context)
+
+        else:
+            data_update(config,current_path, all_stocks_ru, tickers_dates, logging_context=logging_context)
 
 
-    exception_list = list(set(exception_list)) #дедупликация
-    print("Пропущено тикеров при разных интервалах: {}".format(len(exception_list)))
+        exception_list = list(set(exception_list)) #дедупликация
+        print("Пропущено тикеров при разных интервалах: {}".format(len(exception_list)))
+        _a1_event(logging_context, 'INFO', 'a1_main_returned',
+            dict(active_fields, outcome='RETURNED',
+                 duration_ms=max(0, (time.perf_counter() - operation_started) * 1000)))
+    except BaseException as error:
+        _a1_failure(logging_context, error,
+            dict(active_fields, duration_ms=max(0, (time.perf_counter() - operation_started) * 1000)))
+        raise
 
 # %%
 if __name__ == "__main__":
