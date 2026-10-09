@@ -436,3 +436,42 @@ The handoff records Windows red/green regressions and new-head local/hosted
 checks. Its next gate is READY_FOR_REPEAT_REVIEW; guard acceptance requires the
 new independent code review. The residual AC matrix and issue states above
 remain unchanged.
+
+## F3-ADMISSION-01 reservation and A1 handoff
+
+The repository owner assigned this narrow F bootstrap to the current executor.
+Branch: `codex/mds-f3-admission-01`. Actual source base:
+`ebc66fc376a2077ce027cf33689aae31728709c2`. The separate worktree preserves the
+existing preparation checkout, reservations, environments and evidence.
+
+The exact write reservation is `tools/offline_tests.py`,
+`tests/shared/test_collection.py`, `tests/A/test_admission_smoke.py` and this
+appended section. Existing coordination sections and owners remain unchanged.
+The runner admits explicit A directories and regular `test_*.py` files/node
+selectors through the existing precollection guard and ReportPlugin. Parent
+traversal and A aliases are refused. Shared/legacy fixture allowances remain;
+the fixed lanes, default discovery, CI, guard and domain code are unchanged.
+
+Use the existing verified immutable dev environment and child-only F3 profile:
+disable plugin autoload, clear inherited pytest/Python/ticket/Git overrides and
+credential variables without printing them, and keep TEMP/TMP/evidence in the
+owning worktree. No dependency installation or credential copy is required.
+
+```powershell
+& $F3Python -I -B -X utf8 -m pytest -c pyproject.toml --collect-only -q tests/A
+& $F3Python -I -B -X utf8 -m pytest -c pyproject.toml -q tests/A/test_admission_smoke.py
+& $F3Python -I -B -X utf8 -m pytest -c pyproject.toml -q tests/A/test_admission_smoke.py::test_admission_smoke
+```
+
+The smoke verifies infrastructure admission only. It establishes no A1 domain
+AC, metadata validity or production readiness. Local handoff evidence records
+original refusal, source mode/digest, actual commands/counts/exits, preserved
+negative/default/legacy controls, guard reports, environment fingerprints,
+exact-HEAD F3/F2/F-LOG and ten-pair notebook checks, self-review and rollback.
+
+A1 R3 and its six-path allowlist remain unchanged. A1 starts only after independent
+bootstrap acceptance, separately authorized merge and verification of its actual
+base/drift. Explicit admission does not add A tests to default or hosted CI.
+Rollback reverts only this bootstrap before downstream adoption; after adoption,
+coordinate its removal with dependent explicit A test callers. Preserve evidence
+and environments. Refs #47, #78; no merge, issue closure or production operation.
