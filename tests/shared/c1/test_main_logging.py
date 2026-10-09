@@ -218,6 +218,74 @@ def test_logging_preserves_main_export_input(monkeypatch, context, tmp_path):
     assert not (tmp_path / 'datasets').exists()
 
 
+@pytest.mark.parametrize('scenario,isin', [
+    ('missing_isin', None), ('nan_isin', float('nan')),
+    ('invalid_isin', 'ru0009029540'), ('missing_dividends', 'RU0009029540'),
+])
+@pytest.mark.parametrize('with_logging', [False, True], ids=['without_context', 'real_context'])
+def test_main_failure_stops_before_export(monkeypatch, tmp_path, request,
+                                         scenario, isin, with_logging):
+    module = load('dividends')
+    module.current_path = str(tmp_path)
+    session = request.getfixturevalue('context') if with_logging else None
+    reads, emitted = [], []
+    exports = {'to_excel': [], 'to_csv': []}
+    def read_fixture(path):
+        reads.append(path)
+        # Keep the row when ISIN is NaN: main drops only entirely empty rows.
+        return pd.DataFrame({'TRADE_CODE': ['SBER'], 'ISIN': [isin]})
+    monkeypatch.setattr(pd, 'read_excel', read_fixture)
+    for method in exports:
+        monkeypatch.setattr(pd.DataFrame, method,
+            lambda *args, kind=method, **kwargs: exports[kind].append((args, kwargs)))
+    calls = source(monkeypatch, module, {'description': {}, 'boards': {}})
+    emitter = run_logging.emit_event
+    def observed(*args, **kwargs):
+        receipt = emitter(*args, **kwargs)
+        emitted.append((args[2], receipt))
+        return receipt
+    monkeypatch.setattr(run_logging, 'emit_event', observed)
+
+    missing_block = scenario == 'missing_dividends'
+    expected_type = KeyError if missing_block else ValueError
+    normal_returns = []
+    with pytest.raises(expected_type) as caught:
+        normal_returns.append(module.main(logging_context=session) if with_logging else module.main())
+    assert type(caught.value) is expected_type
+    assert caught.value.args == (('dividends',) if missing_block else
+        ('DIVIDEND_ISIN_INVALID: требуется ISIN из 12 символов',))
+    assert normal_returns == []
+    assert reads == [str(tmp_path) + '/datasets/ticker_lists/moex_full.xlsx']
+    assert calls == ([SEARCH_URL, DETAIL_URL] if missing_block else [])
+    assert exports['to_excel'] == [] and exports['to_csv'] == []
+    forbidden = {'dividend_export_input', 'dividend_collection_returned'}
+    assert forbidden.isdisjoint(event for event, receipt in emitted)
+    if not with_logging:
+        assert emitted == []
+        return
+
+    events = records(session)
+    assert forbidden.isdisjoint(event['event'] for event in events)
+    failures = [event for event in events if event['event'] == 'dividend_loader_failed']
+    assert len(failures) == 1
+    failure = failures[0]
+    assert failure['level'] == 'ERROR' and failure['outcome'] == 'FAILED'
+    error = failure['error']
+    assert error['stage'] == 'dividends' and error['instrument'] == 'SBER'
+    assert error['exception_type'] == expected_type.__name__
+    assert error['category'] == ('SOURCE' if missing_block else 'QUALITY')
+    assert error['code'] == ('DIVIDEND_SOURCE_SCHEMA_INVALID' if missing_block else 'DIVIDEND_ISIN_INVALID')
+    assert error['endpoint'] == (DETAIL_URL if missing_block else None)
+    receipts = [receipt for event, receipt in emitted if event == 'dividend_loader_failed']
+    assert len(receipts) == 1 and receipts[0]['accepted'] and receipts[0]['confirmed']
+    report = run_logging.finalize_logging(session, execution_outcome='FAILED', exit_status=1)
+    assert report['execution_outcome'] == 'FAILED' and report['exit_status'] == 1
+    assert report['delivery_outcome'] == 'COMPLETE' and report['storage_sealed']
+    assert report['evidence_incomplete'] is False
+    assert report['expected_producers'][0]['final_confirmed']
+    assert report['errors'] == [error]
+
+
 @pytest.mark.parametrize('with_logging', [False, True])
 def test_pipeline_forwards_exact_context_only_to_dividends(monkeypatch, context, with_logging):
     calls = []
