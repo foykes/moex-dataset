@@ -83,6 +83,11 @@ known dataset/interval/instrument, local monotonic duration and available counts
 are emitted. Unavailable fields have null reasons. Catalogue cleanup does not
 claim quarantine: rows_quarantined is null/NOT_ASSESSED.
 
+Lookup read/preparation failures identify the known logical file
+`ticker_lists/moex_full.csv`. Metadata builder start/failure has file=null with
+the existing NOT_AVAILABLE_OR_NOT_APPLICABLE reason: the unchanged builder
+writes XLSX then CSV, and its failed writer cannot be determined by this caller.
+
 Source/domain exceptions are re-raised as the same primary object. If diagnostics
 then fail, two independently protected signals are attempted: fixed stderr
 `A1_LOGGING_FAILURE: LOGGING_INCOMPLETE` and the same exact exception note.

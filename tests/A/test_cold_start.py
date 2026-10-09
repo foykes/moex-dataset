@@ -2,6 +2,8 @@
 
 import inspect
 import hashlib
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -430,22 +432,118 @@ def test_query_primary_stops_reload_before_next_call(gathering, catalogue, snaps
         assert not getattr(primary, '__notes__', []) and capsys.readouterr().err == ''
 
 
-def test_metadata_failure_identifies_known_file(gathering, catalogue, fixture_root,
-                                              monkeypatch, event_log, writers):
+@pytest.mark.parametrize('failed_writer', ['xlsx', 'csv'])
+def test_metadata_failure_does_not_guess_artifact(gathering, catalogue, fixture_root,
+                                                monkeypatch, event_log, capsys, failed_writer):
     _, root = fixture_root
-    primary, downstream = ValueError('metadata primary'), []
+    primary = OSError({'path': r'C:\private\WIN_PATH_CANARY\metadata',
+                       'secret': 'A1_SYNTHETIC_CANARY'})
+    original_args = primary.args
+    downstream, writes, requests = [], [], []
     monkeypatch.setattr(gathering, 'moex_tickerlists', lambda *args, **kwargs: catalogue)
 
-    def build(*args):
-        raise primary
+    def get(*args, **kwargs):
+        requests.append((args, kwargs))
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {})
 
-    monkeypatch.setattr(gathering, 'build_tickers_dates', build)
+    def write(kind):
+        def writer(frame, path, *args, **kwargs):
+            assert path.endswith('/ticker_lists/tickers_dates.' + kind)
+            writes.append(kind)
+            if kind == failed_writer:
+                raise primary
+        return writer
+
+    # Real unchanged builder and its XLSX -> CSV sequence; HTTP/writers offline.
+    monkeypatch.setattr(gathering.requests, 'Session', lambda: SimpleNamespace(get=get))
+    monkeypatch.setattr(gathering.pd.DataFrame, 'to_excel', write('xlsx'))
+    monkeypatch.setattr(gathering.pd.DataFrame, 'to_csv', write('csv'))
     monkeypatch.setattr(gathering, 'data_update', lambda *args, **kwargs: downstream.append(args))
-    with pytest.raises(ValueError) as captured:
+    monkeypatch.setattr(gathering, 'full_reload', lambda *args, **kwargs: downstream.append(args))
+    monkeypatch.setattr(gathering, 'moex_query', lambda *args, **kwargs: downstream.append(args))
+    with pytest.raises(OSError) as captured:
         gathering.main(root, logging_context=event_log.context)
-    assert captured.value is primary and downstream == [] and writers == []
-    assert event_log.events[-1]['file'] == 'ticker_lists/tickers_dates.csv'
-    assert event_log.events[-1]['outcome'] == 'FAILED'
+    assert captured.value is primary and primary.args == original_args and downstream == []
+    assert writes == (['xlsx'] if failed_writer == 'xlsx' else ['xlsx', 'csv'])
+    assert len(requests) == 4 and all(kwargs['timeout'] == 5 for _, kwargs in requests)
+    event = event_log.events[-1]
+    assert event['level'] == 'ERROR' and event['outcome'] == 'FAILED'
+    assert not getattr(primary, '__notes__', []) and capsys.readouterr().err == ''
+    serialized = json.dumps(event_log.events, ensure_ascii=False)
+    assert all(value not in serialized for value in ('A1_SYNTHETIC_CANARY', 'WIN_PATH_CANARY', root))
+    assert event['error']['file'] is None
+    assert event['file'] is None
+    assert event['null_reasons']['file'] == 'NOT_AVAILABLE_OR_NOT_APPLICABLE'
+
+
+@pytest.mark.parametrize('failure', ['read', 'prepare'])
+@pytest.mark.parametrize('delivery', ['ok', 'unconfirmed', 'unhealthy'])
+def test_lookup_failure_identifies_catalogue_before_domain(gathering, catalogue, snapshot,
+                                                         fixture_root, monkeypatch, event_log,
+                                                         writers, capsys, failure, delivery):
+    import pandas as pd
+    _, root = fixture_root
+    primary = OSError({'path': r'C:\private\WIN_PATH_CANARY\lookup',
+                       'secret': 'A1_SYNTHETIC_CANARY'})
+    original_args = primary.args
+    reads, downstream, prepared_errors = [], [], []
+    bad_lookup = pd.DataFrame({'TRADE_CODE': [123], 'SUPERTYPE': ['Акции']})
+    original_prepare = gathering._prepare_ticker_catalogue
+    original_emit = event_log.logger.emit_event
+    original_isfile = gathering.os.path.isfile
+
+    def read(path, *args, **kwargs):
+        reads.append((path, args, kwargs))
+        assert path == root + '/datasets/ticker_lists/moex_full.csv'
+        assert args == () and kwargs == {'index_col': 0}
+        if failure == 'read':
+            raise primary
+        return bad_lookup
+
+    def prepare(source):
+        try:
+            return original_prepare(source)
+        except ValueError as error:
+            prepared_errors.append((error, error.args))
+            raise
+
+    def emit(context, level, *args):
+        if level == 'ERROR':
+            event_log.confirmed = delivery != 'unconfirmed'
+            event_log.healthy = delivery != 'unhealthy'
+        return original_emit(context, level, *args)
+
+    def isfile(path):
+        if path == root + 'datasets/fixture.csv':
+            downstream.append(path)
+        return original_isfile(path)
+
+    monkeypatch.setattr(gathering.pd, 'read_csv', read)
+    monkeypatch.setattr(gathering, '_prepare_ticker_catalogue', prepare)
+    monkeypatch.setattr(event_log.logger, 'emit_event', emit)
+    monkeypatch.setattr(gathering.os.path, 'isfile', isfile)
+    monkeypatch.setattr(gathering, 'full_reload', lambda *args, **kwargs: downstream.append(args))
+    monkeypatch.setattr(gathering, 'moex_query', lambda *args, **kwargs: downstream.append(args))
+    with pytest.raises(OSError if failure == 'read' else ValueError) as captured:
+        gathering.data_update([{'filename': 'fixture', 'interval': 24, 'years': 10, 'word': 'часа'}],
+                              root, catalogue, snapshot, logging_context=event_log.context)
+    if failure == 'prepare':
+        primary, original_args = prepared_errors[0]
+        assert original_args == ('A1_TICKER_CATALOGUE_STRUCTURE',)
+    assert captured.value is primary and primary.args == original_args
+    assert len(reads) == 1 and downstream == [] and writers == []
+    event = event_log.events[-1]
+    assert event['level'] == 'ERROR' and event['outcome'] == 'FAILED'
+    assert not any(item['outcome'] == 'RETURNED' for item in event_log.events)
+    output = capsys.readouterr()
+    if delivery == 'ok':
+        assert not getattr(primary, '__notes__', []) and output.err == ''
+    else:
+        assert primary.__notes__ == ['A1_LOGGING_FAILURE: LOGGING_INCOMPLETE']
+        assert output.err == 'A1_LOGGING_FAILURE: LOGGING_INCOMPLETE\n'
+    serialized = json.dumps(event_log.events, ensure_ascii=False) + output.out + output.err
+    assert all(value not in serialized for value in ('A1_SYNTHETIC_CANARY', 'WIN_PATH_CANARY', root))
+    assert event['file'] == 'ticker_lists/moex_full.csv'
 
 
 def test_force_reload_reason_event(gathering, catalogue, snapshot, dataset_config,

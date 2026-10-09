@@ -628,6 +628,7 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_
         all_stocks_ru = _prepare_ticker_catalogue(all_stocks_ru)
         _a1_event(logging_context, 'INFO', 'a1_catalogue_prepared',
             dict(counts=_a1_counts(input_rows, len(all_stocks_ru), len(all_stocks_ru))))
+        active_fields = dict(file='ticker_lists/moex_full.csv')
         moex_full_catalogue = pd.read_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path), index_col=0)
         lookup = _prepare_ticker_catalogue(moex_full_catalogue)
         _a1_event(logging_context, 'INFO', 'a1_lookup_prepared',
@@ -765,9 +766,10 @@ def main(current_path, force_reload = False, *, logging_context=None):
         _a1_event(logging_context, 'INFO', 'a1_catalogue_prepared',
             dict(counts=_a1_counts(input_rows, len(all_stocks_ru), len(all_stocks_ru))))
 
-        _a1_event(logging_context, 'INFO', 'a1_metadata_started', dict(file='ticker_lists/tickers_dates.csv'))
+        # Builder пишет XLSX, затем CSV; конкретный failed writer здесь неизвестен.
+        active_fields = dict(file=None)
+        _a1_event(logging_context, 'INFO', 'a1_metadata_started', active_fields)
         metadata_started = time.perf_counter()
-        active_fields = dict(file='ticker_lists/tickers_dates.csv')
         tickers_dates = build_tickers_dates(all_stocks_ru, current_path)
         _a1_event(logging_context, 'INFO', 'a1_metadata_returned',
             dict(file='ticker_lists/tickers_dates.csv', outcome='RETURNED',
