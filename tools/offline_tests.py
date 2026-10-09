@@ -153,7 +153,20 @@ def configure_shared(config):
         allowed.extend(Path(p).absolute() for p in context.ticket['argv']
                        if p.endswith('.py') and Path(p).absolute().is_relative_to(ROOT / '.f3/tmp'))
     for argument in config.args:
-        target = Path(argument.split('::', 1)[0]).absolute()
+        requested = Path(argument.split('::', 1)[0])
+        if '..' in requested.parts:
+            raise pytest.UsageError('Test targets must not traverse parent directories')
+        target = requested.absolute()
+        a_root = ROOT / 'tests/A'
+        if target.is_relative_to(a_root):
+            try:
+                target = guard_module().checked_path(target, a_root)
+            except (OSError, ValueError):
+                raise pytest.UsageError('Unsafe A test target') from None
+            if target.is_dir() or (target.is_file() and target.name.startswith('test_')
+                                   and target.suffix == '.py'):
+                continue
+            raise pytest.UsageError('A targets require directories or test_*.py files')
         if not any(target == path or (path.is_dir() and target.is_relative_to(path)) for path in allowed):
             raise pytest.UsageError('Only shared or explicit legacy targets; native suites need their canonical lane')
     temporary = ROOT / '.f3/tmp' / ('pytest-' + context.run_id + '-' + context.process_id[:8])
