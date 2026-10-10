@@ -55,7 +55,8 @@ def test_clean_catalogue_does_not_require_blank(gathering, catalogue, snapshot,
     exact_reads.declared[target] = candle_frame
     candle_calls = []
 
-    def candles(*args):
+    def candles(*args, logging_context=None):
+        assert logging_context is None
         candle_calls.append(args)
         return candle_frame.iloc[:0].copy()
 
@@ -97,7 +98,8 @@ def test_each_missing_dataset(gathering, catalogue, snapshot, candle_frame,
         builds.append(args)
         return snapshot
 
-    def query(*args):
+    def query(*args, logging_context=None):
+        assert logging_context is None
         queries.append(args)
         return candle_frame.iloc[:0].copy()
 
@@ -168,7 +170,8 @@ def test_real_full_reload(gathering, snapshot, candle_frame, fixture_root,
     before = source.copy(deep=True)
     calls = []
 
-    def candles(*args):
+    def candles(*args, logging_context=None):
+        assert logging_context is None
         calls.append(args)
         result = candle_frame.copy(deep=True)
         result['ticker'] = args[0]
@@ -209,7 +212,8 @@ def test_real_update_rows_schema_and_delta_order(gathering, catalogue, snapshot,
     new_sber = [101., 103., 104., 100., 309000., 3000, '2024-03-02 00:00:00', '2024-03-02 23:59:59', 'SBER']
     new_moex = [10., 11., 12., 9., 11000., 1000, '2024-03-02 00:00:00', '2024-03-02 23:59:59', 'MOEX']
 
-    def candles(*args):
+    def candles(*args, logging_context=None):
+        assert logging_context is None
         queries.append(args)
         if args[0] == 'SBER':
             return pd.DataFrame([candle_frame.values.tolist()[0], new_sber], columns=candle_frame.columns)
@@ -263,7 +267,8 @@ def test_stored_identity_refusal_preserves_previous(gathering, catalogue, snapsh
     if case == 'lookup-only':
         catalogue = catalogue.iloc[[1]].copy()
     queries = []
-    monkeypatch.setattr(gathering, 'moex_query', lambda *args: queries.append(args) or pytest.fail('candle called'))
+    monkeypatch.setattr(gathering, 'moex_query',
+                        lambda *args, logging_context=None: queries.append(args) or pytest.fail('candle called'))
     with pytest.raises(ValueError, match='^A1_STORED_TICKER_INCOMPATIBLE$'):
         gathering.data_update([{'interval': 24, 'years': 10, 'filename': 'fixture_daily', 'word': 'часа'}],
                               root, catalogue, snapshot)
@@ -301,7 +306,12 @@ def test_no_context_has_no_logger_calls(gathering, catalogue, snapshot, fixture_
         return original(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, '__import__', importing)
-    monkeypatch.setattr(gathering, 'moex_query', lambda *args: queries.append(args) or gathering.pd.DataFrame())
+    def query(*args, logging_context=None):
+        assert logging_context is None
+        queries.append(args)
+        return gathering.pd.DataFrame()
+
+    monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.full_reload(catalogue, 24, 10, 'fixture', 'часа', root, snapshot)
     assert imports == [] and len(queries) == 2 and writers == []
 
@@ -309,7 +319,8 @@ def test_no_context_has_no_logger_calls(gathering, catalogue, snapshot, fixture_
 def test_snapshot_parameters_remain_required(gathering):
     assert inspect.signature(gathering.data_update).parameters['tickers_dates'].default is inspect.Parameter.empty
     assert inspect.signature(gathering.full_reload).parameters['tickers_dates'].default is inspect.Parameter.empty
-    for function in (gathering.main, gathering.moex_tickerlists, gathering.full_reload, gathering.data_update):
+    for function in (gathering.main, gathering.moex_tickerlists, gathering.full_reload,
+                     gathering.data_update, gathering.moex_query, gathering.moex):
         parameter = inspect.signature(function).parameters['logging_context']
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is None
 
@@ -321,7 +332,12 @@ def test_real_reload_thirty_year_cutoff(gathering, catalogue, snapshot, candle_f
     dates = snapshot.copy(deep=True)
     dates.loc[1, 'issue_date'] = pd.Timestamp('1980-01-01')
     calls = []
-    monkeypatch.setattr(gathering, 'moex_query', lambda *args: calls.append(args) or candle_frame.iloc[:0].copy())
+    def query(*args, logging_context=None):
+        assert logging_context is None
+        calls.append(args)
+        return candle_frame.iloc[:0].copy()
+
+    monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.full_reload(catalogue, 24, 30, 'fixture', 'часа', root, dates)
     assert calls == [('MOEX', 'Акции', '2020-02-29', '2024-03-01', 24),
                      ('SBER', 'Акции', '1994-03-10', '2024-03-02', 24)]
@@ -366,7 +382,12 @@ def test_stable_three_ticker_delta_and_30day_boundary(gathering, snapshot, candl
     save_dataset(target, frame)
     exact_reads.declared[target] = frame
     queries = []
-    monkeypatch.setattr(gathering, 'moex_query', lambda *args: queries.append(args) or frame.iloc[:0].copy())
+    def query(*args, logging_context=None):
+        assert logging_context is None
+        queries.append(args)
+        return frame.iloc[:0].copy()
+
+    monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.data_update([{'interval': 60, 'years': 30, 'filename': 'fixture', 'word': 'минут'}],
                           root, source, snapshot)
     assert queries == [('SBER', 'Акции', '2024-02-01', '2024-03-02', 60),
@@ -388,7 +409,12 @@ def test_clean_old_ticker_has_no_hidden_annual_backfill(gathering, catalogue, sn
     save_dataset(target, frame)
     exact_reads.declared[target] = frame
     queries = []
-    monkeypatch.setattr(gathering, 'moex_query', lambda *args: queries.append(args) or frame.iloc[:0].copy())
+    def query(*args, logging_context=None):
+        assert logging_context is None
+        queries.append(args)
+        return frame.iloc[:0].copy()
+
+    monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.data_update([{'interval': 24, 'years': 10, 'filename': 'fixture', 'word': 'часа'}],
                           root, catalogue, snapshot)
     assert queries == [('MOEX', 'Акции', '2023-03-03', '2024-03-02', 24)]
@@ -409,7 +435,8 @@ def test_query_primary_stops_reload_before_next_call(gathering, catalogue, snaps
             raise OSError('secondary')
         return original_emit(context, level, *args)
 
-    def query(*args):
+    def query(*args, logging_context=None):
+        assert logging_context is event_log.context
         queries.append(args)
         raise primary
 
@@ -460,7 +487,8 @@ def test_metadata_failure_does_not_guess_artifact(gathering, catalogue, fixture_
     monkeypatch.setattr(gathering.pd.DataFrame, 'to_csv', write('csv'))
     monkeypatch.setattr(gathering, 'data_update', lambda *args, **kwargs: downstream.append(args))
     monkeypatch.setattr(gathering, 'full_reload', lambda *args, **kwargs: downstream.append(args))
-    monkeypatch.setattr(gathering, 'moex_query', lambda *args, **kwargs: downstream.append(args))
+    monkeypatch.setattr(gathering, 'moex_query',
+                        lambda *args, logging_context=None: downstream.append(args))
     with pytest.raises(OSError) as captured:
         gathering.main(root, logging_context=event_log.context)
     assert captured.value is primary and primary.args == original_args and downstream == []
@@ -523,7 +551,8 @@ def test_lookup_failure_identifies_catalogue_before_domain(gathering, catalogue,
     monkeypatch.setattr(event_log.logger, 'emit_event', emit)
     monkeypatch.setattr(gathering.os.path, 'isfile', isfile)
     monkeypatch.setattr(gathering, 'full_reload', lambda *args, **kwargs: downstream.append(args))
-    monkeypatch.setattr(gathering, 'moex_query', lambda *args, **kwargs: downstream.append(args))
+    monkeypatch.setattr(gathering, 'moex_query',
+                        lambda *args, logging_context=None: downstream.append(args))
     with pytest.raises(OSError if failure == 'read' else ValueError) as captured:
         gathering.data_update([{'filename': 'fixture', 'interval': 24, 'years': 10, 'word': 'часа'}],
                               root, catalogue, snapshot, logging_context=event_log.context)
