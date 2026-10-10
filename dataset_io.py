@@ -529,6 +529,7 @@ def resource_lock(relative_path, *, resource_root, validate_target,
                 acquired = False
                 info['receipt']['lock_state'] = 'RELEASED'
             except BaseException as error:
+                info['receipt']['lock_state'] = 'UNKNOWN'
                 cleanup_error = error
                 _error(info, 'release', 'D1_RELEASE_FAILED', primary=primary is None)
                 info['diagnostics_failed'] = True

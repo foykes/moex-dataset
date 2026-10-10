@@ -160,7 +160,7 @@ def test_precommit_accepted_without_confirmed_is_refused(helper, acquire, target
     assert_artifact(target, 'previous')
 
 
-@pytest.mark.parametrize('point', ['event', 'flush', 'health', 'readback', 'release'])
+@pytest.mark.parametrize('point', ['event', 'flush', 'health', 'readback', 'release', 'release_exception'])
 def test_postcommit_failures_keep_replaced(point, helper, acquire, target, oracle, assert_artifact, monkeypatch):
     import run_logging
     primary = RuntimeError('fixed postcommit fault')
@@ -190,10 +190,12 @@ def test_postcommit_failures_keep_replaced(point, helper, acquire, target, oracl
         real_release = backend['ReleaseMutex']
         def release(handle):
             real_release(handle)
+            if point == 'release_exception':
+                raise primary
             return False
         backend['ReleaseMutex'] = release
         monkeypatch.setattr(helper, '_windows_backend', lambda: backend)
-    with pytest.raises(Exception):
+    with pytest.raises(Exception) as caught:
         write(helper, acquire, oracle['replacement']['data'], receipt)
     assert replaced
     assert_artifact(target, 'replacement')
@@ -203,6 +205,11 @@ def test_postcommit_failures_keep_replaced(point, helper, acquire, target, oracl
     assert receipt['final_relation'] != 'MATCHES_BASELINE'
     if point == 'readback':
         assert receipt['final_observation'] is None
+    if point in ('release', 'release_exception'):
+        assert receipt['lock_state'] == 'UNKNOWN'
+    if point == 'release_exception':
+        assert caught.value is primary
+        assert any(frame.name == 'release' for frame in traceback.extract_tb(primary.__traceback__))
 
 
 def test_primary_exception_survives_secondary_diagnostics(helper, acquire, target, oracle, assert_artifact, monkeypatch):
