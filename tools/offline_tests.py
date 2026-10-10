@@ -14,7 +14,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 LANE_TARGETS = {'f1': 'tests/environment', 'f2': 'tests/f2',
-                'flog': 'tests/logging', 'f3': 'tests/shared'}
+                'flog': 'tests/logging', 'f3': 'tests/shared', 'd1': 'tests/d1'}
 PAIRS = ('1year', 'all', 'count_check', 'data_gathering', 'dividends',
          'dohodru_data', 'main_tests', 'tech', 'tests', 'upload')
 sys.modules.setdefault('mds_offline_tests', sys.modules[__name__])
@@ -197,7 +197,13 @@ def _native_bootstrap(lane):
 
 def _execute_lane(lane, collect_only=False, legacy=False):
     guard = guard_module()
-    context = _native_bootstrap(lane) if lane != 'f3' else bootstrap_entry()
+    if lane == 'd1':
+        guard.d1_preload_console(ROOT)
+        # Общая защита ставится до pytest, helper и logger. D1 не получает
+        # расширенные разрешения старых native F2/F-LOG bootstrap.
+        context = guard.ensure_context(ROOT, lane='d1', install=True)
+    else:
+        context = _native_bootstrap(lane) if lane != 'f3' else bootstrap_entry()
     if context.ticket is None or context.role != 'lane-worker' or context.lane != lane:
         raise ValueError('Internal lane entry requires its current one-use ticket')
     if str(ROOT) not in sys.path:
@@ -221,6 +227,11 @@ def _execute_lane(lane, collect_only=False, legacy=False):
     guard.finish(result)
     issues = guard.validate_reports(context)
     return 86 if issues else result
+
+
+def run_d1_case(case):
+    """Execute one closed D1 registry case; no caller-provided launch arguments."""
+    return guard_module().run_d1_case(case)
 
 
 COMMANDS = {

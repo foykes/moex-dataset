@@ -475,3 +475,133 @@ base/drift. Explicit admission does not add A tests to default or hosted CI.
 Rollback reverts only this bootstrap before downstream adoption; after adoption,
 coordinate its removal with dependent explicit A test callers. Preserve evidence
 and environments. Refs #47, #78; no merge, issue closure or production operation.
+
+## D1-01 reservation, owner transfer and integration handoff
+
+Approved contract: D1-01 R3.1, helper-only Windows single-file writer. The owner
+explicitly transferred `tools/offline_tests.py`, `tools/offline_guard.py` and the
+right to append this D1 section from completed F/coordinator preparation to D1
+on 2026-10-10. PR #85 is merged at `2d3afeff3a8bbd012aa18e601f56ea6e39ffb9ac`;
+PR #86 is merged at the newly authorized implementation base
+`9dc0fbb8f2aceec7e3c8eb0b8ba189ec937251ac`. Original reviewed base:
+`ebc66fc376a2077ce027cf33689aae31728709c2`. This is an explicit owner transfer,
+not automatic release inferred from a clean tree. Existing sections remain
+historical records. Preflight found no conflicting writer in these shared paths.
+
+The subsequent owner `RESUME_APPROVED` grant replaces SHA-only drift stops for
+D1-01. Working base remains `9dc0fbb8f2aceec7e3c8eb0b8ba189ec937251ac` until
+the D1 source commit. C1 merge `2120fb53e1acd0bf0e30620bda2a3faca7a2bdeb` is
+an approved integration base. One planned checkpoint then permits an ordinary
+merge of compatible descendant main into the clean D1 feature branch, preserving
+the source commit. Disjoint compatible A/B/C advances do not require repeated
+checkpoints; record later drift for final compatibility review. Real conflicts,
+incompatible guard/logger contracts, unsafe behavior or required foreign edits
+still stop the affected integration. Exact-HEAD gates include the integrated
+domain regressions. This permits no PR merge or issue closure.
+
+Branch/worktree: `codex/mds-d1-01` / `.worktrees/mds-d1-01`.
+Notebook reservations: **NONE**. Exact twelve-path source allowlist:
+
+```text
+dataset_io.py
+tools/offline_tests.py
+tools/offline_guard.py
+tests/d1/conftest.py
+tests/d1/d1_worker.py
+tests/d1/test_atomic_write.py
+tests/d1/test_resource_lock.py
+tests/d1/test_guard_admission.py
+tests/fixtures/dataset_io/previous.csv
+tests/fixtures/dataset_io/expected.json
+docs/dataset_io.md
+docs/coordination.md
+```
+
+The D1 test namespace is `tests/d1/**`, with writes limited to the five exact
+files above. D1 adds no production caller, logger/F0 schema change, dependency,
+workflow, notebook sync, dataset, RSI or publication change. It preserves the
+merged A-admission behavior and fixtures. Multiple replaces are not a pair,
+snapshot transaction or remote release. Future shared-file transfer must again
+be explicit and serialized; this reservation ends only through coordinator handoff.
+
+The owner separately authorized isolated offline SETUP under this worktree's
+`.f1/`: official hash-checked CPython 3.14.8 x64 GIL interpreter, its own dev venv
+and unchanged hash-locked wheels. Installed foreign environments are not copied.
+F1 assertions remain unchanged; SETUP success and immutable fingerprints must
+be evidenced separately from guarded test outcomes.
+
+API: `resource_lock(relative_path, *, resource_root, validate_target,
+logging_session, receipt, timeout_s=0)` yields an opaque process/thread-bound
+lease; `atomic_write_file(lease, prepare_candidate, validate_candidate)` permits
+one atomic-write attempt. [The D1 contract](dataset_io.md) defines strict path
+admission, exact `Global\MDS-D1-v1-<digest>` naming from physical parent-directory
+identity, closed receipt, always-on target validation, delivery barriers and
+sticky `REPLACED` commit evidence. Unsupported platforms refuse safely. There is
+no namespace/backend/unlocked fallback or automatic historical-file restoration.
+Content preservation does not establish data-quality verification.
+
+The D1 controller owns fixed disposable Windows jobs, tickets and authenticated
+READY checkpoints. Expected holder termination is evidence of incomplete worker
+logging, never a fabricated F-LOG worker final or successful interrupted run.
+Old F1/F2/F-LOG/F3 lanes and guards retain their assertions and policies. D1 roots
+are `.f3/d1/{tmp,cache,evidence/runs}` and separately issued
+`.f-log/d1/<guard-run>/<case>/<slot>/logs` envelopes. Raw reports remain local.
+
+Guarded gates use the worktree's own dev venv. Fixed D1 workload workers launch
+the verified official `.f1/python/python.exe` directly: the Windows venv
+redirector creates an extra process and would break the exact Popen PID witness.
+Both interpreters belong to the owner-authorized SETUP; no installed foreign
+interpreter, prefix spoofing, environment repair or relaxed PID check is used.
+Worker dependency version metadata that is unavailable in the stdlib interpreter
+is recorded as unavailable, not borrowed from the parent venv.
+
+### Remaining hookup checklist
+
+Every row is **NOT CONNECTED** in D1-01. Owners connect callers in separately
+approved PRs, starting the lock before current read and retaining it through
+computation/commit; direct public entrypoints need the same protection.
+
+| Owner | Entrypoints and writes | D1-01 disposition |
+|---|---|---|
+| A | `data_gathering.moex_tickerlists`: tickerlist XLSX/CSV, stocks CSV | NOT CONNECTED |
+| A | `build_tickers_dates`: ticker_dates XLSX/CSV | NOT CONNECTED |
+| A | `full_reload`: candle XLSX/CSV | NOT CONNECTED |
+| A | `data_update`: entire read-update-write and XLSX/CSV | NOT CONNECTED |
+| A | `data_gathering.main` and CLI/direct entrypoints | NOT CONNECTED |
+| A | `all.main`: all_data XLSX/CSV, separate paired zone | NOT CONNECTED |
+| B | `tech.calculator`: input read/calculation/final XLSX/CSV; `tech.main` | NOT CONNECTED |
+| C | `dividends.main`: final XLSX/CSV | NOT CONNECTED |
+| C | `dohodru_data.get_main` and `main`: obzor/other CSV/XLSX exports | NOT CONNECTED |
+| D/coordinator | `main.main` orchestration after separate main.py transfer | NOT CONNECTED |
+| D/publication | `upload.gdoc` input admission/remote protocol; `upload.ftp` files/STOR; `upload.main` child outcomes | NOT CONNECTED |
+| Coordinator | `1year.main`, legacy `tests.main` writes: explicit disposition, no automatic execution | NOT CONNECTED |
+| F/R1 | `count_check`, `main_tests`, other read-only/quarantined diagnostics: verify disposition, no assumed writers | NOT CONNECTED |
+| F | Notebook sync and F-LOG allocation/sealing preserve their own contracts; no migration | NOT CONNECTED |
+
+Separate integration acceptance requires all declared writes/public entrypoints
+to have accepted hookups or documented disposition; a disposable two-process
+regression through real call sites; independent hashes and per-target outcomes
+for faults before/after commit; owner acceptance of CSV/XLSX generation
+consistency, capacity-before-current, quarantine/temporal and publication policy;
+exact-HEAD offline/CI and separately authorized staging evidence covering the
+full scope. Other supported-platform backends are assigned to D1/F-coordinator
+for implementation **before their platform hookup**, followed by R1 verification.
+Actual cross-session Windows deployment/access testing is a separate R1 profile;
+same-session naming and process tests do not establish it. Registered F-LOG
+workers require a separate D2/F parent authorization/health contract. The existing
+F0 `write_dataset` candidate API needs a separate adapter slice.
+
+A8/B3/D4, quarantine semantics, literal CSV policy and live-source availability
+are not prerequisites of this byte-level primitive. Pair/snapshot transactions
+and remote reservation/release remain separate D/F work. Refs #25, #26, #47,
+#78: helper evidence is only the corresponding primitive/offline/logging subset;
+these issues are not completed by D1-01. Full pipeline/caller/platform, domain
+faults, hosted coverage and staging acceptance remain with their owners.
+
+Review handoff must record actual base/clean HEAD, exact paths, commands/counts/
+exits, immutable environment fingerprints, guard and redacted logging evidence,
+independent fixture hashes, self-review, AC-to-evidence and open hookups. Unknown
+results stay NOT AVAILABLE. Readiness is READY_FOR_INDEPENDENT_CODE_REVIEW only
+after all required gates pass; no merge, issue closure, production or next slice
+is authorized. Rollback is a separately reviewed revert of this helper-only PR,
+preserving outputs, foreign/orphan temps, environments, worktrees and evidence.
