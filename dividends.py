@@ -71,6 +71,35 @@ def _select_secid(data, isin):
     return secid_list[0], matching_rows
 
 
+def _parse_dividend_rows(data, isin, ticker):
+    # Это проверка структуры одного ответа SECID, не доказательство полноты
+    # источника или качества даты/суммы/валюты. Missing block сохраняет прежний
+    # KeyError('dividends'); HTTP 200 и найденный SECID не заменяют этот блок.
+    if type(data) is not dict:
+        raise ValueError('DIVIDEND_SOURCE_SCHEMA_INVALID: ответ должен быть объектом')
+    table = data['dividends']
+    if type(table) is not dict:
+        raise ValueError('DIVIDEND_SOURCE_SCHEMA_INVALID: dividends должен быть объектом')
+    columns = table.get('columns')
+    rows = table.get('data')
+    if (type(columns) is not list or type(rows) is not list
+            or any(type(column) is not str or not column.strip() for column in columns)
+            or len(set(columns)) != len(columns)
+            or any(name not in columns for name in ('registryclosedate', 'value', 'currencyid'))):
+        raise ValueError('DIVIDEND_SOURCE_SCHEMA_INVALID: нужны уникальные columns и список data')
+    date_column = columns.index('registryclosedate')
+    value_column = columns.index('value')
+    currency_column = columns.index('currencyid')
+    prepared_rows = []
+    for row in rows:
+        if type(row) is not list or len(row) != len(columns):
+            raise ValueError('DIVIDEND_SOURCE_SCHEMA_INVALID: длина строки не соответствует columns')
+        # Сохраняем decoded values, порядок и отдельные выплаты. Не округляем
+        # малые/нулевые суммы, не исправляем 2111 или unknown currency догадками.
+        prepared_rows.append([isin, ticker, row[date_column], row[value_column], row[currency_column]])
+    return prepared_rows
+
+
 def _dividend_event(logging_context, level, event, message, ticker=None,
                     *, counts=None, outcome=None, duration_ms=None, error=None, file=None):
     if logging_context is None:
@@ -93,23 +122,28 @@ def _dividend_event(logging_context, level, event, message, ticker=None,
         raise RuntimeError('LOGGING_INCOMPLETE')
 
 
-def _dividend_failure(logging_context, error, ticker, endpoint, code):
+def _dividend_failure(logging_context, error, ticker, endpoint, code,
+                      *, event='dividend_loader_failed', outcome='FAILED'):
     if logging_context is None:
         return
     try:
         import run_logging
         record = run_logging.make_error(logging_context, error, 'dividends', code=code)
-        record['category'] = 'QUALITY' if code == 'DIVIDEND_ISIN_INVALID' else 'SOURCE'
+        record['category'] = 'QUALITY' if code in (
+            'DIVIDEND_ISIN_INVALID', 'DIVIDEND_SCOPE_EMPTY_UNVERIFIED',
+            'DIVIDEND_EMPTY_RELEASE_BLOCKED') else 'SOURCE'
         if code == 'LOGGING_INCOMPLETE':
             record['category'] = 'IO'
+        record['retryable'] = False
+        record['final'] = True
         # Endpoint входит только в существующий error envelope, не event.fields.
         for name, value in (('instrument', ticker), ('endpoint', endpoint)):
             if type(value) is str:
                 record[name] = value
                 record['null_reasons'].pop(name, None)
-        _dividend_event(logging_context, 'ERROR', 'dividend_loader_failed',
+        _dividend_event(logging_context, 'ERROR', event,
             'Выгрузка дивидендов прервана: ' + code, ticker,
-            outcome='FAILED', error=record)
+            outcome=outcome, error=record)
     except BaseException:
         # Уже есть первичная ошибка. Вторичный отказ диагностики не заменяет
         # её; вызывающий stage также получает исходное исключение/nonzero.
@@ -155,30 +189,23 @@ def div_loader(isin, ticker, *, logging_context=None):
         with urllib.request.urlopen(query) as url:
             data = json.load(url)
         failure_code = 'DIVIDEND_SOURCE_SCHEMA_INVALID'
-        rows = data['dividends']['data']
-        for j in range(0, len(rows)):
-            tmp = []
-            date = rows[j][2]
-            cash = rows[j][3]
-            currency = rows[j][4]
-            tmp.append(isin)
-            tmp.append(ticker)
-            tmp.append(date)
-            tmp.append(cash)
-            tmp.append(currency)
-            divs_all.append(tmp)
+        rows = _parse_dividend_rows(data, isin, ticker)
         counts = {'rows_received': len(rows), 'rows_accepted': len(rows),
                   'rows_quarantined': None, 'pages': 1, 'instruments': 1,
                   'null_reasons': {'rows_quarantined': 'NOT_EVALUATED'}}
         _dividend_event(logging_context, 'INFO', 'dividend_loader_returned',
-            'Получено событий из ответа: {}'.format(len(rows)), secid,
-            counts=counts, outcome='RETURNED',
+            'Структурно проверено событий: {}; качество и полнота не проверены'.format(len(rows)), secid,
+            counts=counts, outcome='RETURNED' if rows else 'VALID_EMPTY',
             duration_ms=(time.perf_counter() - started) * 1000)
         if logging_context is not None:
             import run_logging
             receipt = run_logging.flush_logging(logging_context)
             if not receipt['confirmed'] or not run_logging.check_logging_health(logging_context)['healthy']:
                 raise RuntimeError('LOGGING_INCOMPLETE')
+        # Один повреждённый ответ или отказ barrier не оставляет его первые
+        # строки в накопителе. Успешные предыдущие ответы не откатываются:
+        # независимость всего повторного main остаётся отдельной задачей C1-02.
+        divs_all.extend(rows)
     except Exception as error:
         if error.args and type(error.args[0]) is str:
             code = error.args[0].split(':', 1)[0]
@@ -201,9 +228,14 @@ def main(*, logging_context=None):
     df_isin = df_isin.dropna(how='all')
     df_isin.drop_duplicates(keep='first', inplace=True)
     df_isin.reset_index(drop=True, inplace=True)
+    if len(df_isin) == 0:
+        error = ValueError('DIVIDEND_SCOPE_EMPTY_UNVERIFIED: список инструментов пуст')
+        _dividend_failure(logging_context, error, None, None,
+            'DIVIDEND_SCOPE_EMPTY_UNVERIFIED',
+            event='dividend_collection_failed', outcome='BLOCKED')
+        raise error
 
-    
-
+    initial_rows = len(divs_all)
     for i in range(0, len(df_isin)):
         isin = df_isin['ISIN'][i]
         ticker = df_isin['TRADE_CODE'][i]
@@ -211,7 +243,16 @@ def main(*, logging_context=None):
             div_loader(isin, ticker)
         else:
             div_loader(isin, ticker, logging_context=logging_context)
-        
+    # Владелец выбрал BLOCKED + previous для пустого выпуска. Старые строки
+    # глобального накопителя не доказывают непустоту текущего обхода. Это узкий
+    # gate: при новых nonempty rows прежнее накопление остаётся C1-02 residual.
+    if len(divs_all) == initial_rows:
+        error = ValueError('DIVIDEND_EMPTY_RELEASE_BLOCKED: текущий обход не получил событий')
+        _dividend_failure(logging_context, error, None, None,
+            'DIVIDEND_EMPTY_RELEASE_BLOCKED',
+            event='dividend_collection_failed', outcome='BLOCKED')
+        raise error
+
     print('Выгружено записей о дивидендах: {}'.format(len(divs_all)))
 
     df_divs_all = pd.DataFrame(divs_all, columns=['ISIN','TRADE_CODE','dt','value','currency'])
