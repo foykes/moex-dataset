@@ -51,7 +51,12 @@ def main(*, logging_context=None):
 
     run_stage('data_gathering', data_gathering.main, current_path)
 
-    run_stage('dividends', dividends.main)
+    def run_dividends():
+        if logging_context is None:
+            return dividends.main()
+        return dividends.main(logging_context=logging_context)
+
+    run_stage('dividends', run_dividends)
 
     run_stage('tech', tech.main, current_path)
 

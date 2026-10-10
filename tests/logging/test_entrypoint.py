@@ -25,7 +25,7 @@ def load_main(monkeypatch, stage_call):
     names = ('data_gathering', 'dividends', 'tech', 'dohodru_data', 'upload')
     for order, name in enumerate(names):
         module = types.ModuleType(name)
-        module.main = lambda *args, order=order: stage_call(order, args)
+        module.main = lambda *args, order=order, **kwargs: stage_call(order, args)
         monkeypatch.setitem(sys.modules, name, module)
     spec = importlib.util.spec_from_file_location('flog_main_' + uuid.uuid4().hex, ROOT / 'main.py')
     module = importlib.util.module_from_spec(spec)
