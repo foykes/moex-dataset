@@ -33,7 +33,7 @@ def load_dividends():
 
 def source(monkeypatch, module, search, dividends=DIVIDENDS):
     calls = []
-    def open_fixture(url):
+    def open_fixture(url, *, timeout=None):
         calls.append(url)
         payload = search if '/securities.json?' in url else dividends
         # Record even a wrong SECID URL: RED must expose the old mapping itself.
