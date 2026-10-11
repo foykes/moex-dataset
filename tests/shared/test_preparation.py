@@ -54,23 +54,26 @@ def test_candle_retry_503_then_200_has_literal_rows_and_keys(monkeypatch, tmp_pa
     previous.write_bytes(b'PREVIOUS_ARTIFACT\n')
     previous_hash = hashlib.sha256(previous.read_bytes()).hexdigest()
     content = (FIXTURES / 'candles.csv').read_text(encoding='utf-8')
-    responses = iter((SimpleNamespace(status_code=503, text=''),
-                      SimpleNamespace(status_code=200, text=content)))
+    responses = iter((SimpleNamespace(status_code=503, text='', content=b''),
+                      SimpleNamespace(status_code=200, text=content, content=content.encode('utf-8'))))
     calls, sleeps = [], []
+    clock = iter(range(100))
 
-    def request(url, headers, timeout):
-        calls.append((url, dict(headers), timeout))
+    def request(url, headers, timeout, verify, allow_redirects):
+        calls.append((url, dict(headers), timeout, verify, allow_redirects))
         return next(responses)
 
-    monkeypatch.setattr(module, 'requests', SimpleNamespace(get=request))
-    monkeypatch.setattr(module, 'time', SimpleNamespace(sleep=sleeps.append))
+    monkeypatch.setattr(module.requests, 'get', request)
+    monkeypatch.setattr(module, 'time',
+                        SimpleNamespace(sleep=sleeps.append, perf_counter=lambda: next(clock)))
     monkeypatch.setattr(module.pd.DataFrame, 'to_csv', _forbidden_writer)
     monkeypatch.setattr(module.pd.DataFrame, 'to_excel', _forbidden_writer)
     result = module.moex_query('FIXTURE_SHARE', 'Акции', '2024-02-29', '2024-03-01',
                                24, max_retries=2)
-    url = ('http://iss.moex.com/iss/engines/stock/markets/shares/securities/'
+    url = ('https://iss.moex.com/iss/engines/stock/markets/shares/securities/'
            'FIXTURE_SHARE/candles.csv?from=2024-02-29&till=2024-03-01&interval=24')
-    assert calls == [(url, {'User-Agent': 'AGENT_A'}, 30), (url, {'User-Agent': 'AGENT_B'}, 30)]
+    assert calls == [(url, {'User-Agent': 'AGENT_A'}, 30, True, False),
+                     (url, {'User-Agent': 'AGENT_B'}, 30, True, False)]
     assert sleeps == [3, 3]
     assert result.columns.tolist() == ['open', 'close', 'high', 'low', 'value', 'volume',
                                        'begin', 'end', 'ticker']

@@ -14,7 +14,7 @@
 # ---
 
 # %%
-import datetime, pandas as pd, requests, csv, sys, time, os, json
+import datetime, pandas as pd, requests, csv, sys, time, os, json, math
 from io import StringIO
 
 
@@ -257,13 +257,56 @@ def moex_tickerlists (current_path, *, logging_context=None):
 
 # %%
 ### Функция запроса к API по тикеру, датам и нужному интервалу
-def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3):
+def _a2_number(value):
+    # Только предел отображения; общий resource cap остаётся задачей A2-03.
+    if type(value) not in (int, float) or not 0 <= value <= 1000000000:
+        return 'UNKNOWN'
+    if type(value) is float and not math.isfinite(value):
+        return 'UNKNOWN'
+    return str(value) if type(value) is int else format(value, '.6g')
+
+
+def _a2_date(value):
+    if type(value) is not str or len(value) != 10:
+        return 'UNKNOWN'
+    try:
+        date = datetime.datetime.strptime(value, '%Y-%m-%d')
+        return f'{date.year:04d}-{date.month:02d}-{date.day:02d}'
+    except ValueError:
+        return 'UNKNOWN'
+
+
+def _a2_diagnostic(logging_context, level, event, message, fields, primary=None):
+    try:
+        if logging_context is None:
+            # Без context оставляем bounded fallback, без DEBUG flooding.
+            if level != 'DEBUG':
+                print(message)
+        else:
+            # Штатный console writer и его уровни принадлежат F-LOG.
+            import run_logging
+            receipt = run_logging.emit_event(logging_context, level, event, message, fields)
+            healthy = run_logging.check_logging_health(logging_context)['healthy']
+            if not receipt['accepted'] or not healthy or level == 'ERROR' and not receipt['confirmed']:
+                raise RuntimeError('LOGGING_INCOMPLETE')
+    except BaseException:
+        if primary is None:
+            raise RuntimeError('LOGGING_INCOMPLETE') from None
+        # Secondary никогда не заменяет primary и не запускает новый HTTP retry.
+        try:
+            print('A2_LOGGING_FAILURE: LOGGING_INCOMPLETE', file=sys.stderr)
+        except BaseException:
+            pass
+        try:
+            BaseException.add_note(primary, 'A2_LOGGING_FAILURE: LOGGING_INCOMPLETE')
+        except BaseException:
+            pass
+        raise primary from None
+
+
+def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3, *, logging_context=None):
     global header
     global headers_full
-    
-    df_ticker = pd.DataFrame()
-    df = pd.DataFrame()
-
     # Определение типа market для корректного запроса
     if ticker_type in ['Инвестиционные паи', 'Депозитарные расписки', 'Акции', 'Ипотечные сертификаты участия']:
         market = "shares"
@@ -271,96 +314,151 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         market = "bonds"
     else:
         market = "shares"
-        
-    query = f'http://iss.moex.com/iss/engines/stock/markets/{market}/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #универсальный шаблон
-    # query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для акций
-    # query = f'http://iss.moex.com/iss/engines/stock/markets/bonds/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для облигаций
 
+    operation_started = time.perf_counter()
     attempt = 0
-    success = False
-    last_status_code = None
-    last_error = None
+    status = body_bytes = None
+
+    def message(outcome, code='NO_ERROR', rotated=False):
+        # Фиксированные aliases: raw ticker, URL, headers/body/exception не печатаем.
+        return (f'Свечи {outcome}: {code}; MOEX_ISS/ISS_CANDLES/{market}; REQUEST_INSTRUMENT; '
+                f'i={_a2_number(attempt)}/{_a2_number(max_retries)}; interval={_a2_number(interval)}; '
+                f'{_a2_date(end_date_mx)}..{_a2_date(start_date_mx)}; '
+                f'HTTP={_a2_number(status)}; bytes={_a2_number(body_bytes)}'
+                + ('; HEADER_ROTATED' if rotated else ''))
+
+    def correlation_fields():
+        fields = {}
+        if type(logging_context) is dict:
+            for key in ('snapshot_id', 'dataset_id', 'file', 'artifact_id', 'target_id'):
+                value = logging_context.get(key)
+                if type(value) is str:
+                    fields[key] = value
+            page = logging_context.get('page')
+            if type(page) is str or type(page) is int and page >= 0:
+                fields['page'] = page
+        return fields
+
+    def error_record(primary, code, category, final):
+        nullable = ('run_id', 'snapshot_id', 'dataset_id', 'instrument', 'interval',
+                    'page', 'file', 'artifact_id', 'target_id', 'endpoint', 'attempt', 'exception_type')
+        record = dict(category=category, code=code, stage='data_gathering',
+                      retryable=not final, final=final, message='Отказ запроса свечей: ' + code)
+        record.update({key: None for key in nullable})
+        record.update(correlation_fields())
+        if type(logging_context) is dict and type(logging_context.get('run_id')) is str:
+            record['run_id'] = logging_context['run_id']
+        exception_type = 'Exception'
+        for native in (requests.exceptions.SSLError, requests.exceptions.TooManyRedirects,
+                       requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout,
+                       requests.exceptions.Timeout, requests.exceptions.HTTPError,
+                       requests.exceptions.ConnectionError, requests.exceptions.RequestException,
+                       pd.errors.EmptyDataError, pd.errors.ParserError, ValueError):
+            if isinstance(primary, native):
+                exception_type = native.__name__
+                break
+        record.update(instrument=ticker_in if type(ticker_in) is str else None,
+                      interval=interval if type(interval) is int and interval > 0 else None,
+                      endpoint='ISS_CANDLES', attempt=attempt, exception_type=exception_type)
+        record['null_reasons'] = {key: 'NOT_AVAILABLE_OR_NOT_APPLICABLE'
+                                  for key in nullable if record[key] is None}
+        return record
+
+    def emit(level, event, outcome, primary=None, code='NO_ERROR', category='SOURCE', final=False,
+             received=None, invalid=False, rotated=False, pending_primary=None):
+        fields = dict(stage='data_gathering', fields={}, outcome=outcome,
+                      instrument=ticker_in if type(ticker_in) is str else None,
+                      interval=interval if type(interval) is int and interval > 0 else None,
+                      duration_ms=max(0, (time.perf_counter() - operation_started) * 1000),
+                      retries=None if invalid else dict(attempt=attempt, limit=max_retries),
+                      error=None if primary is None else error_record(primary, code, category, final))
+        fields.update(correlation_fields())
+        if invalid:
+            fields['null_reasons'] = {'retries': 'INVALID_CONFIGURATION'}
+        if received is not None:
+            fields['counts'] = dict(rows_received=received, rows_accepted=None,
+                rows_quarantined=None, pages=None, instruments=None,
+                null_reasons={'rows_accepted': 'NOT_ASSESSED', 'rows_quarantined': 'NOT_ASSESSED',
+                              'pages': 'NOT_PAGINATION_EVIDENCE', 'instruments': 'NOT_ASSESSED'})
+        _a2_diagnostic(logging_context, level, event, message(outcome, code, rotated), fields,
+                       primary if primary is not None else pending_primary)
+
+    if (type(max_retries) is not int or max_retries <= 0 or
+            type(retry_sleep_start) not in (int, float) or retry_sleep_start < 0 or
+            type(retry_sleep_start) is float and not math.isfinite(retry_sleep_start)):
+        primary = ValueError('A2_RETRY_ARGUMENTS')
+        emit('ERROR', 'a2_query_failed', 'CONFIG_REJECTED', primary,
+             'A2_RETRY_ARGUMENTS', 'CONFIG', final=True, invalid=True)
+        raise primary
+
+    emit('INFO', 'a2_query_started', 'QUERY_STARTED')
+    query = f'https://iss.moex.com/iss/engines/stock/markets/{market}/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #универсальный шаблон
 
     # Если global header почему-то не задан или пустой —
     # инициализируем первым User-Agent из headers_full
     if not isinstance(header, dict) or len(header) == 0:
         header = get_next_header(None)
 
-    while attempt < max_retries and not success:
+    primary = None
+    while attempt < max_retries:
         attempt += 1
-
+        status = body_bytes = None
+        emit('DEBUG', 'a2_query_attempt_started', 'REQUEST_STARTED', pending_primary=primary)
+        primary = None
+        code, category, terminal = 'A2_ISS_REQUEST_ERROR', 'SOURCE', None
         try:
-            response = requests.get(query, headers=header, timeout=30)
-            last_status_code = response.status_code
-
-            # Читаем CSV если статус успешный
-            if response.status_code == 200:
+            response = requests.get(query, headers=header, timeout=30,
+                                    verify=True, allow_redirects=False)
+            status = response.status_code
+            content = response.content
+            body_bytes = len(content) if type(content) is bytes else None
+            if 300 <= status <= 399:
+                raise requests.exceptions.TooManyRedirects('A2_ISS_REDIRECT_REJECTED', response=response)
+            if status != 200:
+                raise requests.exceptions.HTTPError('A2_ISS_HTTP_STATUS', response=response)
+        except Exception as error:
+            primary = error
+            if isinstance(error, requests.exceptions.SSLError):
+                code, terminal = 'A2_ISS_TLS_FAILED', 'TLS_FAILED'
+            elif isinstance(error, requests.exceptions.TooManyRedirects):
+                code, terminal = 'A2_ISS_REDIRECT_REJECTED', 'REDIRECT_REJECTED'
+            elif isinstance(error, requests.exceptions.Timeout):
+                code, category = 'A2_ISS_TIMEOUT', 'TIMEOUT'
+            elif isinstance(error, requests.exceptions.HTTPError):
+                code = 'A2_ISS_HTTP_STATUS'
+        else:
+            try:
                 df = pd.read_csv(StringIO(response.text), sep=';', header=1)
+            except Exception as error:
+                primary, code = error, 'A2_ISS_PARSE_ERROR'
 
-                # Пауза после успешного запроса, чтобы не перегружать API Мосбиржи
-                time.sleep(3)
-
-                success = True
-
-            else:
-                print(
-                    f'Попытка {attempt}/{max_retries} неуспешна. '
-                    f'Status code: {response.status_code}, '
-                    f'ticker: {ticker_in}, '
-                    f'from: {end_date_mx}, till: {start_date_mx}, interval: {interval}'
-                )
-                print(query)
-
-        except Exception as e:
-            last_error = e
-            print(
-                f'Попытка {attempt}/{max_retries} завершилась ошибкой: {e}. '
-                f'ticker: {ticker_in}, '
-                f'from: {end_date_mx}, till: {start_date_mx}, interval: {interval}'
-            )
-            print(query)
-
-        # Если попытка неуспешна — меняем header и ждём перед следующей попыткой
-        if not success and attempt < max_retries:
-            old_user_agent = header.get('User-Agent') if isinstance(header, dict) else None
-
+        # Диагностика и health находятся вне request/parser retry-catching блоков.
+        if primary is not None:
+            if terminal is not None or attempt == max_retries:
+                emit('ERROR', 'a2_query_failed', terminal or 'RETRY_EXHAUSTED', primary,
+                     code, category, final=True)
+                raise primary
             header = get_next_header(header)
+            emit('WARNING', 'a2_query_retry', 'RETRY_PENDING', primary,
+                 code, category, rotated=True)
+            time.sleep(retry_sleep_start * (2 ** (attempt - 1)))
+            continue
 
-            new_user_agent = header.get('User-Agent') if isinstance(header, dict) else None
-
-            print('Меняем User-Agent:')
-            print(f'old: {old_user_agent}')
-            print(f'new: {new_user_agent}')
-
-            # Экспоненциальная пауза после неудачной попытки:
-            # 1-я ошибка -> 3 сек.
-            # 2-я ошибка -> 6 сек.
-            # 3-я ошибка -> 12 сек.
-            # 4-я ошибка -> 24 сек.
-            sleep_time = retry_sleep_start * (2 ** (attempt - 1))
-
-            print(f'Ждём {sleep_time} сек. перед следующей попыткой...')
-            time.sleep(sleep_time)
-
-    if not success:
-        print(
-            f'Не удалось получить данные после {max_retries} попыток. '
-            f'ticker: {ticker_in}, '
-            f'last_status_code: {last_status_code}, '
-            f'last_error: {last_error}'
-        )
+        df_ticker = pd.DataFrame()
+        received = len(df)
+        if received > 0:
+            df['ticker'] = ticker_in
+            df_ticker = pd.concat([df_ticker, df], ignore_index=True)
+        # Сохраняем legacy success sleep и CSV outputs; schema validation — A2-02.
+        time.sleep(3)
+        emit('INFO', 'a2_query_returned',
+             'QUERY_RETURNED_UNVALIDATED' if received else 'QUERY_EMPTY_UNVALIDATED', received=received)
         return df_ticker
-
-    if len(df) > 0:
-        df['ticker'] = ticker_in
-        df_ticker = pd.concat([df_ticker, df], ignore_index=True)
-
-    return df_ticker
 
 
 # %%
 ## Функция выгрузки данных через ручку MOEX
-def moex (ticker_in, ticker_type, years, interval):
+def moex (ticker_in, ticker_type, years, interval, *, logging_context=None):
 
     df_ticker = pd.DataFrame()
 
@@ -383,10 +481,12 @@ def moex (ticker_in, ticker_type, years, interval):
         end_date_mx = end_date.strftime('%Y-%m-%d')
 
         try:
-            df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+            df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+                            logging_context=logging_context)
             if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
         except:
             exception_list.append(ticker_in)
+            raise
 
     return df_ticker
 
@@ -594,7 +694,8 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
                 _a1_event(logging_context, 'INFO', 'a1_instrument_started',
                     dict(dataset_id=filename, interval=interval, instrument=ticker_in, file=filename + '.csv'))
                 query_started = time.perf_counter()
-                df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+                df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+                                logging_context=logging_context)
                 _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
                     dict(active_fields, outcome='RETURNED',
                          duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
@@ -702,7 +803,8 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_
                     _a1_event(logging_context, 'INFO', 'a1_instrument_started',
                         dict(dataset_id=filename_j, interval=interval, instrument=ticker_in, file=filename_j + '.csv'))
                     query_started = time.perf_counter()
-                    df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+                    df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+                                          logging_context=logging_context)
                     _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
                         dict(active_fields, outcome='RETURNED',
                              duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
@@ -727,7 +829,8 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_
                         _a1_event(logging_context, 'INFO', 'a1_instrument_started',
                             dict(dataset_id=filename_j, interval=interval, instrument=ticker_in, file=filename_j + '.csv'))
                         query_started = time.perf_counter()
-                        df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+                        df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+                                              logging_context=logging_context)
                         _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
                             dict(active_fields, outcome='RETURNED',
                                  duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
