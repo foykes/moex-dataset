@@ -49,7 +49,7 @@ def context(tmp_path):
 
 def source(monkeypatch, module, detail=PAYOUTS):
     calls = []
-    def opened(url):
+    def opened(url, *, timeout=None):
         calls.append(url)
         return StringIO(json.dumps(SEARCH if url == SEARCH_URL else detail, ensure_ascii=False))
     monkeypatch.setattr(module.urllib.request, 'urlopen', opened)
@@ -151,7 +151,7 @@ def test_source_exception_identity_and_redaction(monkeypatch, context, capsys):
     module = load('dividends')
     primary = OSError('https://user:' + CANARY + '@example.invalid/data?token=' + CANARY)
     calls = []
-    def failed(url):
+    def failed(url, *, timeout=None):
         calls.append(url)
         raise primary
     monkeypatch.setattr(module.urllib.request, 'urlopen', failed)

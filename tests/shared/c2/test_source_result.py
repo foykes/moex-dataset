@@ -53,7 +53,7 @@ def load_dividends():
 def source(monkeypatch, module, detail=PAYOUTS, *, responses=None, raw=None):
     responses = responses if responses is not None else {SEARCH_URL: SEARCH, DETAIL_URL: detail}
     calls = []
-    def opened(url):
+    def opened(url, *, timeout=None):
         calls.append(url)
         assert url in responses, 'Unexpected fixture request: ' + url
         payload = responses[url]
@@ -368,6 +368,8 @@ def test_existing_source_failures_keep_primary_and_previous(monkeypatch, context
         detail = primary
         error_type = urllib.error.HTTPError
     calls = source(monkeypatch, module, detail, raw=raw)
+    waits = []
+    monkeypatch.setattr(module, '_retry_wait', waits.append, raising=False)
     _, writes = exporters(monkeypatch, module, [['SBER', ISIN]])
     with pytest.raises(error_type) as caught:
         module.main(logging_context=context)
@@ -375,12 +377,14 @@ def test_existing_source_failures_keep_primary_and_previous(monkeypatch, context
         assert caught.value.args == ('dividends',)
     if primary is not None:
         assert caught.value is primary
-    assert calls == [SEARCH_URL, DETAIL_URL] and writes == [] and module.divs_all == OLD
+    assert calls == [SEARCH_URL] + [DETAIL_URL] * (3 if kind == 'http500' else 1)
+    assert waits == ([1, 2] if kind == 'http500' else [])
+    assert writes == [] and module.divs_all == OLD
     assert_previous(directory, previous)
     events = records(context)
     failure = events[-1]
     assert failure['event'] == 'dividend_loader_failed' and failure['outcome'] == 'FAILED'
-    assert failure['error']['category'] == 'SOURCE'
+    assert failure['error']['category'] == ('ACCESS' if kind == 'http403' else 'SOURCE')
     assert failure['error']['code'] == (
         'DIVIDEND_SOURCE_SCHEMA_INVALID' if kind == 'missing' else 'DIVIDEND_SOURCE_REQUEST_FAILED')
     assert not any(event['event'] in ('dividend_export_input', 'dividend_collection_returned')
