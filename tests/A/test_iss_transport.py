@@ -4,6 +4,7 @@ import builtins
 import hashlib
 import json
 import sys
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +75,113 @@ def test_https_verification_and_no_redirects_keep_literal_rows(gathering, monkey
         ('FIXTURE_SHARE', 24, '2024-02-29 00:00:00'),
         ('FIXTURE_SHARE', 24, '2024-03-01 00:00:00'),
     ]
+
+
+@pytest.mark.parametrize('console_level,visible', [
+    ('DEBUG', [0, 1, 2, 3, 4, 5, 6, 7]),
+    ('INFO', [0, 2, 4, 5, 7]),
+    ('WARNING', [2, 7]),
+    ('ERROR', [7]),
+])
+def test_review_console_uses_real_flog_levels_without_duplicates(
+        gathering, monkeypatch, tmp_path, capsys, console_level, visible):
+    # No event_log fixture: exercise the real queue, redactor, writer and health.
+    import run_logging
+    markers = ('A2_REAL_INSTRUMENT_CANARY', 'A2_REAL_CONTEXT_CANARY',
+               'A2_REAL_UA_A_CANARY', 'A2_REAL_UA_B_CANARY',
+               'A2_REAL_BODY_CANARY', 'A2_REAL_EXCEPTION_CANARY')
+    primary = requests.exceptions.SSLError(markers[-1])
+    original_args = primary.args
+    calls, sleeps = transport(gathering, monkeypatch, [
+        response(503, markers[4]), response(200, CANDLE_CSV.replace('candles\n', markers[4] + '\n')),
+        primary,
+    ])
+    monkeypatch.setattr(gathering, 'header', {'User-Agent': markers[2]})
+    monkeypatch.setattr(gathering, 'get_next_header', lambda current: {'User-Agent': markers[3]})
+    context = run_logging.configure_logging(tmp_path, run_id='a2-console-' + uuid.uuid4().hex,
+        environment='offline', producer_sha='a6e4a07', sensitive_values=markers,
+        config={'console_level': console_level})
+    context['file'] = markers[1]
+    try:
+        result = gathering.moex_query(markers[0], 'Акции', '2024-02-29', '2024-03-01', 24,
+                                     logging_context=context)
+        assert result.columns.tolist() == CANDLE_COLUMNS
+        assert result.values.tolist() == [row[:-1] + [markers[0]] for row in CANDLE_ROWS]
+        assert result.index.tolist() == [0, 1]
+        with pytest.raises(requests.exceptions.SSLError) as captured:
+            gathering.moex_query(markers[0], 'Акции', '2024-02-29', '2024-03-01', 24,
+                                 logging_context=context)
+        assert captured.value is primary and primary.args == original_args
+        assert len(calls) == 3 and sleeps == [3, 3]
+        assert run_logging.flush_logging(context)['confirmed'] is True
+        assert run_logging.check_logging_health(context)['healthy'] is True
+        persisted = (context['_run_root'] / 'events.jsonl').read_text(encoding='utf-8')
+        events = [json.loads(line) for line in persisted.splitlines()]
+        assert [(item['event'], item['level']) for item in events] == [
+            ('a2_query_started', 'INFO'), ('a2_query_attempt_started', 'DEBUG'),
+            ('a2_query_retry', 'WARNING'), ('a2_query_attempt_started', 'DEBUG'),
+            ('a2_query_returned', 'INFO'), ('a2_query_started', 'INFO'),
+            ('a2_query_attempt_started', 'DEBUG'), ('a2_query_failed', 'ERROR'),
+        ]
+        output = capsys.readouterr()
+        assert output.out == ''
+        assert output.err.splitlines() == [
+            events[index]['level'] + ' ' + events[index]['message'] for index in visible]
+        combined = output.out + output.err + persisted
+        assert all(marker not in combined for marker in markers)
+        assert all(value not in combined for value in ('http://', 'https://', 'User-Agent'))
+        assert all(len(line) <= 256 for line in output.err.splitlines())
+    finally:
+        final = run_logging.finalize_logging(context, execution_outcome='FAILED', exit_status=1)
+    assert final['delivery_outcome'] == 'COMPLETE'
+    # Critical lifecycle console delivery is separate from query delivery.
+    finalized = capsys.readouterr()
+    assert all(marker not in finalized.out + finalized.err for marker in markers)
+
+
+@pytest.mark.parametrize('primary', [RuntimeError('A2_SUCCESS_SLEEP'), KeyboardInterrupt('A2_SUCCESS_SLEEP')])
+def test_review_interrupted_success_sleep_never_reports_returned(
+        gathering, monkeypatch, event_log, primary):
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        raise primary
+
+    gathering.time.sleep = sleep
+    with pytest.raises(type(primary)) as captured:
+        query(gathering, logging_context=event_log.context)
+    assert captured.value is primary and captured.value.args == ('A2_SUCCESS_SLEEP',)
+    assert len(calls) == 1 and sleeps == [3]
+    assert [item['event'] for item in event_log.events] == [
+        'a2_query_started', 'a2_query_attempt_started']
+    assert not any(item['event'] == 'a2_query_returned' for item in event_log.events)
+
+
+def test_review_returned_duration_includes_retry_and_completed_success_sleep(
+        gathering, monkeypatch, event_log):
+    calls, sleeps = transport(gathering, monkeypatch, [response(503), response(200, CANDLE_CSV)])
+    elapsed = [0.0]
+    original_get = gathering.requests.get
+
+    def get(*args, **kwargs):
+        elapsed[0] += 0.25
+        return original_get(*args, **kwargs)
+
+    def sleep(seconds):
+        assert not any(item['event'] == 'a2_query_returned' for item in event_log.events)
+        sleeps.append(seconds)
+        elapsed[0] += seconds
+
+    monkeypatch.setattr(gathering.requests, 'get', get)
+    gathering.time.perf_counter = lambda: elapsed[0]
+    gathering.time.sleep = sleep
+    result = query(gathering, logging_context=event_log.context)
+    assert result.values.tolist() == CANDLE_ROWS and result.index.tolist() == [0, 1]
+    assert len(calls) == 2 and sleeps == [3, 3]
+    returned = event_log.events[-1]
+    assert returned['event'] == 'a2_query_returned'
+    assert returned['duration_ms'] == 6500.0
 
 
 def test_http_exhaustion_raises_native_last_failure(gathering, monkeypatch):
@@ -311,6 +419,19 @@ def test_no_context_imports_or_calls_no_logger(gathering, monkeypatch):
     assert result.values.tolist() == CANDLE_ROWS
 
 
+def test_no_context_safe_fallback_has_no_attempt_debug_flood(gathering, monkeypatch, capsys):
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
+    result = query(gathering, logging_context=None)
+    output = capsys.readouterr()
+    lines = output.out.splitlines()
+    assert len(lines) == 2 and output.err == ''
+    assert lines[0].startswith('Свечи QUERY_STARTED:')
+    assert lines[1].startswith('Свечи QUERY_RETURNED_UNVALIDATED:')
+    assert 'REQUEST_STARTED' not in output.out
+    assert all(len(line) <= 256 for line in lines)
+    assert len(calls) == 1 and sleeps == [3] and result.values.tolist() == CANDLE_ROWS
+
+
 @pytest.mark.parametrize('with_context', [False, True])
 @pytest.mark.parametrize('kind', ['tls', 'redirect', 'exhaustion', 'parse', 'rotation'])
 def test_console_and_logger_canaries_are_safe_together(gathering, monkeypatch, event_log,
@@ -381,7 +502,11 @@ def test_console_and_logger_canaries_are_safe_together(gathering, monkeypatch, e
     assert len(calls) == expected_attempts
     assert sleeps == ([] if expected_attempts == 1 else [3, 3] if kind == 'rotation' else [3, 6, 12, 24])
     if kind in ('rotation', 'parse', 'exhaustion'):
-        assert 'HEADER_ROTATED' in output.out
+        if with_context:
+            assert output.out == ''
+            assert any('HEADER_ROTATED' in item['message'] for item in event_log.events)
+        else:
+            assert 'HEADER_ROTATED' in output.out
 
 
 @pytest.mark.parametrize('failure', ['throw', 'rejected', 'unconfirmed', 'unhealthy'])
@@ -540,6 +665,18 @@ def test_broken_console_and_stderr_preserve_failure_precedence(gathering, monkey
         return original_print(*args, **kwargs)
 
     monkeypatch.setattr(builtins, 'print', printing)
+    if with_context:
+        # F-LOG owns context console delivery. Model its failure at emit, while
+        # keeping the real-writer level/duplicate oracle in the separate test.
+        original_emit = event_log.logger.emit_event
+
+        def emit(context, level, event, message, fields):
+            targeted = (event == 'a2_query_failed' if has_primary else event == 'a2_query_started')
+            if targeted:
+                raise OSError('A2_CONSOLE_FAILURE_CANARY')
+            return original_emit(context, level, event, message, fields)
+
+        monkeypatch.setattr(event_log.logger, 'emit_event', emit)
     context = event_log.context if with_context else None
     expected_type = requests.exceptions.SSLError if has_primary else RuntimeError
     with pytest.raises(expected_type) as captured:
@@ -631,7 +768,7 @@ def test_returned_diagnostic_failure_after_parse_never_retries_http(gathering, m
     assert captured.value.args == ('LOGGING_INCOMPLETE',)
     assert captured.value.__cause__ is None and captured.value.__suppress_context__
     assert returned == ['a2_query_returned']
-    assert len(calls) == 1 and sleeps == []
+    assert len(calls) == 1 and sleeps == [3]
     assert not any(item['event'] in ('a2_query_retry', 'a2_query_failed') for item in event_log.events)
 
 

@@ -52,7 +52,9 @@ rotates headers, sleeps, retries or falls back to HTTP.
 
 Other failed attempts retain the legacy policy in this slice. Five attempts
 are the default; retry sleeps are 3, 6, 12 and 24 seconds, with the existing
-header rotation. A successful request still sleeps three seconds. Exhaustion
+header rotation. A successful request still sleeps three seconds before its
+returned event and DataFrame return. An interrupted/failed success sleep emits
+no returned event. Exhaustion
 raises the final attempt's native primary exception instead of returning an
 empty frame. A non-200 final response supplies native `HTTPError` with that
 response; a preceding timeout does not replace it, or vice versa. `moex`
@@ -119,7 +121,8 @@ Returned counts contain measured `rows_received=len(parsed_frame)`;
 `rows_accepted`, `rows_quarantined` and `instruments` are null with
 `NOT_ASSESSED`; `pages` is null with `NOT_PAGINATION_EVIDENCE`. Failure does
 not fabricate zero-row completeness. `duration_ms` is measured nonnegative
-finite query elapsed time, including earlier retry sleeps when present.
+finite query elapsed time through completion of the mandatory success sleep,
+including earlier retry sleeps when present, before returned-event delivery.
 
 HTTP status, requested range and decoded-body byte length may appear in the
 bounded human message and local fixture evidence. They are **NOT_CONNECTED**
@@ -127,7 +130,9 @@ as typed machine-readable F-LOG fields: the coordinator must own any contract
 change and its integration regression. `len(response.content)` measures
 decoded response bytes, not wire bytes. It proves neither a cap nor a deadline.
 
-With no logging context, the safe console path remains available. With context,
+With no logging context, the safe console fallback prints INFO/WARNING/ERROR;
+attempt DEBUG is silent. With context, F-LOG exclusively owns normal console
+delivery and applies its console_level; A2 adds no direct console duplicate.
 INFO/DEBUG/WARNING require accepted receipt and healthy logger; ERROR also
 requires confirmed receipt. Logging and health checks sit outside the
 request/parser catch, so a logger failure never triggers an HTTP retry.
@@ -136,7 +141,11 @@ and stop; secondary diagnosis attempts only the fixed stderr message and
 exception note `A2_LOGGING_FAILURE: LOGGING_INCOMPLETE`. Without a primary,
 raise `RuntimeError('LOGGING_INCOMPLETE') from None` before another request or
 writer. Rejected/unconfirmed ERROR is not delivery evidence. Local recording
-receipts test the real pure envelope/redaction, not physical sink delivery.
+receipts test the real pure envelope/redaction. The code-review regression also
+uses a real disposable F-LOG queue/writer with DEBUG/INFO/WARNING/ERROR console
+levels, confirmed flush and persisted records: it checks filtering, duplicates,
+canaries and cleanup. This narrow local sink evidence does not prove common
+runtime/production delivery or complete end-to-end logging integration.
 
 ## Acceptance contribution and evidence limits
 

@@ -278,8 +278,12 @@ def _a2_date(value):
 
 def _a2_diagnostic(logging_context, level, event, message, fields, primary=None):
     try:
-        print(message)
-        if logging_context is not None:
+        if logging_context is None:
+            # Без context оставляем bounded fallback, без DEBUG flooding.
+            if level != 'DEBUG':
+                print(message)
+        else:
+            # Штатный console writer и его уровни принадлежат F-LOG.
             import run_logging
             receipt = run_logging.emit_event(logging_context, level, event, message, fields)
             healthy = run_logging.check_logging_health(logging_context)['healthy']
@@ -445,10 +449,10 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         if received > 0:
             df['ticker'] = ticker_in
             df_ticker = pd.concat([df_ticker, df], ignore_index=True)
-        emit('INFO', 'a2_query_returned',
-             'QUERY_RETURNED_UNVALIDATED' if received else 'QUERY_EMPTY_UNVALIDATED', received=received)
         # Сохраняем legacy success sleep и CSV outputs; schema validation — A2-02.
         time.sleep(3)
+        emit('INFO', 'a2_query_returned',
+             'QUERY_RETURNED_UNVALIDATED' if received else 'QUERY_EMPTY_UNVALIDATED', received=received)
         return df_ticker
 
 
