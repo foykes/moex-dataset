@@ -16,6 +16,7 @@
 # %%
 import talib, pandas as pd
 import sys
+from time import perf_counter
 from os import listdir
 from os.path import isfile, join
 
@@ -28,7 +29,49 @@ current_path = sys.path[0]
 # print(talib.get_function_groups())
 
 # %%
-def calculator(filename):
+def _tech_diagnostic(logging_context, event, message, state, started, *, error=None, instrument=None, rows=None, instruments=None):
+    # Диагностика не меняет результат расчёта и не заменяет исходное исключение.
+    try:
+        duration_ms = (perf_counter() - started) * 1000
+        if logging_context is None:
+            code = 'TECH_CALCULATOR_FAILED' if error is not None else event.upper()
+            print('{}; {}; phase={}; duration_ms={:.3f}'.format(code, message, state['phase'], duration_ms))
+            return
+        import run_logging
+        counts = dict(rows_received=state['rows'] if rows is None else rows,
+                      instruments=state['instruments'] if instruments is None else instruments,
+                      rows_accepted=None, rows_quarantined=None, pages=None)
+        counts['null_reasons'] = {key: 'NOT_ASSESSED_BY_TECH' for key, value in counts.items() if value is None}
+        fields = dict(stage='tech', file='dataset', instrument=instrument,
+                      duration_ms=duration_ms, counts=counts,
+                      outcome='FAILED' if error is not None else 'RETURNED' if event == 'calculator_returned' else state['phase'])
+        if error is not None:
+            fields['error'] = run_logging.make_error(logging_context, error, 'tech', code='TECH_CALCULATOR_FAILED')
+        level = 'ERROR' if error is not None else 'INFO'
+        receipt = run_logging.emit_event(logging_context, level, event, message, fields)
+        if not receipt.get('accepted') or (error is not None and not receipt.get('confirmed')):
+            raise RuntimeError('TECH_EVENT_UNCONFIRMED')
+    except Exception:
+        try:
+            print('TECH_DIAGNOSTICS_FAILED; phase={}'.format(state['phase']), file=sys.stderr)
+        except Exception:
+            pass
+
+
+def calculator(filename, *, logging_context=None):
+    started = perf_counter()
+    state = dict(phase='READING', rows=None, instruments=None, columns=None)
+    versions = 'TA-Lib={}; pandas={}'.format(talib.__version__[:32], pd.__version__[:32])
+    _tech_diagnostic(logging_context, 'calculator_started', 'STOCH 5/3/3; matype 0/0; ' + versions, state, started)
+    try:
+        _calculator_impl(filename, logging_context, state)
+    except Exception as error:
+        _tech_diagnostic(logging_context, 'calculator_failed', 'Расчёт тех метрик завершился ошибкой', state, started, error=error)
+        raise
+    _tech_diagnostic(logging_context, 'calculator_returned', 'Расчёт завершён; columns={}'.format(state['columns']), state, started)
+
+
+def _calculator_impl(filename, logging_context, state):
     path = current_path + "/datasets/" + filename
 
 
@@ -153,6 +196,9 @@ def calculator(filename):
     elif path.endswith('xlsx') and "~$" not in path:
         df = pd.read_excel(path)
 
+    state['rows'] = len(df)
+    state['phase'] = 'CALCULATING'
+
 
     ### Проверка наличия колонки индикатора в df. Убирает в случае наличия. Необходимо для пересчёта индикаторов без перевыгрузки данных
     
@@ -275,8 +321,10 @@ def calculator(filename):
 
     ticker_list = df['ticker'].to_list()
     ticker_list = list(set(ticker_list))
+    state['instruments'] = len(ticker_list)
 
     for i in range(0,len(ticker_list)):
+        instrument_started = perf_counter()
         ticker = ticker_list[i]
         df_ticker = df[(df['ticker'] == ticker)]
 
@@ -424,7 +472,7 @@ def calculator(filename):
         STOCH_real_ticker_slowk, STOCH_real_ticker_slowd = talib.STOCH(df_ticker['high'], df_ticker['low'], df_ticker['close'], fastk_period=5, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
         if len(STOCH_real_ticker_slowk) > 0 and len(STOCH_real_ticker_slowd) > 0:
             STOCH_full_slowk = pd.concat([STOCH_full_slowk,STOCH_real_ticker_slowk])
-            STOCH_full_slowd = pd.concat([STOCH_full_slowd,STOCH_real_ticker_slowk])
+            STOCH_full_slowd = pd.concat([STOCH_full_slowd,STOCH_real_ticker_slowd])
 
         STOCHF_real_ticker_fastk, STOCHF_real_ticker_fastd = talib.STOCHF(df_ticker['high'], df_ticker['low'], df_ticker['close'], fastk_period=5, fastd_period=3, fastd_matype=0)
         if len(STOCHF_real_ticker_fastk) > 0 and len(STOCHF_real_ticker_fastd) > 0:
@@ -551,6 +599,9 @@ def calculator(filename):
         # BullBearPower_real_ticker = talib.
         # if len(BullBearPower_real_ticker) > 0: BullBearPower_full = pd.concat([BullBearPower_full,BullBearPower_real_ticker])
 
+
+        _tech_diagnostic(logging_context, 'calculator_instrument_returned', 'Расчёт инструмента завершён', state, instrument_started,
+                         instrument='instrument-{}'.format(i + 1), rows=len(df_ticker), instruments=1)
 
     ### Overlap Studies Functions
     BBANDS_full_upperband = BBANDS_full_upperband.rename(columns= {0: 'BBANDS_upperband'})
@@ -844,12 +895,19 @@ def calculator(filename):
     df = df.join(BullBearPower_full)
 
 # запись файла в его исходный формат
+    state['columns'] = len(df.columns)
+    state['phase'] = 'WRITING'
     if path.endswith('csv'):
-        if len(df) > 0: df.to_csv(path,index = False)
+        if len(df) > 0:
+            df.to_csv(path,index = False)
+            state['phase'] = 'WRITTEN'
     elif path.endswith('xlsx'):
-        if len(df) > 0: df.to_excel(path,index = False)
+        if len(df) > 0:
+            df.to_excel(path,index = False)
+            state['phase'] = 'WRITTEN'
     else:
-        print(path)
+        print('TECH_UNSUPPORTED_FORMAT')
+    if state['phase'] == 'WRITING': state['phase'] = 'NOT_WRITTEN'
 
 # %%
 ### Ниже блоки для проверки отдельно функции
@@ -869,7 +927,7 @@ def calculator(filename):
 # real
 
 # %%
-def main(current_path):
+def main(current_path, *, logging_context=None):
     #getting datasets
     datasets_list = [f for f in listdir(current_path + '/datasets') if isfile(join(current_path + '/datasets', f))]
 
@@ -877,15 +935,14 @@ def main(current_path):
 
     datasets_list = list(set(datasets_list))
 
-    for file in datasets_list:
+    for file_number, file in enumerate(datasets_list, start=1):
         if (file.endswith('csv') and "~$" not in file) or (file.endswith('xlsx') and "~$" not in file):
             try:
-                print('Начал рассчёт файла {}'.format(file))
-                calculator(file)
-            except Exception as e:
-                print (e)
-                print(file)
-                print('------------------------')
+                print('Начал рассчёт файла №{}'.format(file_number))
+                calculator(file, logging_context=logging_context)
+            except Exception:
+                # calculator уже сообщил безопасную диагностику; продолжаем прежний цикл.
+                continue
 
 
 # %%
