@@ -147,6 +147,13 @@ def _decode_json(raw):
     return json.loads(raw)
 
 
+def _request_phase_marker(state):
+    phase = state.get('phase')
+    if type(phase) is str and phase in ('OPEN', 'READ', 'CLOSE', 'DECODE'):
+        return '; request_phase=' + phase
+    return ''
+
+
 def _retry_event(logging_context, error, instrument, endpoint, code, state):
     if logging_context is None:
         return True
@@ -161,7 +168,7 @@ def _retry_event(logging_context, error, instrument, endpoint, code, state):
             record['instrument'] = instrument
             record['null_reasons'].pop('instrument', None)
         _dividend_event(logging_context, 'WARNING', 'dividend_request_retry',
-            'Повтор запроса дивидендов: ' + state['reason'], instrument,
+            'Запланирован повтор запроса дивидендов: ' + state['reason'] + _request_phase_marker(state), instrument,
             outcome='RETRY', error=record, retries={'attempt': state['attempt'], 'limit': 3},
             duration_ms=max(0, (_network_clock() - state['started']) * 1000))
         return True
@@ -195,6 +202,10 @@ def _request_json(query, deadline, logging_context, instrument, code, state):
             if delay is None:
                 state['reason'] = 'RETRY_AFTER_REFUSED'
                 raise
+            state['reason'] = 'BUDGET_EXHAUSTED'
+            if delay >= _check_budget(deadline, error):
+                raise TimeoutError('DIVIDEND_BUDGET_EXHAUSTED: нет бюджета для следующей попытки') from error
+            state['reason'] = reason
             if not _retry_event(logging_context, error, instrument, query, code, state):
                 state['reason'] = 'RETRY_LOGGING_FAILED'
                 raise
@@ -211,6 +222,7 @@ def _request_json(query, deadline, logging_context, instrument, code, state):
         state.update(phase='DECODE', category='SOURCE')
         data = _decode_json(raw)
         _check_budget(deadline)
+        state['phase'] = ''  # Parser/barrier failures не являются DECODE failures.
         return data
 
 
@@ -344,6 +356,7 @@ def _dividend_failure(logging_context, error, ticker, endpoint, code,
             retries = {'attempt': request_state['attempt'], 'limit': 3}
             duration_ms = max(0, (_network_clock() - request_state['started']) * 1000)
             message += '; ' + request_state['reason']
+            message += _request_phase_marker(request_state)
         _dividend_event(logging_context, 'ERROR', event, message, ticker,
             outcome=outcome, error=record, retries=retries, duration_ms=duration_ms)
     except BaseException:

@@ -351,6 +351,7 @@ def test_read_primary_survives_close_and_retry_diagnostic_failures(monkeypatch, 
         module.div_loader(ISIN, 'SBER', logging_context=context)
     assert caught.value is primary and reply.close_calls == 1 and waits == []
     assert [url for url, timeout in calls] == [SEARCH_URL] and module.divs_all == []
+    assert 'request_phase=READ' in events(context)[-1]['message']
     failed(context)
 
 
@@ -548,4 +549,126 @@ def test_budget_expiring_between_wait_checkpoint_and_attempt_keeps_cause(monkeyp
     assert caught.value.__cause__ is primary
     assert calls == [(SEARCH_URL, 10)] and waits == [1] and exports == []
     assert module.divs_all == [] and events(context)[-1]['error']['category'] == 'TIMEOUT'
+    failed(context)
+
+
+@pytest.mark.parametrize('endpoint', ['search', 'detail'])
+@pytest.mark.parametrize('phase', ['OPEN', 'READ', 'CLOSE', 'DECODE'])
+def test_request_failure_phase_is_literal_and_preserves_envelope(monkeypatch, model, context, endpoint, phase):
+    module, clock, waits = model
+    payload = SEARCH if endpoint == 'search' else DETAIL
+    primary = (UnicodeDecodeError('utf-8', b'\xff', 0, 1, CANARY) if phase == 'DECODE' else
+               OSError('close ' + CANARY) if phase == 'CLOSE' else TimeoutError(CANARY))
+    original_args = primary.args
+    if phase == 'OPEN':
+        responses = [primary] * 3
+    elif phase == 'READ':
+        responses = [Reply(payload, read_error=primary) for i in range(3)]
+    elif phase == 'CLOSE':
+        responses = [Reply(payload, close_error=primary)]
+    else:
+        responses = [Reply(payload)]
+        original_decode = module._decode_json
+        def decode(raw):
+            if raw == json.dumps(payload):
+                raise primary
+            return original_decode(raw)
+        monkeypatch.setattr(module, '_decode_json', decode)
+    calls = source(monkeypatch, module, **{endpoint: responses})
+    exports = writers(monkeypatch, module)
+    with pytest.raises(type(primary)) as caught:
+        module.main(logging_context=context)
+    attempts = 3 if phase in ('OPEN', 'READ') else 1
+    assert caught.value is primary and caught.value.args == original_args
+    assert [url for url, timeout in calls] == (
+        [SEARCH_URL] * attempts if endpoint == 'search' else [SEARCH_URL] + [DETAIL_URL] * attempts)
+    assert waits == ([1, 2] if attempts == 3 else []) and exports == [] and module.divs_all == []
+    values = events(context)
+    diagnostics = [event for event in values if event['event'] in ('dividend_request_retry', 'dividend_loader_failed')]
+    assert len(diagnostics) == attempts
+    assert all('request_phase=' + phase in event['message'] for event in diagnostics)
+    assert all(CANARY not in json.dumps(event) for event in values)
+    assert all(event['error']['code'] == ('DIVIDEND_SEARCH_FAILED' if endpoint == 'search' else
+               'DIVIDEND_SOURCE_REQUEST_FAILED') for event in diagnostics)
+    assert all(event['error']['category'] == ('IO' if phase == 'CLOSE' else
+               'SOURCE' if phase == 'DECODE' else 'TIMEOUT') for event in diagnostics)
+    assert diagnostics[-1]['error']['final'] and not diagnostics[-1]['error']['retryable']
+    assert diagnostics[-1]['error']['attempt'] == attempts
+    assert all(reply.close_calls == 1 for reply in responses if isinstance(reply, Reply))
+    failed(context)
+
+
+@pytest.mark.parametrize('remaining', [0.5, 1.0])
+def test_infeasible_retry_has_no_planned_warning(monkeypatch, model, context, remaining):
+    module, clock, waits = model
+    primary = TimeoutError('network original')
+    response = Reply(SEARCH, read_error=primary,
+        after_read=lambda: clock.__setitem__(0, 35 - remaining))
+    calls = source(monkeypatch, module, search=[response])
+    exports = writers(monkeypatch, module)
+    with pytest.raises(TimeoutError, match='^DIVIDEND_BUDGET_EXHAUSTED:') as caught:
+        module.main(logging_context=context)
+    assert caught.value is not primary and caught.value.__cause__ is primary
+    assert primary.args == ('network original',)
+    assert calls == [(SEARCH_URL, 10)] and waits == [] and response.close_calls == 1
+    assert exports == [] and module.divs_all == []
+    values = events(context)
+    assert not any(event['event'] == 'dividend_request_retry' for event in values)
+    assert values[-1]['error']['category'] == 'TIMEOUT'
+    assert values[-1]['error']['code'] == 'DIVIDEND_BUDGET_EXHAUSTED'
+    assert values[-1]['error']['attempt'] == 1
+    failed(context)
+
+
+@pytest.mark.parametrize('phase', ['OPEN', 'READ'])
+def test_planned_retry_expiring_in_diagnostics_does_not_request_or_wait(monkeypatch, model, context, phase):
+    module, clock, waits = model
+    primary = TimeoutError('network original')
+    response = primary if phase == 'OPEN' else Reply(SEARCH, read_error=primary)
+    calls = source(monkeypatch, module, search=[response])
+    exports = writers(monkeypatch, module)
+    original_emit = run_logging.emit_event
+    def emit(session, level, event, message, fields):
+        receipt = original_emit(session, level, event, message, fields)
+        if event == 'dividend_request_retry':
+            clock[0] = 35
+        return receipt
+    monkeypatch.setattr(run_logging, 'emit_event', emit)
+    with pytest.raises(TimeoutError, match='^DIVIDEND_BUDGET_EXHAUSTED:') as caught:
+        module.main(logging_context=context)
+    assert caught.value.__cause__ is primary and primary.args == ('network original',)
+    assert calls == [(SEARCH_URL, 10)] and waits == [] and exports == [] and module.divs_all == []
+    values = events(context)
+    warnings = [event for event in values if event['event'] == 'dividend_request_retry']
+    assert len(warnings) == 1 and 'Запланирован повтор' in warnings[0]['message']
+    assert 'request_phase=' + phase in warnings[0]['message']
+    assert warnings[0]['error']['attempt'] == 1 and warnings[0]['retries'] == {'attempt': 1, 'limit': 3}
+    assert warnings[0]['error']['retryable'] and not warnings[0]['error']['final']
+    assert values[-1]['error']['category'] == 'TIMEOUT'
+    assert values[-1]['error']['code'] == 'DIVIDEND_BUDGET_EXHAUSTED'
+    assert values[-1]['error']['attempt'] == 1
+    failed(context)
+
+
+@pytest.mark.parametrize('phase', ['parser', 'barrier'])
+def test_post_request_failure_does_not_claim_decode_phase(monkeypatch, model, context, phase):
+    module, clock, waits = model
+    calls = source(monkeypatch, module)
+    primary = ValueError('DIVIDEND_SOURCE_SCHEMA_INVALID: fixture') if phase == 'parser' else RuntimeError('LOGGING_INCOMPLETE')
+    if phase == 'parser':
+        def parse(*args):
+            raise primary
+        monkeypatch.setattr(module, '_parse_dividend_rows', parse)
+    else:
+        original = module._dividend_event
+        def event(*args, **kwargs):
+            if args[2] == 'dividend_loader_returned':
+                raise primary
+            return original(*args, **kwargs)
+        monkeypatch.setattr(module, '_dividend_event', event)
+    with pytest.raises(type(primary)) as caught:
+        module.div_loader(ISIN, 'SBER', logging_context=context)
+    assert caught.value is primary and calls == [(SEARCH_URL, 10), (DETAIL_URL, 10)]
+    assert waits == [] and module.divs_all == []
+    assert 'request_phase=' not in events(context)[-1]['message']
     failed(context)

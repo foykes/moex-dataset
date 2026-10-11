@@ -106,8 +106,9 @@ Tests use literal responses, separately exercise search/detail and retain all
 91 C1 and 63 C2 cases. Existing doubles only accept `timeout`; HTTP 500 gains
 its exact three detail calls and fake waits `[1, 2]`; HTTP 403 expects ACCESS.
 Literal rows, primary exceptions, previous bytes/hashes, accumulator and writer
-oracles are not weakened. The new file adds 114 transport/budget cases,
-including nested conflicting failures and the gap before the next attempt.
+oracles are not weakened. R1 added 114 transport/budget cases, including
+nested conflicting failures and the gap before the next attempt. The
+corrective revision adds 14 more cases.
 Private clocks/wait are replaced without changing logger clocks. No live
 MOEX/dohod requests, real retry sleep, production datasets or inherited
 credentials are used; the existing F3 admission is unchanged.
@@ -121,12 +122,12 @@ python -I -B -X utf8 -m pytest -c pyproject.toml -q tests/shared/c1 tests/shared
 ```
 
 Seven review regressions subsequently failed before their fixes (exit 1).
-The same full narrow command after implementation passed 268 cases (exit 0).
-These runs describe working-tree evidence. Final exact-clean-HEAD F3, F2,
-F-LOG, ten notebook-pair checks and hosted CI remain pending and must be
+The same full narrow command after R1 implementation passed 268 cases (exit 0).
+These historical runs describe working-tree evidence. Exact-clean-HEAD F3,
+F2, F-LOG, ten notebook-pair checks and hosted CI are required and must be
 recorded separately in the PR handoff; earlier PR results do not substitute
-for them. No production
-readiness or strict process deadline is claimed by these unit results.
+for them. No production readiness or strict process deadline is claimed by
+these unit results.
 
 ## Acceptance contribution and residual owners
 
@@ -136,7 +137,7 @@ readiness or strict process deadline is claimed by these unit results.
 | #29 | VALID_EMPTY and BLOCKED_KEEP_PREVIOUS compatibility | C2-04/D: freshness, manifest, generation/readback |
 | #33 | No dohod semantic/completeness claim | C3 #31 parsing, #32 canonical/allowed URLs, #33 completeness/partial policy; B/D integration |
 | #62 | Offline access/malformed/missing-block fixtures | Live endpoint, VPS and current responses NOT VERIFIED |
-| #78 | Retry reason/attempts, duration, final outcome, redaction and primary precedence | F/D: whole-pipeline/process/bundle/overhead acceptance |
+| #78 | Request phase, retry reason/attempts, duration, final outcome, redaction and primary precedence | F/D: whole-pipeline/process/bundle/overhead acceptance |
 
 C3 is not an A1 prerequisite. Future B must separately preserve direct
 `get_main`, `get_page_info` and `main` contracts and address existing early
@@ -151,3 +152,32 @@ unbounded limitations; it does not roll back datasets. Other accepted work,
 historical worktrees, runtime and evidence are retained. This slice authorizes
 offline implementation/review and one draft PR only: no auto-merge, issue
 closure, production reload, live probes, cron or FTP/Google publication.
+
+## PR #90 corrective review: R1 to R2
+
+Independent review of `22cdd4285f7e8e4993d8d55c5299fe1ab777d180` requested
+two diagnostics corrections. Retry/final failure messages now include the
+fixed marker `request_phase=OPEN|READ|CLOSE|DECODE` in the existing F-LOG
+message envelope. Only these four literal tokens are admitted; no endpoint,
+query, headers, credentials or payload is added. A successful decode checkpoint
+clears the marker before parser/barrier work. Secondary cleanup cannot relabel
+a primary READ failure as CLOSE. Exception identity/args, codes, categories and
+healthy events stay unchanged.
+
+A retry delay must fit the remaining operation budget before a warning is
+emitted. The warning explicitly means a planned retry; its attempt number is
+the failed actual attempt, not a prematurely incremented next attempt. Budget
+is checked again after logging and after waiting. If diagnostic delivery uses
+the remaining budget, the planned warning can exist but no subsequent wait or
+request begins; terminal TIMEOUT retains the primary network error as cause.
+An already infeasible delay produces no retry warning, wait or additional
+request. Equality between delay and remaining budget is also refused.
+
+Fourteen corrective cases cover both search/detail failure phases, original
+exception/envelope/redaction, infeasible/equal delays, budget expiry during
+diagnostics and absence of stale DECODE markers for parser/barrier failures.
+On the unchanged reviewed production pair, the targeted RED returned
+`12 failed, 2 passed, 114 deselected` (exit 1). New GREEN and exact-clean-HEAD
+gate/hosted receipts belong in the corrective PR handoff, alongside the
+preserved R1 receipts. HTTP/Retry-After/attempt/backoff/budget policies and all
+C1/C2 domain contracts and residual owners remain unchanged.
