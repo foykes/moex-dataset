@@ -38,7 +38,6 @@ jobs:
       TASK_REPOSITORY: ${{ github.repository }}
       TASK_ACTOR: ${{ github.actor }}
       TASK_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-      TASK_RUNNER_ENVIRONMENT: ${{ runner.environment }}
       TASK_DELETED: ${{ github.event.deleted || false }}
       TASK_DISPATCH_ALLOW: ${{ inputs.allow_network_setup || false }}
       TASK_DISPATCH_SHA: ${{ inputs.approved_sha || '' }}
@@ -49,6 +48,9 @@ jobs:
     steps:
       # An absent or stale grant fails this job. It is never a skipped PASS.
       - name: Require the owner's exact source and SETUP grant
+        # The runner context is available in step env, not in job env.
+        env:
+          TASK_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         shell: bash
         run: |
           set -euo pipefail
@@ -78,6 +80,7 @@ jobs:
               ;;
             *) exit 1 ;;
           esac
+          printf 'TASK_RUNNER_ENVIRONMENT=%s\n' "$TASK_RUNNER_ENVIRONMENT" >> "$GITHUB_ENV"
           echo 'Owner, event, exact SHA, base and operation grant accepted.'
 
       - name: Checkout the approved source
