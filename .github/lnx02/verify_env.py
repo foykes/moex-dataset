@@ -456,6 +456,7 @@ def validate_wheel(path, record):
         raise PolicyError("wheel-bytes-digest-mismatch")
     if wheel_name(path.name) != (record["name"], record["version"]):
         raise PolicyError("wheel-record-mismatch")
+    metadata_counts = {"top_level": 0, "nested": 0}
     try:
         with zipfile.ZipFile(path) as archive:
             metadata_files = []
@@ -468,12 +469,32 @@ def validate_wheel(path, record):
                     raise PolicyError("unsafe-wheel-member")
                 seen.add(name)
                 if name.endswith(".dist-info/METADATA"):
-                    metadata_files.append(info)
+                    # A vendored distribution may carry its own metadata inside
+                    # a package. Only archive-root metadata identifies this wheel.
+                    if len(parts) == 2:
+                        metadata_files.append(info)
+                        metadata_counts["top_level"] += 1
+                    else:
+                        metadata_counts["nested"] += 1
             if len(metadata_files) != 1 or metadata_files[0].file_size > 1024 * 1024:
                 raise PolicyError("invalid-wheel-metadata-members")
+            owner = metadata_files[0].filename.split("/", 1)[0][:-len(".dist-info")]
+            owner_parts = owner.rsplit("-", 1)
+            if (len(owner_parts) != 2 or canonical(owner_parts[0]) != record["name"]
+                    or owner_parts[1] != record["version"]):
+                raise PolicyError("wheel-metadata-owner-mismatch")
             metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_files[0]))
-            if canonical(metadata.get("Name")) != record["name"] or metadata.get("Version") != record["version"]:
+            if (metadata.get_all("Name") != [metadata.get("Name")]
+                    or metadata.get_all("Version") != [metadata.get("Version")]
+                    or canonical(metadata.get("Name")) != record["name"]
+                    or metadata.get("Version") != record["version"]):
                 raise PolicyError("wheel-embedded-metadata-mismatch")
+    except PolicyError as error:
+        # These values derive from the already validated expected wheel record.
+        # Never publish ZIP member paths or arbitrary embedded metadata text.
+        error.wheel_validation = {"filename": record["filename"], "name": record["name"],
+                                  "version": record["version"], "metadata_members": metadata_counts}
+        raise
     except (zipfile.BadZipFile, UnicodeError):
         raise PolicyError("invalid-wheel-archive") from None
 
@@ -2537,6 +2558,8 @@ def pipeline(args):
     except BaseException as error:
         report["original_failure"] = public_failure(error)
         report["failure_code"] = report["original_failure"]["failure_code"]
+        if isinstance(error, PolicyError) and hasattr(error, "wheel_validation"):
+            report["wheel_validation"] = error.wheel_validation
     finally:
         report["duration_seconds"] = round(time.monotonic() - started, 3)
         finish_with_cleanup(output, report, root, nonce, locks)
@@ -3077,6 +3100,61 @@ def self_test(repo):
             archive.writestr("b-1.0.dist-info/METADATA", "Name: b\nVersion: 1.0\n")
         bad_record = {"name": "b", "version": "1.0", "filename": bad_wheel.name, "sha256": digest(bad_wheel)}
         reject("wheel-zip-traversal-refused", lambda: validate_wheel(bad_wheel, bad_record))
+        def wheel_metadata_fixture(case, members, name="a-package", version="1.0"):
+            directory = root / "fixtures" / ("wheel-metadata-" + case)
+            directory.mkdir(mode=0o700)
+            candidate = directory / (name.replace("-", "_") + "-" + version + "-py3-none-any.whl")
+            with zipfile.ZipFile(candidate, "w") as archive:
+                for member, payload in members:
+                    archive.writestr(member, payload)
+            return candidate, {"name": name, "version": version, "filename": candidate.name,
+                               "sha256": digest(candidate)}
+
+        owner_metadata = ("a_package-1.0.dist-info/METADATA", "Name: a-package\nVersion: 1.0\n")
+        vendor_metadata = ("a_package/_vendor/vendor-2.0.dist-info/METADATA", "Name: vendor\nVersion: 2.0\n")
+        nested = wheel_metadata_fixture("nested-vendor", [owner_metadata, vendor_metadata,
+            ("a_package/_vendor/second-3.0.dist-info/METADATA", "Name: second\nVersion: 3.0\n")])
+        check("wheel-own-root-with-multiple-vendored-metadata", lambda: validate_wheel(*nested))
+        only_nested = wheel_metadata_fixture("only-nested", [vendor_metadata])
+        reject("wheel-nested-metadata-cannot-substitute-owner", lambda: validate_wheel(*only_nested))
+        ambiguous = wheel_metadata_fixture("ambiguous-root", [owner_metadata,
+            ("other-2.0.dist-info/METADATA", "Name: other\nVersion: 2.0\n"), vendor_metadata])
+        reject("wheel-multiple-top-level-metadata-refused", lambda: validate_wheel(*ambiguous))
+        repeated_vendor = wheel_metadata_fixture("duplicate-vendor-member", [owner_metadata, vendor_metadata, vendor_metadata])
+        reject("wheel-vendored-metadata-retains-duplicate-member-refusal", lambda: validate_wheel(*repeated_vendor))
+        for case, member, metadata in (
+                ("wrong-name", "other-1.0.dist-info/METADATA", owner_metadata[1]),
+                ("wrong-version", "a_package-2.0.dist-info/METADATA", owner_metadata[1]),
+                ("embedded-name", owner_metadata[0], "Name: other\nVersion: 1.0\n"),
+                ("embedded-version", owner_metadata[0], "Name: a-package\nVersion: 2.0\n"),
+                ("duplicate-name-header", owner_metadata[0], "Name: a-package\nName: other\nVersion: 1.0\n"),
+                ("duplicate-version-header", owner_metadata[0], "Name: a-package\nVersion: 1.0\nVersion: 2.0\n"),
+                ("missing-name-header", owner_metadata[0], "Version: 1.0\n"),
+                ("missing-version-header", owner_metadata[0], "Name: a-package\n"),
+                ("oversized-owner", owner_metadata[0], owner_metadata[1] + "X" * (1024 * 1024))):
+            candidate = wheel_metadata_fixture(case, [(member, metadata), vendor_metadata])
+            reject("wheel-metadata-" + case + "-refused", lambda candidate=candidate: validate_wheel(*candidate))
+        unsafe_nested = wheel_metadata_fixture("unsafe-nested", [owner_metadata,
+            ("a_package/_vendor/../foreign-2.0.dist-info/METADATA", "Name: foreign\nVersion: 2.0\n")])
+        reject("wheel-vendored-metadata-retains-traversal-refusal", lambda: validate_wheel(*unsafe_nested))
+        symlink_member = zipfile.ZipInfo("a_package/_vendor/linked-2.0.dist-info/METADATA")
+        symlink_member.create_system = 3
+        symlink_member.external_attr = (stat.S_IFLNK | 0o777) << 16
+        linked_nested = wheel_metadata_fixture("linked-nested", [owner_metadata, (symlink_member, "elsewhere")])
+        reject("wheel-vendored-metadata-retains-symlink-refusal", lambda: validate_wheel(*linked_nested))
+
+        def wheel_failure_evidence():
+            try:
+                validate_wheel(*ambiguous)
+            except PolicyError as error:
+                expect(str(error) == "invalid-wheel-metadata-members")
+                expect(error.wheel_validation == {"filename": "a_package-1.0-py3-none-any.whl",
+                       "name": "a-package", "version": "1.0", "metadata_members": {"top_level": 2, "nested": 1}})
+                sanitized(error.wheel_validation)
+                expect(public_failure(error)["failure_code"] == "invalid-wheel-metadata-members")
+                return
+            raise PolicyError("self-test-assertion-failed")
+        check("wheel-failure-exposes-only-expected-filename-and-counts", wheel_failure_evidence)
         # A complete synthetic evidence bundle exercises the success audit.
         # These are fabricated fixtures, never native execution evidence.
         profile_versions = expected_profiles(repo)
