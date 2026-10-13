@@ -38,7 +38,9 @@ class AuditGuard:
     def __call__(self, event, args):
         if event in {"subprocess.Popen", "os.posix_spawn"}:
             if self.process is not None and len(args) > 1:
-                if args[0] == self.process[0] and tuple(args[1]) == self.process:
+                admitted = (tuple(args[1]) == self.process if isinstance(args[1], (tuple, list))
+                            else sys.platform == "win32" and args[1] == subprocess.list2cmdline(self.process))
+                if args[0] == self.process[0] and admitted:
                     return
             self.deny(event, args)
         if event in {"os.system", "os.exec", "os.fork", "os.forkpty", "os.spawn"}:
@@ -92,6 +94,7 @@ sys.addaudithook(GUARD)
 GUARD.registered = True
 
 import argparse
+import ast
 import copy
 import email.parser
 import errno
@@ -99,6 +102,7 @@ import hashlib
 import importlib.metadata
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -472,7 +476,7 @@ def validate_wheel(path, record):
 
 
 def validate_grant(env, mode, sha, base):
-    if mode not in {"generate", "verify"} or not SHA.fullmatch(sha) or not SHA.fullmatch(base):
+    if mode not in {"diagnostic", "generate", "verify"} or not SHA.fullmatch(sha) or not SHA.fullmatch(base):
         raise PolicyError("invalid-operation-identity")
     if (env.get("MDS_LNX02_SETUP_APPROVED") != "true"
             or env.get("MDS_LNX02_APPROVED_SHA") != sha
@@ -495,7 +499,7 @@ def validate_grant(env, mode, sha, base):
         if env.get("GITHUB_REF") != "refs/heads/codex/lnx-02":
             raise PolicyError("unapproved-push-ref")
     elif env.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        if (env.get("GITHUB_REF") != "refs/heads/main" or mode != "verify" or base != sha
+        if (env.get("GITHUB_REF") != "refs/heads/main" or mode not in {"diagnostic", "verify"} or base != sha
                 or env.get("TASK_DISPATCH_ALLOW") != "true"
                 or env.get("TASK_DISPATCH_SHA") != sha):
             raise PolicyError("unapproved-dispatch-input")
@@ -805,12 +809,38 @@ def fetch_wheel(root, directory, record):
     validate_wheel(target, record)
 
 
-def execute(command, cwd, environment):
+def execute(command, cwd, environment, timeout=600):
     if GUARD.process is not None:
         raise PolicyError("nested-controller-process-admission")
     GUARD.process = tuple(command)
+    child = None
+    timed_out = False
     try:
-        return subprocess.run(command, cwd=cwd, env=environment, capture_output=True, timeout=600, check=False)
+        child = subprocess.Popen(command, executable=command[0], cwd=cwd, env=environment,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            stdout, stderr = child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            timed_out = True
+            child.kill()
+            try:
+                stdout, stderr = child.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                # No Popen context manager: its __exit__ would wait without a limit.
+                child.stdout.close()
+                child.stderr.close()
+                stdout, stderr = error.output or b"", error.stderr or b""
+            failure = subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+            failure.returncode = child.poll()
+            failure.termination_confirmed = failure.returncode is not None
+            raise failure from None
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+    except BaseException as error:
+        # A spawn failure differs from a failure AFTER the child was launched.
+        error.lnx02_started = child is not None
+        error.lnx02_returncode = child.poll() if child is not None else None
+        error.lnx02_timed_out = timed_out
+        raise
     finally:
         GUARD.process = None
 
@@ -869,6 +899,128 @@ def clean_environment(root):
     return result
 
 
+PUBLIC_FAILURE_CODES = None
+PUBLIC_EXCEPTION_TYPES = frozenset({"PolicyError", "StageError", "TimeoutExpired", "OSError", "FileNotFoundError",
+                                   "PermissionError", "ValueError", "RuntimeError", "TypeError", "KeyError",
+                                   "ImportError", "ModuleNotFoundError", "TimeoutError", "KeyboardInterrupt", "SystemExit", "Exception"})
+
+
+def known_policy_code(code):
+    global PUBLIC_FAILURE_CODES
+    if PUBLIC_FAILURE_CODES is None:
+        codes = set()
+
+        def visit(node):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in {
+                    "self_test", "diagnostic_negative_tests", "diagnostic_fixture"}:
+                return
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in {"PolicyError", "StageError", "PipOperationError"}
+                    and node.args and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                codes.add(node.args[0].value)
+            for child in ast.iter_child_nodes(node):
+                visit(child)
+
+        visit(ast.parse(Path(__file__).read_text(encoding="utf-8")))
+        PUBLIC_FAILURE_CODES = frozenset(codes)
+    match = re.fullmatch(r"pip-exit-([1-9][0-9]{0,2})", code)
+    return (code in PUBLIC_FAILURE_CODES or code in PUBLIC_EXCEPTION_TYPES or code == "unclassified-error"
+            or code in {"guarded-" + kind + "-failed" for kind in ("preflight", "bootstrap", "resolve", "install", "verify-setup", "check")}
+            or bool(match and int(match[1]) <= 255))
+
+
+def public_failure(error):
+    code = str(error) if isinstance(error, PolicyError) and known_policy_code(str(error)) else type(error).__name__
+    if not isinstance(error, PolicyError) and code not in PUBLIC_EXCEPTION_TYPES:
+        code = "unclassified-error"
+    if isinstance(error, PolicyError) and not known_policy_code(str(error)):
+        code = "unclassified-error"
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,119}", code):
+        code = "unclassified-error"
+    return {"failure_code": code, "exception_type": type(error).__name__
+            if type(error).__name__ in PUBLIC_EXCEPTION_TYPES
+            else "Exception"}
+
+
+STREAM_SUMMARIES = {
+    "empty": "No bytes captured",
+    "unshare-permission-denial": "Trusted unshare reported a permission denial; policy mechanism unknown",
+    "executable-or-loader-error": "Executable or shared-library loader failure",
+    "python-before-result": "Python failed before publishing child evidence",
+    "unknown": "Unclassified bytes withheld",
+}
+
+
+def stream_evidence(data, trusted_unshare=False, returncode=None):
+    data = data or b""
+    if not isinstance(data, bytes):
+        raise PolicyError("diagnostic-stream-requires-bytes")
+    classification = "empty" if not data else "unknown"
+    # Classification never exports input-derived text, even for recognized errors.
+    if data and len(data) <= 4096:
+        text = data.decode("utf-8", errors="replace").strip()
+        if (trusted_unshare and returncode not in {None, 0} and text in {
+                "unshare: unshare failed: Operation not permitted",
+                "unshare: unshare failed: Permission denied"}):
+            classification = "unshare-permission-denial"
+        elif re.fullmatch(r"[^\n]{1,200}: error while loading shared libraries: [^\n]{1,500}", text):
+            classification = "executable-or-loader-error"
+        elif text.startswith("Traceback (most recent call last):") and re.search(
+                r"\n(?:ImportError|ModuleNotFoundError|FileNotFoundError|PermissionError|RuntimeError|ValueError|KeyError|TypeError)(?::[^\n]*)?\Z", text):
+            classification = "python-before-result"
+        else:
+            try:
+                value = json.loads(text)
+            except (ValueError, UnicodeError):
+                value = None
+            if (isinstance(value, dict) and set(value) == {"status", "failure_code"}
+                    and value.get("status") == "FAIL"
+                    and value.get("failure_code") in {"worker-job-digest-mismatch", "worker-source-identity-mismatch",
+                                                       "owned-root-identity-mismatch", "invalid-json", "invalid-cli"}):
+                classification = "python-before-result"
+    return {"size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+            "classification": classification, "safe_summary": STREAM_SUMMARIES[classification]}
+
+
+def launch_evidence(command, root, job_name, parent_namespaces=None, timeout=600):
+    outcome = {"launcher_started": False, "child_result_available": False,
+               "exit_code": None, "signal": None, "timed_out": False,
+               "termination_confirmed": False, "parent_namespace_unchanged": "NOT ESTABLISHED"}
+    stdout = stderr = b""
+    started = time.monotonic()
+    try:
+        result = execute(command, str(root), clean_environment(root), timeout=timeout)
+        outcome.update(launcher_started=True, exit_code=result.returncode, termination_confirmed=True)
+        stdout, stderr = result.stdout, result.stderr
+    except subprocess.TimeoutExpired as error:
+        outcome.update(launcher_started=True, timed_out=True,
+                       exit_code=getattr(error, "returncode", None),
+                       termination_confirmed=getattr(error, "termination_confirmed", False))
+        stdout, stderr = error.output or b"", error.stderr or b""
+    except BaseException as error:
+        outcome["launcher_started"] = getattr(error, "lnx02_started", False)
+        outcome["exit_code"] = getattr(error, "lnx02_returncode", None)
+        outcome["timed_out"] = getattr(error, "lnx02_timed_out", False)
+        outcome["termination_confirmed"] = outcome["launcher_started"] and outcome["exit_code"] is not None
+        if isinstance(error, OSError):
+            outcome["launch_errno"] = error.errno
+            outcome["launch_failure_code"] = "controller-child-io-failed" if outcome["launcher_started"] else "executable-or-loader-error"
+        else:
+            outcome["launch_failure_code"] = public_failure(error)["failure_code"]
+    outcome["duration_seconds"] = round(time.monotonic() - started, 3)
+    if outcome["exit_code"] is not None and outcome["exit_code"] < 0 and sys.platform != "win32":
+        outcome["signal"] = -outcome["exit_code"]
+    write_new(root, root / "logs" / (job_name + ".stdout"), stdout)
+    write_new(root, root / "logs" / (job_name + ".stderr"), stderr)
+    trusted_unshare = Path(command[0]).name == "unshare" and str(command[0]) in {"/usr/bin/unshare", "/bin/unshare"}
+    outcome["stdout"] = stream_evidence(stdout, trusted_unshare, outcome["exit_code"])
+    outcome["stderr"] = stream_evidence(stderr, trusted_unshare, outcome["exit_code"])
+    if parent_namespaces is not None:
+        outcome["parent_namespace_unchanged"] = network_ids() == parent_namespaces
+    return outcome
+
+
 def worker_launch(root, nonce, python, kind, fields, sequence, offline=True):
     owned(root, nonce)
     job_name = str(sequence) + "-" + kind
@@ -883,41 +1035,43 @@ def worker_launch(root, nonce, python, kind, fields, sequence, offline=True):
     command = [str(python), "-I", "-S", "-B", str(Path(__file__).absolute()),
                "worker", "--job", str(job_path), "--job-sha256", digest(job_path)]
     if offline:
-        unshare = shutil.which("unshare")
-        if unshare is None:
-            raise PolicyError("rootless-unshare-unavailable")
-        command = [unshare, "--user", "--map-current-user", "--net"] + command
-    started = time.monotonic()
-    try:
-        result = execute(command, str(root), clean_environment(root))
-    except subprocess.TimeoutExpired as error:
-        write_new(root, root / "logs" / (job_name + ".stdout"), error.output or b"")
-        write_new(root, root / "logs" / (job_name + ".stderr"), error.stderr or b"")
-        raise StageError("guarded-worker-timeout", {
-            "kind": kind, "helper_sha256": job["helper_sha256"], "status": "FAIL",
-            "failure_code": "worker-timeout", "exit_code": None, "timed_out": True,
-            "duration_seconds": round(time.monotonic() - started, 3),
-        }) from None
-    write_new(root, root / "logs" / (job_name + ".stdout"), result.stdout)
-    write_new(root, root / "logs" / (job_name + ".stderr"), result.stderr)
-    if network_ids() != parent["namespaces"]:
-        raise PolicyError("controller-namespace-changed")
+        trusted_system_binary("/usr/bin/unshare")
+        command = ["/usr/bin/unshare", "--user", "--map-current-user", "--net", "--"] + command
+    launch = launch_evidence(command, root, job_name, parent["namespaces"])
+    launch.update(kind=kind, helper_sha256=job["helper_sha256"], status="FAIL")
+    launch["child_result_available"] = result_path.exists()
+    if launch["parent_namespace_unchanged"] is not True:
+        raise StageError("controller-namespace-changed", launch)
+    if launch["timed_out"]:
+        launch["failure_code"] = "worker-timeout"
+        raise StageError("guarded-worker-timeout", launch)
+    if launch["launcher_started"] and not launch["termination_confirmed"]:
+        launch["failure_code"] = "worker-termination-not-confirmed"
+        raise StageError("guarded-worker-termination-not-confirmed", launch)
+    if not launch["launcher_started"]:
+        launch["failure_code"] = "worker-launch-failed"
+        raise StageError("guarded-worker-launch-failed", launch)
     if not result_path.exists():
-        raise StageError("guarded-worker-did-not-produce-result", {
-            "kind": kind, "helper_sha256": job["helper_sha256"], "status": "FAIL",
-            "failure_code": "worker-result-unavailable", "exit_code": result.returncode,
-            "guard_evidence": "NOT AVAILABLE",
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "parent_namespace_unchanged": True,
-        })
-    outcome = read_json(result_path)
-    if outcome.get("kind") != kind or outcome.get("helper_sha256") != job["helper_sha256"]:
-        raise PolicyError("worker-evidence-identity-mismatch")
-    outcome["exit_code"] = result.returncode
-    outcome["duration_seconds"] = round(time.monotonic() - started, 3)
-    outcome["parent_namespace_unchanged"] = True
-    if result.returncode or outcome.get("status") != "PASS":
+        launch.update(failure_code="worker-result-unavailable", guard_evidence="NOT AVAILABLE")
+        raise StageError("guarded-worker-did-not-produce-result", launch)
+    outcome = admit_worker_result(result_path, kind, job["helper_sha256"], launch)
+    outcome.update({name: value for name, value in launch.items()
+                    if name not in {"kind", "helper_sha256", "status"}})
+    outcome["child_result_available"] = True
+    if outcome["exit_code"] or outcome.get("status") != "PASS":
         raise StageError("guarded-" + kind + "-failed", outcome)
+    return outcome
+
+
+def admit_worker_result(result_path, kind, helper_sha, launch):
+    try:
+        outcome = read_json(result_path)
+        if not isinstance(outcome, dict) or outcome.get("kind") != kind or outcome.get("helper_sha256") != helper_sha:
+            raise PolicyError("worker-evidence-identity-mismatch")
+    except BaseException as error:
+        launch["failure_code"] = "worker-result-invalid"
+        launch["result_failure"] = public_failure(error)
+        raise StageError("guarded-worker-result-invalid", launch) from None
     return outcome
 
 
@@ -1068,6 +1222,7 @@ def worker(args):
         outcome["role"] = job["role"]
     code = 1
     try:
+        validate_grant(os.environ, job["mode"], job["sha"], job["base"])
         outcome["identity"] = identity()
         if job.get("offline") is True:
             outcome["namespace"] = namespace_proof(job["parent"])
@@ -1076,7 +1231,6 @@ def worker(args):
         if job["kind"] == "preflight":
             outcome["negative_probes"] = negative_probes()
         else:
-            validate_grant(os.environ, job["mode"], job["sha"], job["base"])
             profile = job["profile"]
             if profile not in PROFILES:
                 raise PolicyError("unknown-profile")
@@ -1142,7 +1296,7 @@ def worker(args):
     except BaseException as error:
         if isinstance(error, PipOperationError):
             outcome["pip_operation"] = error.operation
-        outcome["failure_code"] = str(error) if isinstance(error, PolicyError) else "worker-" + type(error).__name__
+        outcome["failure_code"] = public_failure(error)["failure_code"]
     outcome["guard"] = GUARD.evidence()
     write_new(root, result_path, json_bytes(outcome))
     return code
@@ -1183,8 +1337,14 @@ def sanitized(value):
             raise PolicyError("private-path-or-token-in-evidence")
 
 
-def finalize_output(output, report, locks=None):
-    if report["status"] == "PASS":
+def checkpoint_report(output, report):
+    """Durable sanitized failure state lives outside the soon-to-be-deleted scratch."""
+    sanitized(report)
+    write_new(output, output / "report.json", json_bytes(report))
+
+
+def finalize_output(output, report, locks=None, checkpointed=False):
+    if report["status"] == "PASS" and report["mode"] != "diagnostic":
         if locks is None or set(locks) != set(PROFILES):
             raise PolicyError("successful-bundle-has-incomplete-locks")
         for profile in PROFILES:
@@ -1192,7 +1352,16 @@ def finalize_output(output, report, locks=None):
     elif locks is not None:
         raise PolicyError("failed-bundle-cannot-contain-locks")
     sanitized(report)
-    write_new(output, output / "report.json", json_bytes(report))
+    if checkpointed:
+        previous = read_json(output / "report.json")
+        if any(previous.get(key) != report.get(key) for key in ("source_sha", "base_sha", "mode")):
+            raise PolicyError("checkpoint-source-identity-mismatch")
+        next_report = output / "report-next.json"
+        write_new(output, next_report, json_bytes(report))
+        regular(output / "report.json")
+        os.replace(next_report, output / "report.json")
+    else:
+        write_new(output, output / "report.json", json_bytes(report))
     if locks is not None:
         for profile in PROFILES:
             write_new(output, output / LOCK_NAMES[profile], locks[profile])
@@ -1204,7 +1373,7 @@ def audit_output(args):
     flags()
     output = real_components(Path(args.output).absolute(), directory=True)
     expected_names = {"report.json", "manifest.json"}
-    if args.success == "true":
+    if args.success == "true" and args.mode != "diagnostic":
         expected_names.update(LOCK_NAMES.values())
     if not output.is_dir() or {path.name for path in output.iterdir()} != expected_names:
         raise PolicyError("artifact-bundle-is-not-closed")
@@ -1222,7 +1391,9 @@ def audit_output(args):
             or report.get("source_sha") != args.expected_sha or report.get("base_sha") != args.expected_base
             or report.get("mode") != args.mode or report.get("schema_version") != 1):
         raise PolicyError("artifact-report-identity-mismatch")
-    if args.success == "true":
+    if args.mode == "diagnostic":
+        validate_diagnostic_report(report)
+    elif args.success == "true":
         profiles = {}
         for profile in PROFILES:
             profiles[profile] = parse_lock((output / LOCK_NAMES[profile]).read_text(encoding="utf-8"))
@@ -1394,6 +1565,293 @@ def validate_success_evidence(report, profiles):
         raise PolicyError("artifact-six-fresh-bootstrap-evidence-missing")
 
 
+def validate_launch_diagnostic(value):
+    required = {"launcher_started", "child_result_available", "exit_code", "signal", "timed_out",
+                "termination_confirmed", "parent_namespace_unchanged", "duration_seconds", "stdout", "stderr"}
+    if not isinstance(value, dict) or not required <= set(value):
+        raise PolicyError("diagnostic-launch-fields-missing")
+    for key in ("launcher_started", "child_result_available", "timed_out", "termination_confirmed"):
+        if type(value[key]) is not bool:
+            raise PolicyError("diagnostic-launch-boolean-invalid")
+    if value["parent_namespace_unchanged"] not in {True, False, "NOT ESTABLISHED"}:
+        raise PolicyError("diagnostic-parent-namespace-state-invalid")
+    for key in ("exit_code", "signal"):
+        if value[key] is not None and type(value[key]) is not int:
+            raise PolicyError("diagnostic-child-exit-invalid")
+    if value["signal"] is not None and (value["signal"] <= 0 or value["exit_code"] != -value["signal"]):
+        raise PolicyError("diagnostic-child-signal-invalid")
+    if (type(value["duration_seconds"]) not in {int, float} or not math.isfinite(value["duration_seconds"])
+            or not 0 <= value["duration_seconds"] <= 1800):
+        raise PolicyError("diagnostic-duration-invalid")
+    for key in ("stdout", "stderr"):
+        stream = value[key]
+        if (not isinstance(stream, dict) or set(stream) != {"size_bytes", "sha256", "classification", "safe_summary"}
+                or type(stream["size_bytes"]) is not int or stream["size_bytes"] < 0
+                or not isinstance(stream["sha256"], str) or not HEX.fullmatch(stream["sha256"])
+                or stream.get("classification") not in STREAM_SUMMARIES
+                or stream.get("safe_summary") != STREAM_SUMMARIES[stream["classification"]]):
+            raise PolicyError("diagnostic-stream-fields-invalid")
+
+
+def public_stage_outcome(outcome):
+    validate_launch_diagnostic(outcome)
+    fields = {"launcher_started", "child_result_available", "exit_code", "signal", "timed_out", "termination_confirmed",
+              "parent_namespace_unchanged", "duration_seconds", "stdout", "stderr", "launch_errno", "launch_failure_code"}
+    result = {key: copy.deepcopy(outcome[key]) for key in fields if key in outcome}
+    if outcome.get("kind") in {"rootless-primitive", "preflight", "bootstrap", "resolve", "install", "verify-setup", "check"}:
+        result["kind"] = outcome["kind"]
+    if isinstance(outcome.get("helper_sha256"), str) and HEX.fullmatch(outcome["helper_sha256"]):
+        result["helper_sha256"] = outcome["helper_sha256"]
+    result["status"] = "FAIL"
+    code = outcome.get("failure_code", "unclassified-error")
+    result["failure_code"] = code if isinstance(code, str) and known_policy_code(code) else "unclassified-error"
+    sanitized(result)
+    return result
+
+
+def validate_diagnostic_report(report):
+    allowed = {"schema_version", "status", "mode", "phase", "source_sha", "base_sha", "helper_sha256",
+               "identity", "source_files_sha256", "probes", "failure_code", "original_failure",
+               "cleanup_failure", "owned_scratch_cleanup", "checkpoint_state", "checkpoint_failure",
+               "duration_seconds", "controller_guard", "isolation_mode", "policy_attribution",
+               "package_setup", "linux_application_runtime", "production"}
+    if set(report) - allowed or report.get("mode") != "diagnostic" or report.get("phase") != "DIAGNOSTIC":
+        raise PolicyError("diagnostic-report-fields-invalid")
+    if (report.get("schema_version") != 1 or report.get("status") not in {"PASS", "FAIL"}
+            or not SHA.fullmatch(report.get("source_sha", "")) or not SHA.fullmatch(report.get("base_sha", ""))
+            or not HEX.fullmatch(report.get("helper_sha256", ""))
+            or report.get("isolation_mode") != "rootless_user_net"
+            or report.get("policy_attribution") != "NOT ESTABLISHED"
+            or report.get("package_setup") != "NOT EXECUTED"
+            or any(report.get(key) != "NOT VERIFIED" for key in ("linux_application_runtime", "production"))):
+        raise PolicyError("diagnostic-report-identity-invalid")
+    if (report["helper_sha256"] != digest(Path(__file__).absolute())
+            or report.get("checkpoint_state") != "BEFORE OWNED SCRATCH CLEANUP"
+            or type(report.get("duration_seconds")) not in {int, float}
+            or not math.isfinite(report["duration_seconds"]) or not 0 <= report["duration_seconds"] <= 1800):
+        raise PolicyError("diagnostic-checkpoint-or-helper-binding-invalid")
+    if "failure_code" in report and not known_policy_code(report["failure_code"]):
+        raise PolicyError("diagnostic-original-failure-code-invalid")
+    guard = report.get("controller_guard")
+    if (not isinstance(guard, dict) or set(guard) != {"registered_before_third_party", "pid", "expected_denials", "unexpected_denials"}
+            or guard.get("registered_before_third_party") is not True or type(guard.get("pid")) is not int or guard["pid"] <= 0
+            or any(not isinstance(guard.get(key), dict) or any(type(count) is not int or count < 0 for count in guard[key].values())
+                   for key in ("expected_denials", "unexpected_denials"))):
+        raise PolicyError("diagnostic-controller-guard-fields-invalid")
+    for key in ("original_failure", "cleanup_failure", "checkpoint_failure"):
+        if key in report:
+            failure = report[key]
+            if (not isinstance(failure, dict) or set(failure) != {"failure_code", "exception_type"}
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,119}", failure.get("failure_code", ""))
+                    or failure.get("exception_type") not in PUBLIC_EXCEPTION_TYPES
+                    or not known_policy_code(failure["failure_code"])):
+                raise PolicyError("diagnostic-failure-fields-invalid")
+    identity_keys = {"os", "os_version", "architecture", "python", "implementation", "gil_enabled", "glibc",
+                     "python_build", "soabi", "py_gil_disabled", "runner_image_os", "runner_image_version",
+                     "python_executable_name", "python_executable_sha256", "helper_sha256", "provisioning_boundary"}
+    if "identity" in report:
+        if not isinstance(report["identity"], dict) or set(report["identity"]) != identity_keys:
+            raise PolicyError("diagnostic-identity-fields-invalid")
+        validate_native_identity_evidence(report["identity"], report["helper_sha256"])
+    if "source_files_sha256" in report:
+        sources = report["source_files_sha256"]
+        source_names = {".github/lnx02/verify_env.py"}
+        source_names.update("requirements/" + profile + ".in" for profile in PROFILES)
+        source_names.update("requirements/windows-cp314-" + profile + ".lock" for profile in PROFILES)
+        if (not isinstance(sources, dict) or set(sources) != source_names
+                or any(not isinstance(value, str) or not HEX.fullmatch(value) for value in sources.values())
+                or sources[".github/lnx02/verify_env.py"] != report["helper_sha256"]):
+            raise PolicyError("diagnostic-source-manifest-invalid")
+    if report.get("owned_scratch_cleanup") not in {"PASS", "NOT CREATED", "FAIL_PRESERVED"}:
+        raise PolicyError("diagnostic-cleanup-state-invalid")
+    probes = report.get("probes")
+    if not isinstance(probes, list) or len(probes) > 2:
+        raise PolicyError("diagnostic-probe-count-invalid")
+    allowed_probe = {"kind", "status", "helper_sha256", "failure_code", "guard_evidence", "identity", "namespace", "guard",
+                     "negative_probes", "launcher_started", "child_result_available", "exit_code", "signal", "timed_out",
+                     "termination_confirmed", "parent_namespace_unchanged", "duration_seconds", "stdout", "stderr",
+                     "launch_errno", "launch_failure_code", "argv_template", "system_binary_sha256", "payload_binary_sha256", "result_failure"}
+    for index, probe in enumerate(probes):
+        if (not isinstance(probe, dict) or set(probe) - allowed_probe
+                or probe.get("kind") != ("rootless-primitive" if index == 0 else "preflight")
+                or probe.get("status") not in {"PASS", "FAIL"}
+                or probe.get("helper_sha256") != report["helper_sha256"]):
+            raise PolicyError("diagnostic-probe-fields-invalid")
+        validate_launch_diagnostic(probe)
+        if "failure_code" in probe and not known_policy_code(probe["failure_code"]):
+            raise PolicyError("diagnostic-probe-failure-code-invalid")
+        if "identity" in probe:
+            if not isinstance(probe["identity"], dict) or set(probe["identity"]) != identity_keys:
+                raise PolicyError("diagnostic-identity-fields-invalid")
+            validate_native_identity_evidence(probe["identity"], report["helper_sha256"])
+        if "namespace" in probe:
+            namespace = probe["namespace"]
+            namespace_keys = {"uid_preserved", "gid_preserved", "cap_eff", "parent_ids", "child_ids",
+                              "parent_namespace_inodes", "child_namespace_inodes", "distinct_user_namespace",
+                              "distinct_network_namespace", "interfaces", "address_count", "route_count",
+                              "ipv6_null_route_count", "kernel_probe_errno", "kernel_probe", "kernel_probe_reached_os"}
+            if (not isinstance(namespace, dict) or set(namespace) - namespace_keys
+                    or any(type(value) is not int for key in ("parent_ids", "child_ids") for value in namespace.get(key, []))
+                    or any(not isinstance(namespace.get(key), dict) or set(namespace[key]) != {"user", "net"}
+                           or any(type(value) is not int for value in namespace[key].values())
+                           for key in ("parent_namespace_inodes", "child_namespace_inodes"))
+                    or namespace.get("interfaces") != [{"name": "lo", "up": False}]
+                    or ("kernel_probe" in namespace and namespace["kernel_probe"] != "192.0.2.1:9")):
+                raise PolicyError("diagnostic-namespace-fields-invalid")
+            if (any(type(namespace.get(key)) is not bool for key in ("uid_preserved", "gid_preserved", "distinct_user_namespace", "distinct_network_namespace", "kernel_probe_reached_os"))
+                    or any(type(namespace.get(key)) is not int for key in ("cap_eff", "address_count", "route_count", "kernel_probe_errno"))
+                    or ("ipv6_null_route_count" in namespace and type(namespace["ipv6_null_route_count"]) is not int)):
+                raise PolicyError("diagnostic-namespace-field-types-invalid")
+        if "negative_probes" in probe:
+            negative = probe["negative_probes"]
+            if (not isinstance(negative, dict) or set(negative) != {"pid", "dns_denied_before_resolver", "child_denied_before_launch", "requests_fixture"}
+                    or type(negative["pid"]) is not int
+                    or any(type(negative[key]) is not bool for key in ("dns_denied_before_resolver", "child_denied_before_launch", "requests_fixture"))):
+                raise PolicyError("diagnostic-negative-probe-fields-invalid")
+        if index == 0:
+            if (probe.get("argv_template") != ["unshare", "--user", "--map-current-user", "--net", "--", "true"]
+                    or not HEX.fullmatch(probe.get("system_binary_sha256", ""))
+                    or not HEX.fullmatch(probe.get("payload_binary_sha256", ""))):
+                raise PolicyError("diagnostic-primitive-command-invalid")
+        if probe["status"] == "PASS" and (probe["exit_code"] != 0 or not probe["launcher_started"]
+                                         or probe["timed_out"] or not probe["termination_confirmed"]
+                                         or probe["parent_namespace_unchanged"] is not True):
+            raise PolicyError("diagnostic-probe-pass-inconsistent")
+    if report["status"] == "PASS":
+        if (len(probes) != 2 or any(probe["status"] != "PASS" for probe in probes)
+                or not probes[1]["child_result_available"] or report.get("owned_scratch_cleanup") != "PASS"
+                or any(key in report for key in ("failure_code", "original_failure", "cleanup_failure", "checkpoint_failure"))):
+            raise PolicyError("diagnostic-success-evidence-incomplete")
+        if "source_files_sha256" not in report:
+            raise PolicyError("diagnostic-source-manifest-missing")
+        for guard in (report.get("controller_guard"), probes[1].get("guard")):
+            if (not isinstance(guard, dict) or set(guard) != {"registered_before_third_party", "pid", "expected_denials", "unexpected_denials"}
+                    or guard.get("registered_before_third_party") is not True or type(guard.get("pid")) is not int
+                    or guard["pid"] <= 0 or guard.get("unexpected_denials") != {}):
+                raise PolicyError("diagnostic-guard-proof-invalid")
+        negative = probes[1].get("negative_probes", {})
+        if (negative.get("pid") != probes[1]["guard"]["pid"]
+                or negative.get("dns_denied_before_resolver") is not True
+                or negative.get("child_denied_before_launch") is not True or negative.get("requests_fixture") is not False
+                or probes[1]["guard"].get("expected_denials") != {"socket.getaddrinfo": 1, "subprocess.Popen": 1}):
+            raise PolicyError("diagnostic-audit-denial-proof-invalid")
+        validate_native_identity_evidence(report.get("identity"), report["helper_sha256"])
+        validate_native_identity_evidence(probes[1].get("identity"), report["helper_sha256"],
+                                          report["identity"]["python_executable_sha256"])
+        namespace = probes[1].get("namespace", {})
+        if (namespace.get("distinct_user_namespace") is not True or namespace.get("distinct_network_namespace") is not True
+                or namespace.get("uid_preserved") is not True or namespace.get("gid_preserved") is not True
+                or namespace.get("cap_eff") != 0 or namespace.get("interfaces") != [{"name": "lo", "up": False}]
+                or namespace.get("address_count") != 0 or namespace.get("route_count") != 0
+                or namespace.get("kernel_probe_errno") != errno.ENETUNREACH
+                or namespace.get("kernel_probe_reached_os") is not True):
+            raise PolicyError("diagnostic-native-isolation-proof-invalid")
+        if (len(namespace.get("parent_ids", [])) != 3 or namespace["parent_ids"] != namespace.get("child_ids")
+                or any(namespace["parent_namespace_inodes"][key] == namespace["child_namespace_inodes"][key] for key in ("user", "net"))):
+            raise PolicyError("diagnostic-namespace-identities-invalid")
+    elif "original_failure" not in report and "cleanup_failure" not in report and "checkpoint_failure" not in report:
+        raise PolicyError("diagnostic-failure-cause-missing")
+    sanitized(report)
+
+
+def trusted_system_binary(name):
+    if name not in {"/usr/bin/unshare", "/bin/true"}:
+        raise PolicyError("unapproved-diagnostic-system-binary")
+    path = Path(name).resolve()
+    info = regular(path)
+    if info.st_uid != 0 or info.st_mode & 0o022 or not os.access(path, os.X_OK):
+        raise PolicyError("untrusted-diagnostic-system-binary")
+    return digest(path)
+
+
+def finish_with_cleanup(output, report, root, nonce, locks=None):
+    report["owned_scratch_cleanup"] = "PENDING"
+    report["checkpoint_state"] = "BEFORE OWNED SCRATCH CLEANUP"
+    checkpointed = False
+    try:
+        checkpoint_report(output, report)
+        checkpointed = True
+    except BaseException as error:
+        report["status"] = "FAIL"
+        report["checkpoint_failure"] = public_failure(error)
+    unfinished = any(stage.get("launcher_started") and not stage.get("termination_confirmed", True)
+                     for stage in report.get("probes", []) + report.get("stages", []))
+    if root is not None and not checkpointed:
+        report["status"] = "FAIL"
+        report["owned_scratch_cleanup"] = "FAIL_PRESERVED"
+    elif root is not None and unfinished:
+        report["status"] = "FAIL"
+        report["cleanup_failure"] = public_failure(PolicyError("child-termination-not-confirmed"))
+        report["owned_scratch_cleanup"] = "FAIL_PRESERVED"
+    elif root is not None:
+        try:
+            cleanup(root, nonce)
+            report["owned_scratch_cleanup"] = "PASS"
+        except BaseException as error:
+            report["status"] = "FAIL"
+            report["cleanup_failure"] = public_failure(error)
+            report["owned_scratch_cleanup"] = "FAIL_PRESERVED"
+    else:
+        report["owned_scratch_cleanup"] = "NOT CREATED"
+    report["controller_guard"] = GUARD.evidence()
+    if report["mode"] == "diagnostic":
+        validate_diagnostic_report(report)
+    finalize_output(output, report, locks if report["status"] == "PASS" else None, checkpointed)
+
+
+def diagnose(args):
+    # Same exact-source/actor/runner grant; no package network operation exists here.
+    validate_grant(os.environ, "diagnostic", args.expected_sha, args.expected_base)
+    output = prepare_output(args.output)
+    report = {"schema_version": 1, "mode": "diagnostic", "phase": "DIAGNOSTIC", "status": "FAIL",
+              "source_sha": args.expected_sha, "base_sha": args.expected_base,
+              "helper_sha256": digest(Path(__file__).absolute()), "probes": [],
+              "isolation_mode": "rootless_user_net", "policy_attribution": "NOT ESTABLISHED",
+              "package_setup": "NOT EXECUTED", "linux_application_runtime": "NOT VERIFIED", "production": "NOT VERIFIED"}
+    root = nonce = None
+    started = time.monotonic()
+    try:
+        repo = real_components(Path(args.repo_root).absolute(), directory=True)
+        report["identity"] = identity()
+        if sys.prefix != sys.base_prefix:
+            raise PolicyError("controller-must-use-base-interpreter")
+        source_identity(repo, args.expected_sha, args.expected_base)
+        report["source_files_sha256"] = source_manifest(repo, "generate")
+        root, nonce = new_scratch(Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).absolute())
+        unshare_sha = trusted_system_binary("/usr/bin/unshare")
+        true_sha = trusted_system_binary("/bin/true")
+        primitive = launch_evidence(["/usr/bin/unshare", "--user", "--map-current-user", "--net", "--", "/bin/true"],
+                                    root, "0-primitive", network_ids(), timeout=15)
+        primitive.update(kind="rootless-primitive", helper_sha256=report["helper_sha256"], status="FAIL",
+                         argv_template=["unshare", "--user", "--map-current-user", "--net", "--", "true"],
+                         system_binary_sha256=unshare_sha, payload_binary_sha256=true_sha)
+        report["probes"].append(primitive)
+        if (not primitive["launcher_started"] or primitive["exit_code"] != 0 or primitive["timed_out"]
+                or primitive["parent_namespace_unchanged"] is not True or not primitive["termination_confirmed"]):
+            primitive["failure_code"] = "rootless-primitive-failed"
+            raise StageError("rootless-primitive-failed", primitive)
+        primitive["status"] = "PASS"
+        try:
+            child = worker_launch(root, nonce, sys.executable, "preflight",
+                                  {"mode": "diagnostic", "sha": args.expected_sha, "base": args.expected_base}, 1)
+        except StageError as error:
+            report["probes"].append(error.outcome)
+            raise
+        report["probes"].append(child)
+        source_identity(repo, args.expected_sha, args.expected_base)
+        if source_manifest(repo, "generate") != report["source_files_sha256"]:
+            raise PolicyError("source-input-bytes-changed")
+        if GUARD.unexpected:
+            raise PolicyError("controller-caught-unexpected-audit-denial")
+        report["status"] = "PASS"
+    except BaseException as error:
+        report["original_failure"] = public_failure(error)
+        report["failure_code"] = report["original_failure"]["failure_code"]
+    report["duration_seconds"] = round(time.monotonic() - started, 3)
+    finish_with_cleanup(output, report, root, nonce)
+    return report, 0 if report["status"] == "PASS" else 1
+
+
 def pipeline(args):
     # Repeat grants before directories, venvs, package metadata or downloads.
     validate_grant(os.environ, args.mode, args.expected_sha, args.expected_base)
@@ -1552,19 +2010,11 @@ def pipeline(args):
             raise PolicyError("controller-caught-unexpected-audit-denial")
         report["status"] = "PASS"
     except BaseException as error:
-        report["failure_code"] = str(error) if isinstance(error, PolicyError) else "controller-" + type(error).__name__
+        report["original_failure"] = public_failure(error)
+        report["failure_code"] = report["original_failure"]["failure_code"]
     finally:
-        if root is not None:
-            try:
-                cleanup(root, nonce)
-                report["owned_scratch_cleanup"] = "PASS"
-            except BaseException as error:
-                report["status"] = "FAIL"
-                report["cleanup_failure_code"] = str(error) if isinstance(error, PolicyError) else type(error).__name__
-                report["owned_scratch_cleanup"] = "FAIL_PRESERVED"
         report["duration_seconds"] = round(time.monotonic() - started, 3)
-        report["controller_guard"] = GUARD.evidence()
-        finalize_output(output, report, locks if report["status"] == "PASS" else None)
+        finish_with_cleanup(output, report, root, nonce, locks)
     return report, 0 if report["status"] == "PASS" else 1
 
 
@@ -1573,12 +2023,184 @@ def standalone_identity(namespace_required=False):
     value["status"] = "PASS"
     value["guard"] = GUARD.evidence()
     if namespace_required:
-        root, nonce = new_scratch(Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).absolute())
-        try:
-            value["namespace_preflight"] = worker_launch(root, nonce, sys.executable, "preflight", {}, 1)
-        finally:
-            cleanup(root, nonce)
+        raise PolicyError("namespace-diagnostics-require-granted-diagnose-command")
     return value
+
+
+def diagnostic_fixture(args):
+    """Internal fixed subprocess fixtures; no third-party imports, network or children."""
+    flags()
+    path = real_components(Path(args.job).absolute())
+    if digest(path) != args.job_sha256:
+        raise PolicyError("worker-job-digest-mismatch")
+    job = read_json(path)
+    root = owned(Path(job["root"]), job["nonce"])
+    contained(root, path)
+    allowed_keys = {"format", "root", "nonce", "case"}
+    if job.get("case") in {"invalid-result", "identity-mismatch"}:
+        allowed_keys.add("result")
+    if set(job) != allowed_keys or job["format"] != "lnx02-diagnostic-fixture-v1":
+        raise PolicyError("invalid-diagnostic-fixture")
+    if job["case"] == "missing-result":
+        return 17
+    if job["case"] == "timeout":
+        time.sleep(3)
+        return 17
+    if job["case"] == "unknown-stderr":
+        sys.stderr.write("Unrecognized synthetic stderr\n")
+        return 19
+    if job["case"] == "private-stderr":
+        sys.stderr.write("Bearer LNX02_SYNTHETIC_TOKEN /home/fixture/private C:\\Users\\fixture\\private\n")
+        return 23
+    if job["case"] in {"invalid-result", "identity-mismatch"}:
+        result = contained(root, Path(job["result"]))
+        payload = b"invalid JSON\n" if job["case"] == "invalid-result" else json_bytes({"kind": "preflight", "helper_sha256": "0" * 64})
+        write_new(root, result, payload)
+        return 7
+    raise PolicyError("invalid-diagnostic-fixture")
+
+
+def diagnostic_negative_tests(root, nonce, expect):
+    helper = str(Path(__file__).absolute())
+    command = [sys.executable, "-I", "-S", "-B", helper]
+    outcomes = {}
+    for index, case in enumerate(("missing-result", "timeout", "unknown-stderr", "private-stderr")):
+        path = root / "jobs" / ("fixture-" + case + ".json")
+        write_new(root, path, json_bytes({"format": "lnx02-diagnostic-fixture-v1", "root": str(root),
+                                         "nonce": nonce, "case": case}))
+        outcomes[case] = launch_evidence(command + ["diagnostic-fixture", "--job", str(path), "--job-sha256", digest(path)],
+                                        root, "fixture-" + case, timeout=0.5 if case == "timeout" else 10)
+        validate_launch_diagnostic(outcomes[case])
+    missing = outcomes["missing-result"]
+    expect(set(missing) == {"launcher_started", "child_result_available", "exit_code", "signal", "timed_out",
+                            "termination_confirmed", "parent_namespace_unchanged", "duration_seconds", "stdout", "stderr"})
+    expect(missing["exit_code"] == 17 and missing["launcher_started"] and missing["termination_confirmed"]
+           and missing["child_result_available"] is False and missing["timed_out"] is False and missing["signal"] is None)
+    expect(missing["stdout"] == stream_evidence(b"") and missing["stderr"] == stream_evidence(b""))
+    timeout = outcomes["timeout"]
+    expect(timeout["timed_out"] is True and timeout["termination_confirmed"] is True
+           and type(timeout["exit_code"]) is int and timeout["exit_code"] != 0)
+    if sys.platform != "win32":
+        expect(timeout["exit_code"] == -9 and timeout["signal"] == 9)
+    for case, exit_code, data in (("unknown-stderr", 19, b"Unrecognized synthetic stderr\n"),
+                                  ("private-stderr", 23, b"Bearer LNX02_SYNTHETIC_TOKEN /home/fixture/private C:\\Users\\fixture\\private\n")):
+        data = data.replace(b"\n", os.linesep.encode("ascii"))
+        expect(outcomes[case]["exit_code"] == exit_code)
+        expect(outcomes[case]["stderr"] == stream_evidence(data))
+        expect(outcomes[case]["stderr"]["classification"] == "unknown")
+    public = json_bytes(outcomes)
+    expect(all(payload not in public for payload in (b"LNX02_SYNTHETIC_TOKEN", b"/home/fixture", b"C:\\\\Users")))
+    path = root / "jobs" / "fixture-missing-result.json"
+    before_try = launch_evidence(command + ["worker", "--job", str(path), "--job-sha256", "0" * 64],
+                                 root, "fixture-before-worker-try", timeout=10)
+    validate_launch_diagnostic(before_try)
+    expected = (json.dumps({"status": "FAIL", "failure_code": "worker-job-digest-mismatch"},
+                           ensure_ascii=True, sort_keys=True) + os.linesep).encode("utf-8")
+    expect(before_try["exit_code"] == 1 and before_try["child_result_available"] is False
+           and before_try["stdout"]["classification"] == "python-before-result")
+    expect(before_try["stdout"]["sha256"] == hashlib.sha256(expected).hexdigest()
+           and before_try["stdout"]["size_bytes"] == len(expected))
+    for case, cause in (("invalid-result", "invalid-json"), ("identity-mismatch", "worker-evidence-identity-mismatch")):
+        result_path = root / "jobs" / ("fixture-" + case + "-result.json")
+        path = root / "jobs" / ("fixture-" + case + ".json")
+        write_new(root, path, json_bytes({"format": "lnx02-diagnostic-fixture-v1", "root": str(root), "nonce": nonce,
+                                         "case": case, "result": str(result_path)}))
+        launch = launch_evidence(command + ["diagnostic-fixture", "--job", str(path), "--job-sha256", digest(path)],
+                                 root, "fixture-" + case, timeout=10)
+        launch["child_result_available"] = result_path.exists()
+        try:
+            admit_worker_result(result_path, "preflight", digest(Path(helper)), launch)
+        except StageError as error:
+            expect(error.outcome["exit_code"] == 7 and error.outcome["child_result_available"] is True
+                   and error.outcome["failure_code"] == "worker-result-invalid"
+                   and error.outcome["result_failure"]["failure_code"] == cause)
+            validate_launch_diagnostic(error.outcome)
+        else:
+            raise PolicyError("invalid-result-was-admitted")
+    # Actual cleanup refusal, while retaining the first child's known failure.
+    refusal_root, refusal_nonce = new_scratch(root)
+    refusal_file = refusal_root / "fixtures" / "original.bin"
+    refusal_alias = refusal_root / "fixtures" / "alias.bin"
+    write_new(refusal_root, refusal_file, b"synthetic")
+    os.link(refusal_file, refusal_alias)
+    output = root / "diagnostic-cleanup-failure"
+    output.mkdir(mode=0o700)
+    report = {"schema_version": 1, "status": "FAIL", "mode": "generate", "source_sha": "a" * 40,
+              "base_sha": "b" * 40, "failure_code": "guarded-worker-did-not-produce-result",
+              "original_failure": public_failure(StageError("guarded-worker-did-not-produce-result", missing)),
+              "stages": [missing]}
+    try:
+        finish_with_cleanup(output, report, refusal_root, refusal_nonce)
+        exported = read_json(output / "report.json")
+        expect(exported["original_failure"] == {"failure_code": "guarded-worker-did-not-produce-result", "exception_type": "StageError"})
+        expect(exported["cleanup_failure"] == {"failure_code": "aliased-or-nonregular-file", "exception_type": "PolicyError"})
+        expect(exported["owned_scratch_cleanup"] == "FAIL_PRESERVED" and exported["stages"][0]["exit_code"] == 17)
+        expect(exported["checkpoint_state"] == "BEFORE OWNED SCRATCH CLEANUP")
+        expect(set(path.name for path in output.iterdir()) == {"report.json", "manifest.json"})
+    finally:
+        refusal_alias.unlink()
+        cleanup(refusal_root, refusal_nonce)
+    # A refused checkpoint must preserve both the scratch and original cause.
+    preserve_root, preserve_nonce = new_scratch(root)
+    blocked_output = root / "diagnostic-checkpoint-refusal"
+    blocked_output.mkdir(mode=0o700)
+    write_new(root, blocked_output / "report.json", b"owned collision fixture")
+    preserve_report = copy.deepcopy(report)
+    try:
+        try:
+            finish_with_cleanup(blocked_output, preserve_report, preserve_root, preserve_nonce)
+        except PolicyError:
+            pass
+        expect(preserve_root.exists() and preserve_report["owned_scratch_cleanup"] == "FAIL_PRESERVED"
+               and preserve_report["checkpoint_failure"]["failure_code"] == "write-destination-not-fresh"
+               and preserve_report["original_failure"] == report["original_failure"])
+    finally:
+        cleanup(preserve_root, preserve_nonce)
+    # Simulate a post-spawn kill denial: it must not be relabeled as no launch.
+    original_popen = subprocess.Popen
+
+    class KillDenied:
+        def communicate(self, timeout):
+            raise subprocess.TimeoutExpired(command, timeout)
+
+        def kill(self):
+            raise PermissionError(errno.EPERM, "synthetic kill denied")
+
+        def poll(self):
+            return None
+
+    subprocess.Popen = lambda *args, **kwargs: KillDenied()
+    try:
+        unconfirmed = launch_evidence(command, root, "fixture-kill-denied", timeout=0.1)
+        expect(unconfirmed["launcher_started"] is True and unconfirmed["timed_out"] is True
+               and unconfirmed["termination_confirmed"] is False and unconfirmed["exit_code"] is None)
+        expect(unconfirmed["launch_failure_code"] == "controller-child-io-failed")
+    finally:
+        subprocess.Popen = original_popen
+    class Interrupted(KillDenied):
+        def communicate(self, timeout):
+            raise KeyboardInterrupt()
+
+    subprocess.Popen = lambda *args, **kwargs: Interrupted()
+    interruption_root, interruption_nonce = new_scratch(root)
+    interruption_output = root / "diagnostic-interruption"
+    interruption_output.mkdir(mode=0o700)
+    try:
+        interrupted = launch_evidence(command, interruption_root, "fixture-interrupted", timeout=0.1)
+        expect(interrupted["launcher_started"] is True and interrupted["timed_out"] is False
+               and interrupted["termination_confirmed"] is False and interrupted["exit_code"] is None
+               and interrupted["launch_failure_code"] == "KeyboardInterrupt")
+        interruption_report = {"schema_version": 1, "status": "FAIL", "mode": "generate", "source_sha": "a" * 40,
+                               "base_sha": "b" * 40, "original_failure": public_failure(KeyboardInterrupt()), "stages": [interrupted]}
+        finish_with_cleanup(interruption_output, interruption_report, interruption_root, interruption_nonce)
+        expect(interruption_root.exists() and interruption_report["owned_scratch_cleanup"] == "FAIL_PRESERVED"
+               and interruption_report["original_failure"] == {"failure_code": "KeyboardInterrupt", "exception_type": "KeyboardInterrupt"}
+               and interruption_report["cleanup_failure"]["failure_code"] == "child-termination-not-confirmed")
+    finally:
+        subprocess.Popen = original_popen
+        cleanup(interruption_root, interruption_nonce)
+    secret_error = public_failure(PolicyError("LNX02_SYNTHETIC_TOKEN"))
+    expect(secret_error == {"failure_code": "unclassified-error", "exception_type": "PolicyError"})
 
 
 def self_test(repo):
@@ -1962,6 +2584,66 @@ def self_test(repo):
         (fail_output / "report.json").write_bytes(json_bytes({**fail_report, "failure_code": "tampered"}))
         reject("evidence-byte-tampering-refused", lambda: audit_output(arguments))
         reject("owned-root-nonce-required-for-cleanup", lambda: owned(root, "wrong"))
+        empty_stream = stream_evidence(b"")
+        launch_fixture = {"launcher_started": True, "child_result_available": False, "exit_code": 0,
+                          "signal": None, "timed_out": False, "termination_confirmed": True,
+                          "parent_namespace_unchanged": True, "duration_seconds": 0.01,
+                          "stdout": empty_stream, "stderr": empty_stream}
+        primitive_fixture = {**copy.deepcopy(launch_fixture), "kind": "rootless-primitive", "status": "PASS",
+                             "helper_sha256": helper_sha, "system_binary_sha256": "3" * 64, "payload_binary_sha256": "4" * 64,
+                             "argv_template": ["unshare", "--user", "--map-current-user", "--net", "--", "true"]}
+        worker_fixture = {**stage_fixture("preflight"), **copy.deepcopy(launch_fixture), "child_result_available": True}
+        diagnostic_fixture_report = {"schema_version": 1, "status": "PASS", "mode": "diagnostic", "phase": "DIAGNOSTIC",
+                                     "source_sha": sha, "base_sha": base, "helper_sha256": helper_sha,
+                                     "identity": copy.deepcopy(identity_fixture), "source_files_sha256": source_manifest(repo, "generate"),
+                                     "probes": [primitive_fixture, worker_fixture], "owned_scratch_cleanup": "PASS",
+                                     "checkpoint_state": "BEFORE OWNED SCRATCH CLEANUP", "duration_seconds": 0.02,
+                                     "controller_guard": GUARD.evidence(), "isolation_mode": "rootless_user_net",
+                                     "policy_attribution": "NOT ESTABLISHED", "package_setup": "NOT EXECUTED",
+                                     "linux_application_runtime": "NOT VERIFIED", "production": "NOT VERIFIED"}
+        for status in ("PASS", "FAIL"):
+            variant = copy.deepcopy(diagnostic_fixture_report)
+            if status == "FAIL":
+                variant["status"] = "FAIL"
+                variant["probes"] = [variant["probes"][0]]
+                variant["probes"][0].update(status="FAIL", exit_code=1, failure_code="rootless-primitive-failed")
+                variant["probes"][0]["stderr"] = stream_evidence(b"unshare: unshare failed: Operation not permitted\n", True, 1)
+                variant["original_failure"] = public_failure(StageError("rootless-primitive-failed", variant["probes"][0]))
+                variant["failure_code"] = variant["original_failure"]["failure_code"]
+            output = root / ("diagnostic-closed-" + status.lower())
+            output.mkdir(mode=0o700)
+            finalize_output(output, variant)
+            diagnostic_args = argparse.Namespace(output=str(output), expected_sha=sha, expected_base=base,
+                                                  mode="diagnostic", success="true" if status == "PASS" else "false")
+            check("closed-diagnostic-" + status.lower() + "-two-file-bundle",
+                  lambda args=diagnostic_args: expect(audit_output(args)["artifact_count"] == 2))
+        for name, mutation in (
+                ("source-manifest-missing", lambda value: value.pop("source_files_sha256")),
+                ("controller-guard-missing", lambda value: value.pop("controller_guard")),
+                ("worker-guard-missing", lambda value: value["probes"][1].pop("guard")),
+                ("worker-denial-probes-missing", lambda value: value["probes"][1].pop("negative_probes")),
+                ("worker-probe-pid-mismatch", lambda value: value["probes"][1]["negative_probes"].update(pid=999)),
+                ("unexpected-worker-audit-denial", lambda value: value["probes"][1]["guard"]["unexpected_denials"].update({"socket.connect": 1})),
+                ("duration-nan", lambda value: value.update(duration_seconds=float("nan"))),
+                ("duration-infinity", lambda value: value["probes"][0].update(duration_seconds=float("inf"))),
+                ("raw-stderr-message", lambda value: value["probes"][0]["stderr"].update(message="Bearer synthetic")),
+                ("unknown-report-field", lambda value: value.update(raw_environment={})),
+                ("wrong-helper-digest", lambda value: value.update(helper_sha256="0" * 64))):
+            variant = copy.deepcopy(diagnostic_fixture_report)
+            mutation(variant)
+            reject("diagnostic-refuses-" + name, lambda value=variant: validate_diagnostic_report(value))
+        native_error = copy.deepcopy(diagnostic_fixture_report)
+        native_error["status"] = "FAIL"
+        native_error["probes"][1].update(status="FAIL", exit_code=1, failure_code="TypeError")
+        native_error["original_failure"] = public_failure(StageError("guarded-preflight-failed", native_error["probes"][1]))
+        native_error["failure_code"] = native_error["original_failure"]["failure_code"]
+        check("diagnostic-native-python-exception-remains-exportable", lambda: validate_diagnostic_report(native_error))
+        check("trusted-unshare-permission-classification", lambda: expect(
+            stream_evidence(b"unshare: unshare failed: Operation not permitted\n", True, 1)["classification"] == "unshare-permission-denial"))
+        check("untrusted-or-extended-stderr-is-unknown", lambda: expect(
+            stream_evidence(b"unshare: unshare failed: Operation not permitted\nBearer synthetic", True, 1)["classification"] == "unknown"
+            and stream_evidence(b"unshare: unshare failed: Operation not permitted\n", False, 1)["classification"] == "unknown"))
+        check("real-subprocess-diagnostic-negative-json-and-cleanup", lambda: diagnostic_negative_tests(root, nonce, expect))
     finally:
         cleanup(root, nonce)
     failed = [item for item in results if item["status"] == "FAIL"]
@@ -1984,6 +2666,11 @@ def main():
     target.add_argument("--namespace-required", action="store_true")
     tests = commands.add_parser("self-test")
     tests.add_argument("--repo-root", default=str(Path(__file__).absolute().parents[2]))
+    diagnostic = commands.add_parser("diagnose")
+    diagnostic.add_argument("--repo-root", required=True)
+    diagnostic.add_argument("--output", required=True)
+    diagnostic.add_argument("--expected-sha", required=True)
+    diagnostic.add_argument("--expected-base", required=True)
     run = commands.add_parser("run")
     run.add_argument("--mode", choices=("generate", "verify"), required=True)
     run.add_argument("--repo-root", required=True)
@@ -1997,14 +2684,21 @@ def main():
     audit.add_argument("--output", required=True)
     audit.add_argument("--expected-sha", required=True)
     audit.add_argument("--expected-base", required=True)
-    audit.add_argument("--mode", choices=("generate", "verify"), required=True)
+    audit.add_argument("--mode", choices=("diagnostic", "generate", "verify"), required=True)
     audit.add_argument("--success", choices=("true", "false"), required=True)
+    fixture = commands.add_parser("diagnostic-fixture", help=argparse.SUPPRESS)
+    fixture.add_argument("--job", required=True)
+    fixture.add_argument("--job-sha256", required=True)
     try:
         args = parser.parse_args()
         if args.command == "identity":
             result, code = standalone_identity(args.namespace_required), 0
         elif args.command == "self-test":
             result, code = self_test(real_components(Path(args.repo_root).absolute(), directory=True))
+        elif args.command == "diagnose":
+            report, code = diagnose(args)
+            result = {"status": report["status"], "mode": "diagnostic", "source_sha": report["source_sha"],
+                      "failure_code": report.get("failure_code"), "package_setup": "NOT EXECUTED"}
         elif args.command == "run":
             result, code = pipeline(args)
             result = {"status": result["status"], "source_sha": result["source_sha"],
@@ -2012,13 +2706,21 @@ def main():
                       "production": "NOT VERIFIED"}
         elif args.command == "worker":
             return worker(args)
+        elif args.command == "diagnostic-fixture":
+            return diagnostic_fixture(args)
         else:
             result, code = audit_output(args), 0
     except SystemExit as error:
         # argparse's normal --help exit is successful; retain its real code.
         return error.code if isinstance(error.code, int) else 1
     except BaseException as error:
-        result = {"status": "FAIL", "failure_code": str(error) if isinstance(error, PolicyError) else type(error).__name__}
+        result = {"status": "FAIL", "failure_code": public_failure(error)["failure_code"]}
+        if isinstance(error, StageError):
+            # No raw exception text. Retain validated fixed-schema launch evidence.
+            try:
+                result["stage_outcome"] = public_stage_outcome(error.outcome)
+            except BaseException:
+                result["stage_evidence"] = "NOT AVAILABLE"
         code = 1
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return code

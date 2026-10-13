@@ -32,6 +32,7 @@ jobs:
       MDS_LNX02_APPROVED_SHA: ${{ vars.MDS_LNX02_APPROVED_SHA }}
       MDS_LNX02_APPROVED_BASE: ${{ vars.MDS_LNX02_APPROVED_BASE }}
       MDS_LNX02_OPERATION: ${{ vars.MDS_LNX02_OPERATION }}
+      MDS_LNX02_ALLOW_SUPERVISED_NETNS: ${{ vars.MDS_LNX02_ALLOW_SUPERVISED_NETNS }}
       TASK_EVENT: ${{ github.event_name }}
       TASK_EVENT_SHA: ${{ github.sha }}
       TASK_EVENT_REF: ${{ github.ref }}
@@ -64,7 +65,7 @@ jobs:
           [[ "$MDS_LNX02_APPROVED_BASE" =~ ^[0-9a-f]{40}$ ]]
           test "$MDS_LNX02_APPROVED_SHA" = "$TASK_EVENT_SHA"
           case "$MDS_LNX02_OPERATION" in
-            generate|verify) ;;
+            diagnostic|generate|verify) ;;
             *) exit 1 ;;
           esac
           case "$TASK_EVENT" in
@@ -104,6 +105,15 @@ jobs:
             test "$(git rev-parse origin/main)" = "$MDS_LNX02_APPROVED_SHA"
           fi
 
+      - name: Create owned evidence staging before native preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          task_run_root="$(mktemp -d "$RUNNER_TEMP/lnx02-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.XXXXXXXX")"
+          printf 'TASK_RUN_ROOT=%s\nTASK_ARTIFACT_ROOT=%s\nTASK_ARTIFACT_MODE=diagnostic\n' \
+            "$task_run_root" "$task_run_root/prerequisite" >> "$GITHUB_ENV"
+
       # No installer is permitted. A pinned action alone does not pin its cold-cache pip upgrade.
       - name: Require ready cached ordinary GIL CPython 3.14.8
         shell: bash
@@ -113,18 +123,27 @@ jobs:
           test -d "$task_cache"
           test -f "$RUNNER_TOOL_CACHE/Python/3.14.8/x64.complete"
           test -x "$task_cache/bin/python3.14"
-          "$task_cache/bin/python3.14" -I -S -B -X utf8 \
-            .github/lnx02/verify_env.py identity
           printf 'TASK_CACHED_PYTHON=%s\n' "$task_cache/bin/python3.14" >> "$GITHUB_ENV"
 
-      - name: Require rootless native network isolation before SETUP
+      - name: Diagnose native network isolation before package SETUP
+        id: prerequisite
         shell: bash
         run: |
           set -euo pipefail
+          set +e
+          MDS_LNX02_OPERATION=diagnostic \
           "$TASK_CACHED_PYTHON" -I -S -B -X utf8 \
-            .github/lnx02/verify_env.py identity --namespace-required
+            .github/lnx02/verify_env.py diagnose \
+            --repo-root "$GITHUB_WORKSPACE" --output "$TASK_ARTIFACT_ROOT" \
+            --expected-sha "$MDS_LNX02_APPROVED_SHA" \
+            --expected-base "$MDS_LNX02_APPROVED_BASE"
+          task_exit=$?
+          set -e
+          printf 'exit_code=%s\n' "$task_exit" >> "$GITHUB_OUTPUT"
+          exit "$task_exit"
 
       - name: Select the already checked cached interpreter
+        if: ${{ success() && env.MDS_LNX02_OPERATION != 'diagnostic' }}
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: "3.14.8"
@@ -133,6 +152,7 @@ jobs:
           freethreaded: false
 
       - name: Recheck interpreter identity and local helper refusal tests
+        if: ${{ success() && env.MDS_LNX02_OPERATION != 'diagnostic' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -142,17 +162,16 @@ jobs:
 
       - name: SETUP then independently replay all three profiles OFFLINE
         id: profiles
+        if: ${{ success() && env.MDS_LNX02_OPERATION != 'diagnostic' }}
         shell: bash
         run: |
           set -euo pipefail
           test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MDS_LNX02_APPROVED_BASE"
           test "$(git rev-parse HEAD)" = "$MDS_LNX02_APPROVED_SHA"
           test -z "$(git status --porcelain)"
-          umask 077
-          task_run_root="$(mktemp -d "$RUNNER_TEMP/lnx02-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.XXXXXXXX")"
-          task_artifact_root="$task_run_root/artifact"
-          printf 'TASK_RUN_ROOT=%s\nTASK_ARTIFACT_ROOT=%s\n' \
-            "$task_run_root" "$task_artifact_root" >> "$GITHUB_ENV"
+          task_artifact_root="$TASK_RUN_ROOT/artifact"
+          printf 'TASK_ARTIFACT_ROOT=%s\nTASK_ARTIFACT_MODE=%s\n' \
+            "$task_artifact_root" "$MDS_LNX02_OPERATION" >> "$GITHUB_ENV"
           set +e
           "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py run \
             --mode "$MDS_LNX02_OPERATION" --repo-root "$GITHUB_WORKSPACE" \
@@ -168,19 +187,22 @@ jobs:
         if: ${{ always() && env.TASK_ARTIFACT_ROOT != '' }}
         env:
           TASK_PROFILE_EXIT: ${{ steps.profiles.outputs.exit_code }}
+          TASK_PREREQUISITE_EXIT: ${{ steps.prerequisite.outputs.exit_code }}
         shell: bash
         run: |
           set -euo pipefail
           task_success=false
-          if test "$TASK_PROFILE_EXIT" = 0; then task_success=true; fi
+          if test "$TASK_ARTIFACT_MODE" = diagnostic; then
+            if test "$TASK_PREREQUISITE_EXIT" = 0; then task_success=true; fi
+          elif test "$TASK_PROFILE_EXIT" = 0; then task_success=true; fi
           "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py audit-output \
             --output "$TASK_ARTIFACT_ROOT" --expected-sha "$MDS_LNX02_APPROVED_SHA" \
-            --expected-base "$MDS_LNX02_APPROVED_BASE" --mode "$MDS_LNX02_OPERATION" \
+            --expected-base "$MDS_LNX02_APPROVED_BASE" --mode "$TASK_ARTIFACT_MODE" \
             --success "$task_success"
           {
             echo 'paths<<LNX02_CLOSED_ARTIFACT_PATHS'
             printf '%s\n' "$TASK_ARTIFACT_ROOT/report.json" "$TASK_ARTIFACT_ROOT/manifest.json"
-            if test "$task_success" = true; then
+            if test "$task_success" = true && test "$TASK_ARTIFACT_MODE" != diagnostic; then
               printf '%s\n' "$TASK_ARTIFACT_ROOT/linux-cp314-runtime.lock" \
                 "$TASK_ARTIFACT_ROOT/linux-cp314-test.lock" "$TASK_ARTIFACT_ROOT/linux-cp314-dev.lock"
             fi
@@ -210,10 +232,19 @@ jobs:
           test ! -L "$TASK_RUN_ROOT"
           test "$(stat -c %u "$TASK_RUN_ROOT")" = "$(id -u)"
           test "$(stat -c %a "$TASK_RUN_ROOT")" = 700
-          for task_name in report.json manifest.json linux-cp314-runtime.lock \
-              linux-cp314-test.lock linux-cp314-dev.lock; do
-            if test -f "$TASK_ARTIFACT_ROOT/$task_name"; then
-              rm -- "$TASK_ARTIFACT_ROOT/$task_name"
-            fi
+          for task_bundle in prerequisite artifact; do
+            task_bundle_root="$TASK_RUN_ROOT/$task_bundle"
+            if test ! -d "$task_bundle_root"; then continue; fi
+            test ! -L "$task_bundle_root"
+            test "$(stat -c %u "$task_bundle_root")" = "$(id -u)"
+            for task_name in report.json manifest.json linux-cp314-runtime.lock \
+                linux-cp314-test.lock linux-cp314-dev.lock; do
+              if test -f "$task_bundle_root/$task_name"; then
+                test ! -L "$task_bundle_root/$task_name"
+                test "$(stat -c %h "$task_bundle_root/$task_name")" = 1
+                rm -- "$task_bundle_root/$task_name"
+              fi
+            done
+            rmdir -- "$task_bundle_root"
           done
-          rmdir -- "$TASK_ARTIFACT_ROOT" "$TASK_RUN_ROOT"
+          rmdir -- "$TASK_RUN_ROOT"

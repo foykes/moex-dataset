@@ -19,9 +19,13 @@ assigns one executor exactly six new paths:
 
 The other three paths are this document, `.github/lnx02/verify_env.py` and
 `.github/workflows/linux-environment.yml`. No shared-file custody is transferred.
-H0 contains the finished helper, workflow and documentation. It contains no
-invented locks. H0 to H1 may add only the three verified locks; changing the
-helper or workflow requires renewed independent review.
+H0 contains the helper, workflow and documentation, without invented locks.
+The bounded [owner-authorized correction session](https://github.com/foykes/moex-dataset/issues/92#issuecomment-6141269496)
+permits corrections to those three implementation paths before generation,
+with local checks and a separate read-only reviewer. Each candidate has a new
+SHA and run receipt. The final successful candidate is H0*. H0* to H1 may add
+only the three verified locks; changing implementation after generation
+requires a new H0*, generation and H1. External final review remains required.
 
 ## Authorization and activation
 
@@ -30,24 +34,29 @@ post-merge `workflow_dispatch`. A trigger is not a SETUP grant. Missing or inval
 authorization fails before checkout, Python setup or package traffic. A skipped,
 unavailable or failed job never establishes successful verification.
 
-Only the repository owner `foykes` sets these non-secret repository variables,
-after reviewing the complete exact commit and separately authorizing its push
-and network SETUP. The job has no permission to set them.
+Only the repository owner `foykes`, or an executor using the owner's existing
+credentials under explicit bounded authorization, sets these non-secret
+repository variables after checking the complete exact commit. The job has no
+permission to set them.
 
 | Repository variable | Exact permitted value |
 |---|---|
 | `MDS_LNX02_SETUP_APPROVED` | `true`; absent, empty or any other value refuses SETUP |
 | `MDS_LNX02_APPROVED_SHA` | Full lower-case 40-hex reviewed commit SHA |
 | `MDS_LNX02_APPROVED_BASE` | Full lower-case 40-hex freshly checked `main` SHA |
-| `MDS_LNX02_OPERATION` | `generate` or `verify` |
+| `MDS_LNX02_OPERATION` | `diagnostic`, `generate` or `verify` |
+| `MDS_LNX02_ALLOW_SUPERVISED_NETNS` | `false` by default; conditional hosted-only policy requires separate proof/review |
 
 Order for each new approval: set `MDS_LNX02_SETUP_APPROVED=false` first; set SHA,
-base and operation; check their readback; set the flag to `true` last; perform
-only the separately authorized triggering action. Revoke with `false` after
-that run. A stale grant cannot approve a new commit. The owner must revoke a
+base and operation; check their readback; keep the policy flag `false` unless
+the conditional policy has been implemented and independently reviewed; set
+SETUP to `true` last; perform only the authorized triggering action. Revoke
+both flags with `false` in finally and verify readback. A stale grant cannot
+approve a new commit. The owner must revoke a
 grant before changing any of its fields. Do not rerun an approved SHA without a
 new explicit run authorization; these variables are a revocable exact-SHA gate,
-not a cryptographic single-use ticket.
+not a cryptographic single-use ticket. An explicit owner session can authorize
+bounded new candidates; record its run/correction/time budget before each push.
 
 For a pre-merge push, the repository must be `foykes/moex-dataset`, the ref must
 be `refs/heads/codex/lnx-02`, and actor/triggering actor must both be `foykes`.
@@ -79,14 +88,28 @@ is evidence identity, not independent interpreter provenance verification.
 
 Cache miss stops the run. The action's cold-cache installer can upgrade pip
 without a fixed version; later installing fixed pip would not undo that earlier
-operation. No implicit download/build, WSL provisioning or privileged fallback
-is permitted. A cache miss is NOT VERIFIED, not a dependency-version change.
+operation. No implicit download/build or WSL provisioning is permitted. A
+cache miss is NOT VERIFIED, not a dependency-version change.
+If that interpreter is absent, the helper cannot produce/audit an artifact;
+retain the failed cache step and control-plane job receipt. Native namespace
+failures after interpreter admission retain the sanitized diagnostic bundle.
 
 Rootless user/network namespace creation is independently tested on each
-runner before package SETUP. Ubuntu 24.04 policy may deny it. The replay must
+runner before package SETUP. Diagnostic mode first executes the fixed trusted
+primitive `/usr/bin/unshare --user --map-current-user --net -- /bin/true`;
+only on success does it launch the target Python worker. It uses no pip,
+downloads or production imports. Ubuntu 24.04 policy may deny it. An exact
+`Operation not permitted` result proves primitive permission denial; attribution
+to AppArmor requires separate kernel audit evidence. The replay must
 prove a different network namespace, no external interfaces/routes and refusal
 of an external-address probe. No AppArmor, sysctl or privilege changes are
-allowed. `--no-index` alone is not evidence of network isolation.
+allowed. The owner's conditional supervised network namespace on disposable
+GitHub-hosted Ubuntu requires a proven rootless primitive denial, trusted
+system binaries and privilege drop before Python, all capability/group drops,
+NoNewPrivs and actual negative tests, exact-SHA opt-in and separate read-only
+review. It is not an automatic fallback. This initial diagnostic candidate
+implements only rootless execution; the policy flag cannot enable privileged
+execution. `--no-index` alone is not evidence of network isolation.
 Netlink must report zero addresses and routes with only loopback present and
 down. Proc cross-checks accept an empty IPv4 table or its exact header, and
 only exact IPv6 kernel null/unreachable sentinel rows; usable routes fail.
@@ -154,14 +177,21 @@ code can bypass events. They complement the independently proven namespace.
 
 ## Evidence, local review and H0 to H1
 
-The artifact output is closed: `report.json`, `manifest.json` and, on success,
+The artifact output is closed: `report.json`, `manifest.json` and, on profile success,
 the three `linux-cp314-*.lock` files. Only these sanitized outputs may be
 uploaded. Raw subprocess output, venvs, wheelhouse, credentials and private
 paths stay out of artifacts. Reports identify source/base/helper, interpreter,
 OS/architecture, actual wheels/digests, operation identifiers/exits, guarded processes,
 namespace evidence and check outcomes. Manifests bind the exported file bytes.
 Failure produces sanitized evidence and a nonzero exit; it does not export
-partially verified candidate locks. Cleanup removes only the helper's fresh
+partially verified candidate locks. Diagnostic success and failure export only
+two files. Staging exists before native preflight. A failure checkpoint is
+saved outside scratch before cleanup; original failure and cleanup failure
+remain distinct. Launcher startup, exit/signal/timeout, result availability,
+parent namespace comparison and bounded stream hashes/sizes are retained.
+Safe classifications use fixed literal summaries; unknown stderr stays unknown.
+Raw tracebacks, arbitrary snippets, secrets and private paths are not exported.
+Cleanup removes only the helper's fresh
 scratch root after revalidating ownership and links; the evidence is retained.
 
 Local H0 checks require no installation or online SETUP:
@@ -179,10 +209,10 @@ that gate as NOT VERIFIED and perform independent workflow structure checks.
 
 1. Independently review local H0's exact base, HEAD and full diff. No SETUP is
    needed to inspect code, authorization, self-tests or the fail-closed path.
-2. Obtain separate exact-H0 push/SETUP authorization; the owner sets grants in
-   the order above. H0's `generate` run must pass native prerequisites, all
-   profiles and independent replay before artifact transfer is authorized.
-3. After separate transfer authorization, validate run/H0 identity, GitHub
+2. Use the explicit bounded owner session or obtain separate exact-H0
+   push/SETUP authorization. Diagnostic runs may establish prerequisites;
+   H0* generation must pass all profiles and independent replay.
+3. Under explicit artifact-transfer authorization, validate run/H0* identity, GitHub
    artifact digest and closed manifest. Extract only the three expected lock
    files with bounded path/size/link checks; never execute artifact content.
 4. Add only those locks in the same branch to form H1 and one bounded PR.
