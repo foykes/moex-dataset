@@ -94,22 +94,63 @@ If that interpreter is absent, the helper cannot produce/audit an artifact;
 retain the failed cache step and control-plane job receipt. Native namespace
 failures after interpreter admission retain the sanitized diagnostic bundle.
 
-Rootless user/network namespace creation is independently tested on each
-runner before package SETUP. Diagnostic mode first executes the fixed trusted
-primitive `/usr/bin/unshare --user --map-current-user --net -- /bin/true`;
-only on success does it launch the target Python worker. It uses no pip,
-downloads or production imports. Ubuntu 24.04 policy may deny it. An exact
-`Operation not permitted` result proves primitive permission denial; attribution
-to AppArmor requires separate kernel audit evidence. The replay must
-prove a different network namespace, no external interfaces/routes and refusal
-of an external-address probe. No AppArmor, sysctl or privilege changes are
-allowed. The owner's conditional supervised network namespace on disposable
-GitHub-hosted Ubuntu requires a proven rootless primitive denial, trusted
-system binaries and privilege drop before Python, all capability/group drops,
-NoNewPrivs and actual negative tests, exact-SHA opt-in and separate read-only
-review. It is not an automatic fallback. This initial diagnostic candidate
-implements only rootless execution; the policy flag cannot enable privileged
-execution. `--no-index` alone is not evidence of network isolation.
+Rootless user/network namespace creation is independently tested on every
+`diagnose` and `run` invocation before package SETUP. The fixed trusted primitive
+is `/usr/bin/unshare --user --map-current-user --net -- /bin/true`. Diagnostic
+mode uses no pip, downloads or production imports. A successful primitive
+selects `rootless_user_net`, regardless of the alternative policy flag.
+
+The [first diagnostic run](https://github.com/foykes/moex-dataset/actions/runs/38453742408)
+at `b5ca46081ecc7e0ae46d311c4e242fbd21e45bcb` recorded primitive exit 1,
+66 stderr bytes and SHA-256
+`6b50086233b9e3c0f8f5ac5e8094da06d7a05f1c3be0b88baf49578943392a94`.
+Those bytes match the complete fixed literal
+`unshare: write failed /proc/self/uid_map: Operation not permitted` plus LF.
+Its original report classification remains `unknown`; the independent digest
+comparison establishes UID-map write permission denial. Attribution to AppArmor
+or another policy remains NOT ESTABLISHED.
+
+Only a fresh, correctly launched trusted primitive with a complete recognized
+permission-denial literal, confirmed termination and unchanged parent namespaces
+can select `supervised_net`. Missing worker results, arbitrary stderr, timeout
+and Python exceptions do not qualify. Selection additionally requires the
+normal exact-SHA/base grant, `MDS_LNX02_ALLOW_SUPERVISED_NETNS=true`, standard
+GitHub-hosted Ubuntu and separate read-only review. An absent or invalid policy
+flag refuses admission. The owner authorized this narrow alternative in the
+bounded correction session; it is not a general privilege fallback.
+
+The fixed system chain is:
+
+```text
+/usr/bin/sudo -n -- /usr/bin/unshare --net -- /usr/bin/setpriv
+  --reuid=<original nonzero UID> --regid=<original nonzero GID>
+  --clear-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all
+  --no-new-privs --pdeathsig=KILL -- /usr/bin/env -i <closed environment>
+  <approved Python> -I -S -B <reviewed helper> worker
+  --job <owned sealed job> --job-sha256 <digest>
+```
+
+Each system binary is an absolute, root-owned regular file with no group/other
+write access; its SHA-256 is recorded. No root shell, repository script or
+Python runs before `setpriv` drops to the original runner UID/GID. The worker
+requires all real/effective/saved/filesystem UID/GID values to match the
+original nonzero values, no supplementary groups, zero effective/permitted/
+inheritable/bounding/ambient capabilities and NoNewPrivs=1 before imports.
+Actual negative attempts to regain UID/GID/groups/capabilities or unset
+NoNewPrivs must fail and leave those properties unchanged. The same user
+namespace is recorded honestly as `distinct_user_namespace=false`; the network
+namespace must differ. No AppArmor, host sysctl, firewall, sudoers, services or
+parent network changes are permitted. No privileged local/WSL operation is used.
+
+Before workload admission the supervised worker arms a default kernel SIGALRM
+deadline, verifies inherited parent-death SIGKILL, and writes a sealed READY
+record. The controller binds a pidfd to the actual worker and checks PID/start
+identity, namespaces and job/helper digests before admitting package operations.
+Timeout/interruption uses bounded pidfd termination and proves worker death
+separately from sudo launcher exit. The kernel timer and parent-death signal
+are additional safeguards; neither turns launcher exit into worker-death proof.
+Unknown termination preserves scratch and fails. `--no-index` alone is not
+evidence of network isolation.
 Netlink must report zero addresses and routes with only loopback present and
 down. Proc cross-checks accept an empty IPv4 table or its exact header, and
 only exact IPv6 kernel null/unreachable sentinel rows; usable routes fail.

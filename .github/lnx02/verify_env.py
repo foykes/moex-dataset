@@ -2,7 +2,7 @@
 
 This is not an application launcher, a generic sandbox or a lock update service.
 All managed Python entries use -I -S -B and install the hook before third-party
-imports. Native code is contained by a new rootless network namespace as well.
+imports. Native code is contained by a new isolated network namespace as well.
 """
 
 import sys
@@ -96,6 +96,7 @@ GUARD.registered = True
 import argparse
 import ast
 import copy
+import ctypes
 import email.parser
 import errno
 import hashlib
@@ -108,6 +109,8 @@ from pathlib import Path
 import re
 import runpy
 import shutil
+import select
+import signal
 import socket
 import stat
 import struct
@@ -476,6 +479,8 @@ def validate_wheel(path, record):
 
 
 def validate_grant(env, mode, sha, base):
+    if env.get("MDS_LNX02_ALLOW_SUPERVISED_NETNS", "false") not in {"true", "false"}:
+        raise PolicyError("invalid-supervised-namespace-opt-in")
     if mode not in {"diagnostic", "generate", "verify"} or not SHA.fullmatch(sha) or not SHA.fullmatch(base):
         raise PolicyError("invalid-operation-identity")
     if (env.get("MDS_LNX02_SETUP_APPROVED") != "true"
@@ -652,11 +657,14 @@ def parse_ipv6_null_routes(text):
     return len(rows)
 
 
-def namespace_proof(parent):
+def namespace_proof(parent, isolation_mode="rootless_user_net"):
     if (os.getuid(), os.geteuid(), os.getgid()) != tuple(parent["ids"]):
         raise PolicyError("namespace-changed-process-uid-or-gid")
     namespaces = network_ids()
-    if any(namespaces[key] == parent["namespaces"][key] for key in ("user", "net")):
+    if (namespaces["net"] == parent["namespaces"]["net"]
+            or isolation_mode == "rootless_user_net" and namespaces["user"] == parent["namespaces"]["user"]
+            or isolation_mode == "supervised_net" and namespaces["user"] != parent["namespaces"]["user"]
+            or isolation_mode not in {"rootless_user_net", "supervised_net"}):
         raise PolicyError("namespace-is-not-independent")
     if effective_capabilities() != 0:
         raise PolicyError("namespace-effective-capabilities-not-zero")
@@ -704,7 +712,7 @@ def namespace_proof(parent):
     return {"uid_preserved": True, "gid_preserved": True, "cap_eff": 0,
             "parent_ids": list(parent["ids"]), "child_ids": [os.getuid(), os.geteuid(), os.getgid()],
             "parent_namespace_inodes": parent["namespaces"], "child_namespace_inodes": namespaces,
-            "distinct_user_namespace": True, "distinct_network_namespace": True,
+            "distinct_user_namespace": isolation_mode == "rootless_user_net", "distinct_network_namespace": True,
             "interfaces": [{"name": "lo", "up": False}], "address_count": 0,
             "route_count": 0, "ipv6_null_route_count": ipv6_null_count, "kernel_probe_errno": kernel_errno,
             "kernel_probe": "192.0.2.1:9", "kernel_probe_reached_os": True}
@@ -890,7 +898,7 @@ def clean_environment(root):
         "PIP_CONFIG_FILE": os.devnull, "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONNOUSERSITE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
     }
-    for name in GRANT_NAMES + GITHUB_NAMES:
+    for name in GRANT_NAMES + GITHUB_NAMES + ("MDS_LNX02_ALLOW_SUPERVISED_NETNS",):
         if name in os.environ:
             result[name] = os.environ[name]
     for name in ("ImageOS", "ImageVersion"):
@@ -903,6 +911,9 @@ PUBLIC_FAILURE_CODES = None
 PUBLIC_EXCEPTION_TYPES = frozenset({"PolicyError", "StageError", "TimeoutExpired", "OSError", "FileNotFoundError",
                                    "PermissionError", "ValueError", "RuntimeError", "TypeError", "KeyError",
                                    "ImportError", "ModuleNotFoundError", "TimeoutError", "KeyboardInterrupt", "SystemExit", "Exception"})
+PUBLIC_STAGE_CODES = frozenset({"worker-timeout", "worker-termination-not-confirmed", "worker-launch-failed",
+                                "worker-result-unavailable", "worker-result-invalid", "controller-child-io-failed",
+                                "executable-or-loader-error"})
 
 
 def known_policy_code(code):
@@ -925,7 +936,7 @@ def known_policy_code(code):
         visit(ast.parse(Path(__file__).read_text(encoding="utf-8")))
         PUBLIC_FAILURE_CODES = frozenset(codes)
     match = re.fullmatch(r"pip-exit-([1-9][0-9]{0,2})", code)
-    return (code in PUBLIC_FAILURE_CODES or code in PUBLIC_EXCEPTION_TYPES or code == "unclassified-error"
+    return (code in PUBLIC_FAILURE_CODES or code in PUBLIC_EXCEPTION_TYPES or code in PUBLIC_STAGE_CODES or code == "unclassified-error"
             or code in {"guarded-" + kind + "-failed" for kind in ("preflight", "bootstrap", "resolve", "install", "verify-setup", "check")}
             or bool(match and int(match[1]) <= 255))
 
@@ -949,7 +960,13 @@ STREAM_SUMMARIES = {
     "executable-or-loader-error": "Executable or shared-library loader failure",
     "python-before-result": "Python failed before publishing child evidence",
     "unknown": "Unclassified bytes withheld",
+    "unavailable": "Stream evidence could not be read; size and digest unavailable",
 }
+UNSHARE_PERMISSION_STDERR = frozenset({
+    b"unshare: unshare failed: Operation not permitted\n",
+    b"unshare: unshare failed: Permission denied\n",
+    b"unshare: write failed /proc/self/uid_map: Operation not permitted\n",
+})
 
 
 def stream_evidence(data, trusted_unshare=False, returncode=None):
@@ -960,9 +977,7 @@ def stream_evidence(data, trusted_unshare=False, returncode=None):
     # Classification never exports input-derived text, even for recognized errors.
     if data and len(data) <= 4096:
         text = data.decode("utf-8", errors="replace").strip()
-        if (trusted_unshare and returncode not in {None, 0} and text in {
-                "unshare: unshare failed: Operation not permitted",
-                "unshare: unshare failed: Permission denied"}):
+        if trusted_unshare and returncode not in {None, 0} and data in UNSHARE_PERMISSION_STDERR:
             classification = "unshare-permission-denial"
         elif re.fullmatch(r"[^\n]{1,200}: error while loading shared libraries: [^\n]{1,500}", text):
             classification = "executable-or-loader-error"
@@ -981,6 +996,10 @@ def stream_evidence(data, trusted_unshare=False, returncode=None):
                 classification = "python-before-result"
     return {"size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
             "classification": classification, "safe_summary": STREAM_SUMMARIES[classification]}
+
+
+def unavailable_stream():
+    return {"size_bytes": None, "sha256": None, "classification": "unavailable", "safe_summary": STREAM_SUMMARIES["unavailable"]}
 
 
 def launch_evidence(command, root, job_name, parent_namespaces=None, timeout=600):
@@ -1021,6 +1040,373 @@ def launch_evidence(command, root, job_name, parent_namespaces=None, timeout=600
     return outcome
 
 
+def rootless_permission_denied(probe):
+    return (probe.get("kind") == "rootless-primitive" and probe.get("launcher_started") is True
+            and probe.get("exit_code") == 1 and probe.get("timed_out") is False
+            and probe.get("termination_confirmed") is True and probe.get("parent_namespace_unchanged") is True
+            and probe.get("stdout", {}).get("size_bytes") == 0
+            and probe.get("stderr", {}).get("classification") == "unshare-permission-denial"
+            and (probe.get("stderr", {}).get("size_bytes"), probe.get("stderr", {}).get("sha256"))
+            in {(len(value), hashlib.sha256(value).hexdigest()) for value in UNSHARE_PERMISSION_STDERR}
+            and probe.get("argv_template") == ["unshare", "--user", "--map-current-user", "--net", "--", "true"]
+            and HEX.fullmatch(probe.get("system_binary_sha256", "")) is not None
+            and HEX.fullmatch(probe.get("payload_binary_sha256", "")) is not None)
+
+
+def validate_supervised_grant(env):
+    if (env.get("MDS_LNX02_ALLOW_SUPERVISED_NETNS") != "true"
+            or env.get("TASK_RUNNER_ENVIRONMENT") != "github-hosted"
+            or env.get("ImageOS") != "ubuntu24"):
+        raise PolicyError("supervised-namespace-not-explicitly-admitted")
+
+
+def choose_isolation(root, helper_sha):
+    unshare_sha = trusted_system_binary("/usr/bin/unshare")
+    true_sha = trusted_system_binary("/bin/true")
+    primitive = launch_evidence(["/usr/bin/unshare", "--user", "--map-current-user", "--net", "--", "/bin/true"],
+                                root, "0-primitive", network_ids(), timeout=15)
+    primitive.update(kind="rootless-primitive", helper_sha256=helper_sha, status="FAIL",
+                     argv_template=["unshare", "--user", "--map-current-user", "--net", "--", "true"],
+                     system_binary_sha256=unshare_sha, payload_binary_sha256=true_sha)
+    success = (primitive["launcher_started"] and primitive["exit_code"] == 0 and not primitive["timed_out"]
+               and primitive["parent_namespace_unchanged"] is True and primitive["termination_confirmed"])
+    if success:
+        primitive["status"] = "PASS"
+        return "rootless_user_net", primitive
+    primitive["failure_code"] = "rootless-primitive-failed"
+    if rootless_permission_denied(primitive) and os.environ.get("MDS_LNX02_ALLOW_SUPERVISED_NETNS") == "true":
+        validate_supervised_grant(os.environ)
+        return "supervised_net", primitive
+    raise StageError("rootless-primitive-failed", primitive)
+
+
+def privilege_snapshot(pid="self"):
+    if pid != "self" and (type(pid) is not int or pid <= 0):
+        raise PolicyError("invalid-worker-pid")
+    fields = {}
+    for line in Path("/proc/" + str(pid) + "/status").read_text(encoding="ascii").splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            fields[key] = value.strip()
+    return {"uids": [int(value) for value in fields["Uid"].split()],
+            "gids": [int(value) for value in fields["Gid"].split()],
+            "groups": [int(value) for value in fields["Groups"].split()],
+            "capabilities": {key: int(fields[key], 16) for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")},
+            "no_new_privs": int(fields["NoNewPrivs"])}
+
+
+def validate_privilege_snapshot(value, ids):
+    if (not isinstance(value, dict) or set(value) != {"uids", "gids", "groups", "capabilities", "no_new_privs"}
+            or len(ids) != 3 or any(type(item) is not int or item <= 0 for item in ids)
+            or ids[0] != ids[1] or value.get("uids") != [ids[0]] * 4 or value.get("gids") != [ids[2]] * 4
+            or value.get("groups") != [] or value.get("no_new_privs") != 1
+            or type(value["no_new_privs"]) is not int or set(value.get("capabilities", {})) != {"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"}
+            or any(type(item) is not int or item != 0 for item in value["capabilities"].values())):
+        raise PolicyError("supervised-privileges-not-fully-dropped")
+
+
+def fixed_libc():
+    # Symbols already loaded by the trusted interpreter; no arbitrary library path.
+    library = ctypes.CDLL(None, use_errno=True)
+    library.prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+    library.prctl.restype = ctypes.c_int
+    return library
+
+
+def supervised_privilege_proof(ids):
+    before = privilege_snapshot()
+    validate_privilege_snapshot(before, ids)
+    library = fixed_libc()
+    death_signal = ctypes.c_uint()
+    if library.prctl(2, ctypes.addressof(death_signal), 0, 0, 0) != 0 or death_signal.value != signal.SIGKILL:
+        raise PolicyError("supervised-parent-death-signal-not-kill")
+    negative = {}
+
+    def denied(name, operation, allowed):
+        try:
+            operation()
+        except OSError as error:
+            if error.errno not in allowed:
+                raise PolicyError("privilege-regain-probe-unexpected-errno") from None
+            negative[name] = error.errno
+        else:
+            raise PolicyError("privilege-regain-probe-succeeded")
+        validate_privilege_snapshot(privilege_snapshot(), ids)
+
+    denied("setresuid", lambda: os.setresuid(0, 0, 0), {errno.EPERM})
+    denied("setresgid", lambda: os.setresgid(0, 0, 0), {errno.EPERM})
+    denied("setgroups", lambda: os.setgroups([ids[2]]), {errno.EPERM})
+
+    class CapHeader(ctypes.Structure):
+        _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+    class CapData(ctypes.Structure):
+        _fields_ = [("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32), ("inheritable", ctypes.c_uint32)]
+
+    header = CapHeader(0x20080522, 0)
+    data = (CapData * 2)()
+    data[0].effective = data[0].permitted = 1 << 12  # CAP_NET_ADMIN only; must be denied.
+    library.capset.argtypes = [ctypes.POINTER(CapHeader), ctypes.POINTER(CapData)]
+    library.capset.restype = ctypes.c_int
+
+    def capset_attempt():
+        if library.capset(ctypes.byref(header), data) == -1:
+            raise OSError(ctypes.get_errno(), "fixed-capset-probe")
+
+    def prctl_attempt(option, arg2, arg3=0):
+        if library.prctl(option, arg2, arg3, 0, 0) == -1:
+            raise OSError(ctypes.get_errno(), "fixed-prctl-probe")
+
+    denied("capset", capset_attempt, {errno.EPERM})
+    denied("ambient_raise", lambda: prctl_attempt(47, 2, 12), {errno.EPERM})
+    denied("no_new_privs_unset", lambda: prctl_attempt(38, 0), {errno.EINVAL, errno.EPERM})
+    after = privilege_snapshot()
+    validate_privilege_snapshot(after, ids)
+    return {"before": before, "after": after, "negative_probes": negative, "pdeathsig": signal.SIGKILL}
+
+
+def validate_privilege_proof(value, ids):
+    if not isinstance(value, dict) or set(value) != {"before", "after", "negative_probes", "pdeathsig"}:
+        raise PolicyError("supervised-privilege-proof-fields-invalid")
+    validate_privilege_snapshot(value["before"], ids)
+    validate_privilege_snapshot(value["after"], ids)
+    expected = {"setresuid": errno.EPERM, "setresgid": errno.EPERM, "setgroups": errno.EPERM,
+                "capset": errno.EPERM, "ambient_raise": errno.EPERM}
+    probes = value["negative_probes"]
+    if (not isinstance(probes, dict) or set(probes) != set(expected) | {"no_new_privs_unset"}
+            or any(type(probes[key]) is not int or probes[key] != number for key, number in expected.items())
+            or type(probes["no_new_privs_unset"]) is not int or probes["no_new_privs_unset"] not in {errno.EPERM, errno.EINVAL}
+            or value["pdeathsig"] != 9):
+        raise PolicyError("supervised-privilege-regain-proof-invalid")
+
+
+def process_start_ticks(pid):
+    raw = Path("/proc/" + str(pid) + "/stat").read_text(encoding="ascii")
+    return int(raw.rsplit(")", 1)[1].split()[19])
+
+
+def bind_worker_process(pid, ready, command, ids):
+    if process_start_ticks(pid) != ready["start_ticks"]:
+        raise PolicyError("supervised-worker-pid-identity-changed")
+    validate_privilege_snapshot(privilege_snapshot(pid), ids)
+    actual_ns = {key: int(os.readlink("/proc/" + str(pid) + "/ns/" + key).split("[")[1].rstrip("]")) for key in ("user", "net")}
+    actual_argv = Path("/proc/" + str(pid) + "/cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+    if (actual_ns != ready["namespace"]["child_namespace_inodes"]
+            or actual_argv != [os.fsencode(value) for value in command]
+            or digest(Path(os.readlink("/proc/" + str(pid) + "/exe"))) != digest(Path(command[0]))):
+        raise PolicyError("supervised-worker-process-identity-changed")
+
+
+def process_parent(pid):
+    raw = Path("/proc/" + str(pid) + "/stat").read_text(encoding="ascii")
+    return int(raw.rsplit(")", 1)[1].split()[1])
+
+
+def atomic_handshake(root, destination, value):
+    destination = contained(root, destination)
+    temporary = destination.with_name(destination.name + ".pending-" + uuid.uuid4().hex)
+    write_new(root, temporary, json_bytes(value))
+    try:
+        if sys.platform == "linux":
+            library = fixed_libc()
+            library.renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            library.renameat2.restype = ctypes.c_int
+            if library.renameat2(-100, os.fsencode(temporary), -100, os.fsencode(destination), 1) != 0:
+                raise PolicyError("handshake-atomic-publication-refused")
+        elif sys.platform == "win32":
+            try:
+                os.rename(temporary, destination)  # Windows rename refuses an existing destination.
+            except OSError:
+                raise PolicyError("handshake-atomic-publication-refused") from None
+        else:
+            raise PolicyError("handshake-atomic-publication-unavailable")
+        regular(destination)
+    finally:
+        if temporary.exists():
+            regular(temporary)
+            temporary.unlink()
+
+
+def worker_topology(pid, launcher, controller, ready):
+    parent = process_parent(pid)
+    launcher_parent = process_parent(launcher)
+    if parent != ready["parent_pid"]:
+        raise PolicyError("supervised-worker-parent-identity-changed")
+    if pid == launcher and parent == controller:
+        kind = "direct_exec"
+    elif parent == launcher and launcher_parent == controller:
+        kind = "sudo_monitor"
+    else:
+        raise PolicyError("supervised-process-topology-not-admitted")
+    return {"kind": kind, "controller_pid": controller, "launcher_pid": launcher,
+            "worker_pid": pid, "worker_parent_pid": parent, "launcher_parent_pid": launcher_parent}
+
+
+def supervised_worker_ready(root, job):
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+    signal.alarm(610)
+    proof = supervised_privilege_proof(job["parent"]["ids"])
+    namespace = namespace_proof(job["parent"], "supervised_net")
+    ready = {"format": "lnx02-ready-v1", "pid": os.getpid(), "start_ticks": process_start_ticks(os.getpid()),
+             "helper_sha256": job["helper_sha256"], "job_sha256": job["sealed_job_sha256"],
+             "privilege": proof, "namespace": namespace, "alarm_seconds": 610,
+             "parent_pid": os.getppid(),
+             "alarm": {"handler_default": signal.getsignal(signal.SIGALRM) == signal.SIG_DFL,
+                       "unblocked": signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, set()),
+                       "remaining_seconds": signal.getitimer(signal.ITIMER_REAL)[0], "configured_seconds": 610}}
+    atomic_handshake(root, Path(job["ready"]), ready)
+    deadline = time.monotonic() + 15
+    admission = Path(job["admission"])
+    while time.monotonic() < deadline:
+        if admission.exists():
+            value = read_json(contained(root, admission))
+            if value != {"format": "lnx02-admission-v1", "job_sha256": job["sealed_job_sha256"],
+                         "pid": ready["pid"], "start_ticks": ready["start_ticks"]}:
+                raise PolicyError("supervised-admission-mismatch")
+            if os.getppid() != ready["parent_pid"]:
+                raise PolicyError("supervised-parent-changed-before-admission")
+            validate_privilege_snapshot(privilege_snapshot(), job["parent"]["ids"])
+            return ready
+        time.sleep(0.05)
+    raise PolicyError("supervised-admission-timeout")
+
+
+def supervised_command(command, root, ids):
+    if len(ids) != 3 or ids[0] != ids[1] or any(type(value) is not int or value <= 0 for value in ids):
+        raise PolicyError("supervised-runner-must-be-nonzero-user")
+    records = {Path(name).name: trusted_system_binary(name) for name in ("/usr/bin/sudo", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/env")}
+    environment = clean_environment(root)
+    argv = ["/usr/bin/sudo", "-n", "--", "/usr/bin/unshare", "--net", "--", "/usr/bin/setpriv",
+            "--reuid=" + str(ids[0]), "--regid=" + str(ids[2]), "--clear-groups", "--inh-caps=-all",
+            "--ambient-caps=-all", "--bounding-set=-all", "--no-new-privs", "--pdeathsig=KILL", "--",
+            "/usr/bin/env", "-i"] + [key + "=" + environment[key] for key in sorted(environment)] + command
+    return argv, records
+
+
+def supervised_launch(command, root, job_name, job, job_sha, timeout=600):
+    outcome = {"launcher_started": False, "child_result_available": False, "exit_code": None, "signal": None,
+               "timed_out": False, "termination_confirmed": False, "parent_namespace_unchanged": "NOT ESTABLISHED",
+               "worker_started": False, "worker_pidfd_bound": False, "worker_termination_confirmed": False,
+               "isolation_mode": "supervised_net"}
+    argv, binaries = supervised_command(command, root, job["parent"]["ids"])
+    outcome["supervisor_binary_sha256"] = binaries
+    started = time.monotonic()
+    child = pidfd = None
+    stdout_path, stderr_path = (root / "logs" / (job_name + suffix) for suffix in (".stdout", ".stderr"))
+    try:
+        if GUARD.process is not None:
+            raise PolicyError("nested-controller-process-admission")
+        GUARD.process = tuple(argv)
+        with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+            os.chmod(stdout_path, 0o600)
+            os.chmod(stderr_path, 0o600)
+            child = subprocess.Popen(argv, executable=argv[0], cwd=str(root), env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
+            outcome["launcher_started"] = True
+            ready_path = Path(job["ready"])
+            deadline = time.monotonic() + 20
+            while not ready_path.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not ready_path.exists():
+                # Even a finished sudo monitor cannot prove no unknown grandchild remains.
+                raise PolicyError("supervised-worker-ready-unavailable")
+            outcome["worker_started"] = True
+            ready = read_json(contained(root, ready_path))
+            validate_ready(ready, job, job_sha)
+            pid = ready["pid"]
+            bind_worker_process(pid, ready, command, job["parent"]["ids"])
+            topology = worker_topology(pid, child.pid, os.getpid(), ready)
+            pidfd = os.pidfd_open(pid, 0)
+            bind_worker_process(pid, ready, command, job["parent"]["ids"])
+            if worker_topology(pid, child.pid, os.getpid(), ready) != topology:
+                raise PolicyError("supervised-worker-parent-identity-changed")
+            outcome["worker_pidfd_bound"] = True
+            outcome["worker_readiness"] = ready
+            outcome["worker_topology"] = topology
+            atomic_handshake(root, Path(job["admission"]), {"format": "lnx02-admission-v1", "job_sha256": job_sha,
+                             "pid": pid, "start_ticks": ready["start_ticks"]})
+            try:
+                child.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                outcome["timed_out"] = True
+                raise PolicyError("supervised-worker-timeout") from None
+            outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 10)
+            if not outcome["worker_termination_confirmed"]:
+                raise PolicyError("supervised-worker-termination-not-confirmed")
+    except BaseException as error:
+        outcome["launch_failure_code"] = public_failure(error)["failure_code"]
+        if isinstance(error, OSError):
+            outcome["launch_errno"] = error.errno
+        if pidfd is not None and outcome["worker_pidfd_bound"]:
+            try:
+                signal.pidfd_send_signal(pidfd, 9)
+                outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 10)
+            except BaseException:
+                try:
+                    outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 0)
+                except BaseException:
+                    outcome["worker_termination_confirmed"] = False
+        if child is not None:
+            try:
+                child.wait(timeout=10)
+            except BaseException:
+                pass
+    finally:
+        GUARD.process = None
+        if pidfd is not None:
+            try:
+                os.close(pidfd)
+            except BaseException as error:
+                outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    if child is not None:
+        try:
+            outcome["exit_code"] = child.poll()
+        except BaseException as error:
+            outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+        outcome["termination_confirmed"] = outcome["exit_code"] is not None
+    if outcome["exit_code"] is not None and outcome["exit_code"] < 0:
+        outcome["signal"] = -outcome["exit_code"]
+    for name, path in (("stdout", stdout_path), ("stderr", stderr_path)):
+        try:
+            if path.exists() and regular(path).st_size > MAX_ARTIFACT:
+                raise PolicyError("supervised-stream-size-limit")
+            outcome[name] = stream_evidence(path.read_bytes() if path.exists() else b"")
+        except BaseException as error:
+            outcome[name] = unavailable_stream()
+            outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    outcome["duration_seconds"] = round(time.monotonic() - started, 3)
+    try:
+        outcome["parent_namespace_unchanged"] = network_ids() == job["parent"]["namespaces"]
+    except BaseException as error:
+        outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    return outcome
+
+
+def pidfd_exited(descriptor, timeout):
+    poller = select.poll()
+    poller.register(descriptor, select.POLLIN | select.POLLHUP)
+    return any(events & (select.POLLIN | select.POLLHUP) for _, events in poller.poll(int(timeout * 1000)))
+
+
+def validate_ready(ready, job, job_sha):
+    if (not isinstance(ready, dict) or set(ready) != {"format", "pid", "start_ticks", "helper_sha256", "job_sha256", "privilege", "namespace", "alarm_seconds", "parent_pid", "alarm"}
+            or ready.get("format") != "lnx02-ready-v1" or type(ready.get("pid")) is not int or ready["pid"] <= 0
+            or type(ready.get("start_ticks")) is not int or ready["start_ticks"] <= 0
+            or type(ready.get("parent_pid")) is not int or ready["parent_pid"] <= 1
+            or ready.get("helper_sha256") != job["helper_sha256"] or ready.get("job_sha256") != job_sha
+            or ready.get("alarm_seconds") != 610):
+        raise PolicyError("supervised-worker-ready-invalid")
+    alarm = ready["alarm"]
+    if (not isinstance(alarm, dict) or set(alarm) != {"handler_default", "unblocked", "remaining_seconds", "configured_seconds"}
+            or alarm.get("handler_default") is not True or alarm.get("unblocked") is not True
+            or alarm.get("configured_seconds") != 610 or type(alarm.get("remaining_seconds")) not in {int, float}
+            or not math.isfinite(alarm["remaining_seconds"]) or not 0 < alarm["remaining_seconds"] <= 610):
+        raise PolicyError("supervised-kernel-alarm-proof-invalid")
+    validate_privilege_proof(ready["privilege"], job["parent"]["ids"])
+    validate_namespace_evidence(ready["namespace"], "supervised_net")
+
+
 def worker_launch(root, nonce, python, kind, fields, sequence, offline=True):
     owned(root, nonce)
     job_name = str(sequence) + "-" + kind
@@ -1031,13 +1417,25 @@ def worker_launch(root, nonce, python, kind, fields, sequence, offline=True):
            "kind": kind, "result": str(result_path), "helper_sha256": digest(Path(__file__).absolute()),
            "parent": parent, "offline": offline}
     job.update(fields)
+    isolation_mode = job.get("isolation_mode", "rootless_user_net") if offline else "connected_setup"
+    if offline and isolation_mode == "supervised_net":
+        validate_supervised_grant(os.environ)
+        if not rootless_permission_denied(job.get("rootless_primitive", {})):
+            raise PolicyError("supervised-rootless-denial-proof-missing")
+        job["format"] = "lnx02-supervised-worker-v2"
+        job["ready"] = str(root / "jobs" / (job_name + "-ready.json"))
+        job["admission"] = str(root / "jobs" / (job_name + "-admission.json"))
     write_new(root, job_path, json_bytes(job))
     command = [str(python), "-I", "-S", "-B", str(Path(__file__).absolute()),
                "worker", "--job", str(job_path), "--job-sha256", digest(job_path)]
-    if offline:
-        trusted_system_binary("/usr/bin/unshare")
-        command = ["/usr/bin/unshare", "--user", "--map-current-user", "--net", "--"] + command
-    launch = launch_evidence(command, root, job_name, parent["namespaces"])
+    if offline and isolation_mode == "supervised_net":
+        launch = supervised_launch(command, root, job_name, job, digest(job_path))
+    else:
+        if offline:
+            trusted_system_binary("/usr/bin/unshare")
+            command = ["/usr/bin/unshare", "--user", "--map-current-user", "--net", "--"] + command
+        launch = launch_evidence(command, root, job_name, parent["namespaces"])
+    launch["isolation_mode"] = isolation_mode
     launch.update(kind=kind, helper_sha256=job["helper_sha256"], status="FAIL")
     launch["child_result_available"] = result_path.exists()
     if launch["parent_namespace_unchanged"] is not True:
@@ -1048,6 +1446,12 @@ def worker_launch(root, nonce, python, kind, fields, sequence, offline=True):
     if launch["launcher_started"] and not launch["termination_confirmed"]:
         launch["failure_code"] = "worker-termination-not-confirmed"
         raise StageError("guarded-worker-termination-not-confirmed", launch)
+    if isolation_mode == "supervised_net" and not launch.get("worker_termination_confirmed"):
+        launch["failure_code"] = "supervised-worker-termination-not-confirmed"
+        raise StageError("supervised-worker-termination-not-confirmed", launch)
+    if isolation_mode == "supervised_net" and launch.get("launch_failure_code"):
+        launch["failure_code"] = launch["launch_failure_code"]
+        raise StageError("supervised-launch-failed", launch)
     if not launch["launcher_started"]:
         launch["failure_code"] = "worker-launch-failed"
         raise StageError("guarded-worker-launch-failed", launch)
@@ -1212,7 +1616,7 @@ def worker(args):
     job = read_json(path)
     root = owned(Path(job["root"]), job["nonce"])
     contained(root, path)
-    if job.get("format") != "lnx02-worker-v1" or digest(Path(__file__).absolute()) != job.get("helper_sha256"):
+    if job.get("format") not in {"lnx02-worker-v1", "lnx02-supervised-worker-v2"} or digest(Path(__file__).absolute()) != job.get("helper_sha256"):
         raise PolicyError("worker-source-identity-mismatch")
     result_path = contained(root, Path(job["result"]))
     outcome = {"kind": job.get("kind"), "helper_sha256": job["helper_sha256"], "status": "FAIL"}
@@ -1225,7 +1629,20 @@ def worker(args):
         validate_grant(os.environ, job["mode"], job["sha"], job["base"])
         outcome["identity"] = identity()
         if job.get("offline") is True:
-            outcome["namespace"] = namespace_proof(job["parent"])
+            isolation_mode = job.get("isolation_mode", "rootless_user_net")
+            if isolation_mode == "supervised_net":
+                validate_supervised_grant(os.environ)
+                if (job.get("format") != "lnx02-supervised-worker-v2"
+                        or not rootless_permission_denied(job.get("rootless_primitive", {}))
+                        or job["rootless_primitive"]["system_binary_sha256"] != trusted_system_binary("/usr/bin/unshare")):
+                    raise PolicyError("supervised-rootless-denial-proof-missing")
+                job["sealed_job_sha256"] = args.job_sha256
+                ready = supervised_worker_ready(root, job)
+                outcome["privilege"] = ready["privilege"]
+                outcome["namespace"] = ready["namespace"]
+            else:
+                outcome["namespace"] = namespace_proof(job["parent"], isolation_mode)
+            outcome["isolation_mode"] = isolation_mode
         elif job.get("offline") is not False:
             raise PolicyError("worker-network-phase-unclassified")
         if job["kind"] == "preflight":
@@ -1437,6 +1854,106 @@ def validate_native_identity_evidence(value, helper_sha, executable_sha=None):
     return actual_sha
 
 
+def validate_namespace_evidence(namespace, mode):
+    required = {"uid_preserved", "gid_preserved", "cap_eff", "parent_ids", "child_ids", "parent_namespace_inodes",
+                "child_namespace_inodes", "distinct_user_namespace", "distinct_network_namespace", "interfaces",
+                "address_count", "route_count", "kernel_probe_errno", "kernel_probe", "kernel_probe_reached_os"}
+    if not isinstance(namespace, dict) or not required <= set(namespace) or set(namespace) - (required | {"ipv6_null_route_count"}):
+        raise PolicyError("native-namespace-proof-fields-invalid")
+    parent_ids, child_ids = namespace["parent_ids"], namespace["child_ids"]
+    parent_ns, child_ns = namespace["parent_namespace_inodes"], namespace["child_namespace_inodes"]
+    if (mode not in {"rootless_user_net", "supervised_net"}
+            or namespace["distinct_user_namespace"] is not (mode == "rootless_user_net")
+            or namespace["distinct_network_namespace"] is not True or namespace["uid_preserved"] is not True
+            or namespace["gid_preserved"] is not True or type(namespace["cap_eff"]) is not int or namespace["cap_eff"] != 0
+            or namespace["interfaces"] != [{"name": "lo", "up": False}]
+            or any(type(namespace[key]) is not int or namespace[key] != 0 for key in ("address_count", "route_count"))
+            or type(namespace["kernel_probe_errno"]) is not int or namespace["kernel_probe_errno"] != 101
+            or namespace["kernel_probe"] != "192.0.2.1:9" or namespace["kernel_probe_reached_os"] is not True
+            or not isinstance(parent_ids, list) or len(parent_ids) != 3
+            or any(type(value) is not int or value <= 0 for value in parent_ids)
+            or child_ids != parent_ids or not isinstance(parent_ns, dict) or not isinstance(child_ns, dict)
+            or set(parent_ns) != {"user", "net"} or set(child_ns) != {"user", "net"}
+            or any(type(value) is not int or value <= 0 for value in list(parent_ns.values()) + list(child_ns.values()))
+            or parent_ns["net"] == child_ns["net"]
+            or (parent_ns["user"] != child_ns["user"]) is not (mode == "rootless_user_net")):
+        raise PolicyError("native-namespace-evidence-invalid")
+
+
+def validate_supervised_launch(stage, controller_pid):
+    if (stage.get("worker_started") is not True or stage.get("worker_pidfd_bound") is not True
+            or stage.get("worker_termination_confirmed") is not True or stage.get("termination_confirmed") is not True
+            or stage.get("launch_failure_code") is not None):
+        raise PolicyError("supervised-launch-proof-incomplete")
+    records = stage.get("supervisor_binary_sha256")
+    if (not isinstance(records, dict) or set(records) != {"sudo", "unshare", "setpriv", "env"}
+            or any(not isinstance(value, str) or not HEX.fullmatch(value) for value in records.values())):
+        raise PolicyError("supervised-binary-proof-invalid")
+    ready = stage.get("worker_readiness")
+    if not isinstance(ready, dict):
+        raise PolicyError("supervised-worker-ready-invalid")
+    job = {"helper_sha256": stage.get("helper_sha256"), "parent": {"ids": stage.get("namespace", {}).get("parent_ids", [])}}
+    validate_ready(ready, job, ready.get("job_sha256"))
+    topology = stage.get("worker_topology")
+    if (not isinstance(topology, dict) or set(topology) != {"kind", "controller_pid", "launcher_pid", "worker_pid", "worker_parent_pid", "launcher_parent_pid"}
+            or any(type(topology[key]) is not int or topology[key] <= 0 for key in topology if key != "kind")
+            or topology.get("worker_pid") != ready["pid"] or topology.get("worker_parent_pid") != ready["parent_pid"]
+            or topology.get("controller_pid") != controller_pid
+            or not (topology.get("kind") == "direct_exec" and topology["worker_pid"] == topology["launcher_pid"]
+                    and topology["worker_parent_pid"] == topology["controller_pid"]
+                    or topology.get("kind") == "sudo_monitor" and topology["worker_parent_pid"] == topology["launcher_pid"]
+                    and topology["launcher_parent_pid"] == topology["controller_pid"])):
+        raise PolicyError("supervised-process-topology-proof-invalid")
+    if (not HEX.fullmatch(ready.get("job_sha256", "")) or stage.get("guard", {}).get("pid") != ready["pid"]
+            or ready["privilege"] != stage.get("privilege") or ready["namespace"] != stage.get("namespace")):
+        raise PolicyError("supervised-ready-worker-evidence-mismatch")
+
+
+def validate_supervision_metadata(stage):
+    for key in ("worker_started", "worker_pidfd_bound", "worker_termination_confirmed"):
+        if key in stage and type(stage[key]) is not bool:
+            raise PolicyError("supervised-worker-state-field-invalid")
+    if "isolation_mode" in stage and stage["isolation_mode"] not in {"rootless_user_net", "supervised_net", "connected_setup"}:
+        raise PolicyError("unknown-isolation-mode")
+    if "launch_failure_code" in stage and not known_policy_code(stage["launch_failure_code"]):
+        raise PolicyError("supervised-launch-failure-code-invalid")
+    if "supervisor_binary_sha256" in stage:
+        records = stage["supervisor_binary_sha256"]
+        if (not isinstance(records, dict) or set(records) != {"sudo", "unshare", "setpriv", "env"}
+                or any(not isinstance(value, str) or not HEX.fullmatch(value) for value in records.values())):
+            raise PolicyError("supervised-binary-proof-invalid")
+    if "worker_readiness" in stage:
+        ready = stage["worker_readiness"]
+        if not isinstance(ready, dict) or not isinstance(ready.get("namespace"), dict):
+            raise PolicyError("supervised-worker-ready-invalid")
+        job = {"helper_sha256": stage.get("helper_sha256"), "parent": {"ids": ready["namespace"].get("parent_ids", [])}}
+        if not isinstance(ready.get("job_sha256"), str) or not HEX.fullmatch(ready["job_sha256"]):
+            raise PolicyError("supervised-worker-ready-invalid")
+        validate_ready(ready, job, ready["job_sha256"])
+    if "privilege" in stage:
+        ids = stage.get("namespace", {}).get("parent_ids", [])
+        validate_privilege_proof(stage["privilege"], ids)
+    if "worker_topology" in stage:
+        topology = stage["worker_topology"]
+        if (not isinstance(topology, dict) or set(topology) != {"kind", "controller_pid", "launcher_pid", "worker_pid", "worker_parent_pid", "launcher_parent_pid"}
+                or topology.get("kind") not in {"direct_exec", "sudo_monitor"}
+                or any(type(topology[key]) is not int or topology[key] <= 0 for key in topology if key != "kind")):
+            raise PolicyError("supervised-process-topology-proof-invalid")
+
+
+def validate_isolation_selection(report):
+    mode = report.get("isolation_mode", "rootless_user_net")
+    if mode not in {"rootless_user_net", "supervised_net"}:
+        raise PolicyError("unknown-isolation-mode")
+    if mode == "supervised_net":
+        primitive = report.get("rootless_primitive")
+        if primitive is None and report.get("mode") == "diagnostic":
+            primitive = report.get("probes", [{}])[0]
+        if not rootless_permission_denied(primitive or {}) or report.get("supervised_opt_in") is not True:
+            raise PolicyError("supervised-isolation-selection-proof-invalid")
+    return mode
+
+
 def validate_success_evidence(report, profiles):
     if set(report.get("profiles", {})) != set(PROFILES) or report.get("owned_scratch_cleanup") != "PASS":
         raise PolicyError("incomplete-profile-or-cleanup-evidence")
@@ -1468,9 +1985,11 @@ def validate_success_evidence(report, profiles):
             or report.get("linux_application_runtime") != "NOT VERIFIED"):
         raise PolicyError("artifact-overstates-runtime-verification")
     controller = report.get("controller_guard", {})
-    if controller.get("registered_before_third_party") is not True or controller.get("unexpected_denials") != {}:
+    if (controller.get("registered_before_third_party") is not True or controller.get("unexpected_denials") != {}
+            or type(controller.get("pid")) is not int or controller["pid"] <= 0):
         raise PolicyError("artifact-controller-guard-evidence-invalid")
     stages = report.get("stages", [])
+    isolation_mode = validate_isolation_selection(report)
     if not stages or stages[0].get("kind") != "preflight":
         raise PolicyError("native-preflight-evidence-missing")
     expected_sequence = [("preflight", None, None)]
@@ -1510,27 +2029,12 @@ def validate_success_evidence(report, profiles):
                     or probe.get("requests_fixture") is not True):
                 raise PolicyError("actual-pip-pid-guard-evidence-invalid")
         if stage["kind"] not in {"resolve", "verify-setup"}:
-            namespace = stage.get("namespace", {})
-            parent_ids, child_ids = namespace.get("parent_ids"), namespace.get("child_ids")
-            parent_ns = namespace.get("parent_namespace_inodes", {})
-            child_ns = namespace.get("child_namespace_inodes", {})
-            if (namespace.get("distinct_user_namespace") is not True
-                    or namespace.get("distinct_network_namespace") is not True
-                    or namespace.get("uid_preserved") is not True
-                    or namespace.get("gid_preserved") is not True
-                    or namespace.get("cap_eff") != 0
-                    or namespace.get("interfaces") != [{"name": "lo", "up": False}]
-                    or namespace.get("address_count") != 0 or namespace.get("route_count") != 0
-                    or namespace.get("kernel_probe_errno") != errno.ENETUNREACH
-                    or namespace.get("kernel_probe_reached_os") is not True
-                    or not isinstance(parent_ids, list) or len(parent_ids) != 3
-                    or any(type(value) is not int or value < 0 for value in parent_ids)
-                    or child_ids != parent_ids or set(parent_ns) != {"user", "net"}
-                    or set(child_ns) != {"user", "net"}
-                    or any(type(parent_ns[key]) is not int or type(child_ns[key]) is not int
-                           or parent_ns[key] <= 0 or child_ns[key] <= 0
-                           or parent_ns[key] == child_ns[key] for key in ("user", "net"))):
-                raise PolicyError("native-namespace-evidence-invalid")
+            if stage.get("isolation_mode", "rootless_user_net") != isolation_mode:
+                raise PolicyError("mixed-offline-isolation-modes")
+            validate_namespace_evidence(stage.get("namespace"), isolation_mode)
+            if isolation_mode == "supervised_net":
+                validate_privilege_proof(stage.get("privilege"), stage["namespace"]["parent_ids"])
+                validate_supervised_launch(stage, controller["pid"])
     wheel_records = {}
     for record in report.get("wheels", []):
         name = record.get("name")
@@ -1585,6 +2089,10 @@ def validate_launch_diagnostic(value):
         raise PolicyError("diagnostic-duration-invalid")
     for key in ("stdout", "stderr"):
         stream = value[key]
+        if stream == unavailable_stream():
+            if not value.get("launch_failure_code"):
+                raise PolicyError("diagnostic-unavailable-stream-without-cause")
+            continue
         if (not isinstance(stream, dict) or set(stream) != {"size_bytes", "sha256", "classification", "safe_summary"}
                 or type(stream["size_bytes"]) is not int or stream["size_bytes"] < 0
                 or not isinstance(stream["sha256"], str) or not HEX.fullmatch(stream["sha256"])
@@ -1614,13 +2122,13 @@ def validate_diagnostic_report(report):
                "identity", "source_files_sha256", "probes", "failure_code", "original_failure",
                "cleanup_failure", "owned_scratch_cleanup", "checkpoint_state", "checkpoint_failure",
                "duration_seconds", "controller_guard", "isolation_mode", "policy_attribution",
-               "package_setup", "linux_application_runtime", "production"}
+               "package_setup", "linux_application_runtime", "production", "supervised_opt_in"}
     if set(report) - allowed or report.get("mode") != "diagnostic" or report.get("phase") != "DIAGNOSTIC":
         raise PolicyError("diagnostic-report-fields-invalid")
     if (report.get("schema_version") != 1 or report.get("status") not in {"PASS", "FAIL"}
             or not SHA.fullmatch(report.get("source_sha", "")) or not SHA.fullmatch(report.get("base_sha", ""))
             or not HEX.fullmatch(report.get("helper_sha256", ""))
-            or report.get("isolation_mode") != "rootless_user_net"
+            or report.get("isolation_mode") not in {"rootless_user_net", "supervised_net"}
             or report.get("policy_attribution") != "NOT ESTABLISHED"
             or report.get("package_setup") != "NOT EXECUTED"
             or any(report.get(key) != "NOT VERIFIED" for key in ("linux_application_runtime", "production"))):
@@ -1670,7 +2178,10 @@ def validate_diagnostic_report(report):
     allowed_probe = {"kind", "status", "helper_sha256", "failure_code", "guard_evidence", "identity", "namespace", "guard",
                      "negative_probes", "launcher_started", "child_result_available", "exit_code", "signal", "timed_out",
                      "termination_confirmed", "parent_namespace_unchanged", "duration_seconds", "stdout", "stderr",
-                     "launch_errno", "launch_failure_code", "argv_template", "system_binary_sha256", "payload_binary_sha256", "result_failure"}
+                     "launch_errno", "launch_failure_code", "argv_template", "system_binary_sha256", "payload_binary_sha256", "result_failure",
+                     "isolation_mode", "worker_started", "worker_pidfd_bound", "worker_termination_confirmed",
+                     "worker_readiness", "supervisor_binary_sha256", "privilege"}
+    allowed_probe.add("worker_topology")
     for index, probe in enumerate(probes):
         if (not isinstance(probe, dict) or set(probe) - allowed_probe
                 or probe.get("kind") != ("rootless-primitive" if index == 0 else "preflight")
@@ -1678,6 +2189,7 @@ def validate_diagnostic_report(report):
                 or probe.get("helper_sha256") != report["helper_sha256"]):
             raise PolicyError("diagnostic-probe-fields-invalid")
         validate_launch_diagnostic(probe)
+        validate_supervision_metadata(probe)
         if "failure_code" in probe and not known_policy_code(probe["failure_code"]):
             raise PolicyError("diagnostic-probe-failure-code-invalid")
         if "identity" in probe:
@@ -1718,7 +2230,10 @@ def validate_diagnostic_report(report):
                                          or probe["parent_namespace_unchanged"] is not True):
             raise PolicyError("diagnostic-probe-pass-inconsistent")
     if report["status"] == "PASS":
-        if (len(probes) != 2 or any(probe["status"] != "PASS" for probe in probes)
+        isolation_mode = validate_isolation_selection(report)
+        primitive_ok = (probes[0]["status"] == "PASS" if isolation_mode == "rootless_user_net"
+                        else rootless_permission_denied(probes[0]))
+        if (len(probes) != 2 or not primitive_ok or probes[1]["status"] != "PASS"
                 or not probes[1]["child_result_available"] or report.get("owned_scratch_cleanup") != "PASS"
                 or any(key in report for key in ("failure_code", "original_failure", "cleanup_failure", "checkpoint_failure"))):
             raise PolicyError("diagnostic-success-evidence-incomplete")
@@ -1739,25 +2254,28 @@ def validate_diagnostic_report(report):
         validate_native_identity_evidence(probes[1].get("identity"), report["helper_sha256"],
                                           report["identity"]["python_executable_sha256"])
         namespace = probes[1].get("namespace", {})
-        if (namespace.get("distinct_user_namespace") is not True or namespace.get("distinct_network_namespace") is not True
-                or namespace.get("uid_preserved") is not True or namespace.get("gid_preserved") is not True
-                or namespace.get("cap_eff") != 0 or namespace.get("interfaces") != [{"name": "lo", "up": False}]
-                or namespace.get("address_count") != 0 or namespace.get("route_count") != 0
-                or namespace.get("kernel_probe_errno") != errno.ENETUNREACH
-                or namespace.get("kernel_probe_reached_os") is not True):
-            raise PolicyError("diagnostic-native-isolation-proof-invalid")
-        if (len(namespace.get("parent_ids", [])) != 3 or namespace["parent_ids"] != namespace.get("child_ids")
-                or any(namespace["parent_namespace_inodes"][key] == namespace["child_namespace_inodes"][key] for key in ("user", "net"))):
-            raise PolicyError("diagnostic-namespace-identities-invalid")
+        validate_namespace_evidence(namespace, isolation_mode)
+        if probes[1].get("isolation_mode", "rootless_user_net") != isolation_mode:
+            raise PolicyError("mixed-offline-isolation-modes")
+        if isolation_mode == "supervised_net":
+            validate_privilege_proof(probes[1].get("privilege"), namespace["parent_ids"])
+            validate_supervised_launch(probes[1], report["controller_guard"]["pid"])
     elif "original_failure" not in report and "cleanup_failure" not in report and "checkpoint_failure" not in report:
         raise PolicyError("diagnostic-failure-cause-missing")
     sanitized(report)
 
 
 def trusted_system_binary(name):
-    if name not in {"/usr/bin/unshare", "/bin/true"}:
+    if name not in {"/usr/bin/unshare", "/bin/true", "/usr/bin/sudo", "/usr/bin/setpriv", "/usr/bin/env"}:
         raise PolicyError("unapproved-diagnostic-system-binary")
     path = Path(name).resolve()
+    expected = Path("/usr/bin/true" if name == "/bin/true" else name)
+    if path != expected:
+        raise PolicyError("unexpected-system-binary-resolution")
+    for parent in (path.parent,) + tuple(path.parents)[1:]:
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise PolicyError("untrusted-system-binary-parent")
     info = regular(path)
     if info.st_uid != 0 or info.st_mode & 0o022 or not os.access(path, os.X_OK):
         raise PolicyError("untrusted-diagnostic-system-binary")
@@ -1775,6 +2293,8 @@ def finish_with_cleanup(output, report, root, nonce, locks=None):
         report["status"] = "FAIL"
         report["checkpoint_failure"] = public_failure(error)
     unfinished = any(stage.get("launcher_started") and not stage.get("termination_confirmed", True)
+                     or stage.get("isolation_mode") == "supervised_net" and stage.get("launcher_started")
+                     and not stage.get("worker_termination_confirmed", False)
                      for stage in report.get("probes", []) + report.get("stages", []))
     if root is not None and not checkpointed:
         report["status"] = "FAIL"
@@ -1818,22 +2338,18 @@ def diagnose(args):
         source_identity(repo, args.expected_sha, args.expected_base)
         report["source_files_sha256"] = source_manifest(repo, "generate")
         root, nonce = new_scratch(Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).absolute())
-        unshare_sha = trusted_system_binary("/usr/bin/unshare")
-        true_sha = trusted_system_binary("/bin/true")
-        primitive = launch_evidence(["/usr/bin/unshare", "--user", "--map-current-user", "--net", "--", "/bin/true"],
-                                    root, "0-primitive", network_ids(), timeout=15)
-        primitive.update(kind="rootless-primitive", helper_sha256=report["helper_sha256"], status="FAIL",
-                         argv_template=["unshare", "--user", "--map-current-user", "--net", "--", "true"],
-                         system_binary_sha256=unshare_sha, payload_binary_sha256=true_sha)
+        try:
+            isolation_mode, primitive = choose_isolation(root, report["helper_sha256"])
+        except StageError as error:
+            report["probes"].append(error.outcome)
+            raise
         report["probes"].append(primitive)
-        if (not primitive["launcher_started"] or primitive["exit_code"] != 0 or primitive["timed_out"]
-                or primitive["parent_namespace_unchanged"] is not True or not primitive["termination_confirmed"]):
-            primitive["failure_code"] = "rootless-primitive-failed"
-            raise StageError("rootless-primitive-failed", primitive)
-        primitive["status"] = "PASS"
+        report["isolation_mode"] = isolation_mode
+        report["supervised_opt_in"] = isolation_mode == "supervised_net"
         try:
             child = worker_launch(root, nonce, sys.executable, "preflight",
-                                  {"mode": "diagnostic", "sha": args.expected_sha, "base": args.expected_base}, 1)
+                                  {"mode": "diagnostic", "sha": args.expected_sha, "base": args.expected_base,
+                                   "isolation_mode": isolation_mode, "rootless_primitive": primitive}, 1)
         except StageError as error:
             report["probes"].append(error.outcome)
             raise
@@ -1880,6 +2396,15 @@ def pipeline(args):
         root, nonce = new_scratch(temp_root)
         report["scratch_id"] = root.name
         admitted = {"mode": args.mode, "sha": args.expected_sha, "base": args.expected_base}
+        try:
+            isolation_mode, primitive = choose_isolation(root, report["identity"]["helper_sha256"])
+        except StageError as error:
+            report["stages"].append(error.outcome)
+            raise
+        report["isolation_mode"] = isolation_mode
+        report["rootless_primitive"] = primitive
+        report["supervised_opt_in"] = isolation_mode == "supervised_net"
+        admitted.update(isolation_mode=isolation_mode, rootless_primitive=primitive)
 
         def stage(python, kind, fields=None, offline=True):
             nonlocal sequence
@@ -2203,6 +2728,139 @@ def diagnostic_negative_tests(root, nonce, expect):
     expect(secret_error == {"failure_code": "unclassified-error", "exception_type": "PolicyError"})
 
 
+def supervised_negative_tests(root, nonce, expect):
+    ids = [1001, 1001, 1001]
+    snapshot = {"uids": [1001] * 4, "gids": [1001] * 4, "groups": [],
+                "capabilities": {key: 0 for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")}, "no_new_privs": 1}
+    proof = {"before": snapshot, "after": copy.deepcopy(snapshot), "pdeathsig": 9,
+             "negative_probes": {"setresuid": 1, "setresgid": 1, "setgroups": 1, "capset": 1, "ambient_raise": 1, "no_new_privs_unset": 22}}
+    namespace = {"uid_preserved": True, "gid_preserved": True, "cap_eff": 0, "parent_ids": ids, "child_ids": ids,
+                 "parent_namespace_inodes": {"user": 10, "net": 20}, "child_namespace_inodes": {"user": 10, "net": 21},
+                 "distinct_user_namespace": False, "distinct_network_namespace": True, "interfaces": [{"name": "lo", "up": False}],
+                 "address_count": 0, "route_count": 0, "kernel_probe_errno": 101, "kernel_probe": "192.0.2.1:9", "kernel_probe_reached_os": True}
+    helper_sha = digest(Path(__file__).absolute())
+    ready = {"format": "lnx02-ready-v1", "pid": 501, "start_ticks": 123, "helper_sha256": helper_sha, "job_sha256": "3" * 64,
+             "privilege": proof, "namespace": namespace, "alarm_seconds": 610, "parent_pid": 500,
+             "alarm": {"handler_default": True, "unblocked": True, "remaining_seconds": 609.0, "configured_seconds": 610}}
+    validate_ready(ready, {"helper_sha256": helper_sha, "parent": {"ids": ids}}, "3" * 64)
+    names = ("supervised_command", "process_start_ticks", "privilege_snapshot", "pidfd_exited", "network_ids", "bind_worker_process", "worker_topology")
+    saved = {name: globals()[name] for name in names}
+    saved_popen = subprocess.Popen
+    saved_pidfd = getattr(os, "pidfd_open", None)
+    saved_signal = getattr(signal, "pidfd_send_signal", None)
+    saved_readlink = os.readlink
+    saved_read_bytes = Path.read_bytes
+    state = {}
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.returncode = None
+            self.pid = 500
+            state["child"] = self
+            if state["case"] != "before-ready":
+                payload = copy.deepcopy(ready)
+                if state["case"] == "spoof-ready":
+                    payload["job_sha256"] = "4" * 64
+                write_new(root, Path(state["job"]["ready"]), json_bytes(payload))
+
+        def poll(self):
+            if state["case"] == "before-ready":
+                self.returncode = 1
+            return self.returncode
+
+        def wait(self, timeout=None):
+            if state["case"] == "interrupt-live":
+                raise KeyboardInterrupt()
+            if state["case"] in {"timeout", "kill-denied", "before-ready"} and not state.get("killed"):
+                raise subprocess.TimeoutExpired("synthetic", timeout)
+            self.returncode = 0
+            return 0
+
+    def fake_pidfd(pid, flags):
+        if state["case"] == "pidfd-denied":
+            raise PermissionError(errno.EPERM, "synthetic-pidfd-denial")
+        return os.open(os.devnull, os.O_RDONLY)
+
+    def fake_signal(descriptor, number):
+        state["signal_sent"] = True
+        if state["case"] in {"kill-denied", "interrupt-live"}:
+            raise PermissionError(errno.EPERM, "synthetic-kill-denial")
+        state["killed"] = True
+
+    try:
+        globals()["supervised_command"] = lambda command, directory, identities: ([sys.executable], {name: "1" * 64 for name in ("sudo", "unshare", "setpriv", "env")})
+        globals()["process_start_ticks"] = lambda pid: 124 if state["case"] == "pid-reused" else 123
+        globals()["privilege_snapshot"] = lambda pid="self": copy.deepcopy(snapshot)
+        globals()["pidfd_exited"] = lambda descriptor, timeout: state.get("killed", False) or state["case"] == "success"
+        def fake_namespaces():
+            if state["case"] == "namespace-read-failed":
+                raise OSError(errno.EIO, "synthetic-namespace-read")
+            return {"user": 10, "net": 20}
+        globals()["network_ids"] = fake_namespaces
+        def fake_bind(pid, ready_value, command, identities):
+            if state["case"] == "pid-reused":
+                raise PolicyError("supervised-worker-pid-identity-changed")
+        globals()["bind_worker_process"] = fake_bind
+        globals()["worker_topology"] = lambda pid, launcher, controller, ready_value: {"kind": "sudo_monitor", "controller_pid": controller,
+            "launcher_pid": launcher, "worker_pid": pid, "worker_parent_pid": launcher, "launcher_parent_pid": controller}
+        os.readlink = lambda path: "user:[10]" if str(path).endswith("/user") else "net:[21]"
+        def fake_read_bytes(path):
+            if state["case"] == "stream-read-failed" and path.name.endswith(".stdout"):
+                raise PermissionError(errno.EACCES, "synthetic-stream-refusal")
+            return saved_read_bytes(path)
+        Path.read_bytes = fake_read_bytes
+        subprocess.Popen = FakePopen
+        os.pidfd_open = fake_pidfd
+        signal.pidfd_send_signal = fake_signal
+        for index, case in enumerate(("success", "spoof-ready", "pidfd-denied", "pid-reused", "timeout", "kill-denied", "interrupt-live", "launcher-exited-worker-live", "before-ready", "stream-read-failed", "namespace-read-failed")):
+            job = {"parent": {"ids": ids, "namespaces": {"user": 10, "net": 20}}, "helper_sha256": helper_sha,
+                   "ready": str(root / "jobs" / ("supervisor-" + str(index) + "-ready.json")),
+                   "admission": str(root / "jobs" / ("supervisor-" + str(index) + "-admission.json"))}
+            state.clear()
+            state.update(case=case, job=job)
+            outcome = supervised_launch([sys.executable], root, "supervisor-" + str(index), job, "3" * 64, timeout=0.01)
+            if case == "success":
+                expect(outcome["worker_pidfd_bound"] and outcome["worker_termination_confirmed"] and outcome["termination_confirmed"])
+            else:
+                expect("launch_failure_code" in outcome)
+                if case in {"spoof-ready", "pidfd-denied", "pid-reused", "kill-denied", "interrupt-live", "before-ready"}:
+                    expect(not outcome["worker_termination_confirmed"])
+                if case in {"spoof-ready", "pidfd-denied", "pid-reused"}:
+                    expect(not Path(job["admission"]).exists())
+                if case == "pid-reused":
+                    expect(not state.get("signal_sent"))
+                if case == "stream-read-failed":
+                    expect(outcome["stdout"] == unavailable_stream())
+                if case == "namespace-read-failed":
+                    expect(outcome["parent_namespace_unchanged"] == "NOT ESTABLISHED")
+            if case == "interrupt-live":
+                expect(outcome["launch_failure_code"] == "KeyboardInterrupt" and outcome["exit_code"] is None)
+            if case in {"before-ready", "interrupt-live", "kill-denied"}:
+                output = root / ("supervisor-preserved-" + case)
+                output.mkdir(mode=0o700)
+                child_root, child_nonce = new_scratch(Path(tempfile.gettempdir()).absolute())
+                report = {"schema_version": 1, "mode": "generate", "status": "FAIL", "source_sha": "1" * 40,
+                          "base_sha": "2" * 40, "stages": [outcome],
+                          "original_failure": public_failure(PolicyError("supervised-worker-termination-not-confirmed"))}
+                finish_with_cleanup(output, report, child_root, child_nonce)
+                expect(report["owned_scratch_cleanup"] == "FAIL_PRESERVED" and child_root.exists())
+                cleanup(child_root, child_nonce)
+    finally:
+        for name, value in saved.items():
+            globals()[name] = value
+        subprocess.Popen = saved_popen
+        os.readlink = saved_readlink
+        Path.read_bytes = saved_read_bytes
+        if saved_pidfd is None:
+            del os.pidfd_open
+        else:
+            os.pidfd_open = saved_pidfd
+        if saved_signal is None:
+            del signal.pidfd_send_signal
+        else:
+            signal.pidfd_send_signal = saved_signal
+
+
 def self_test(repo):
     """Portable refusal tests. These never establish native Linux acceptance."""
     flags()
@@ -2431,7 +3089,8 @@ def self_test(repo):
                              "parent_namespace_inodes": {"user": 10, "net": 20},
                              "child_namespace_inodes": {"user": 11, "net": 21},
                              "interfaces": [{"name": "lo", "up": False}], "address_count": 0,
-                             "route_count": 0, "kernel_probe_errno": errno.ENETUNREACH,
+                             "route_count": 0, "kernel_probe_errno": 101,
+                             "kernel_probe": "192.0.2.1:9",
                              "kernel_probe_reached_os": True}
 
         identity_fixture = {"os": "Ubuntu", "os_version": "24.04", "architecture": "x86_64",
@@ -2473,7 +3132,7 @@ def self_test(repo):
                       "bootstrap": copy.deepcopy(bootstrap_fixture),
                       "source_files_sha256": source_manifest(repo, "generate"),
                       "production": "NOT VERIFIED", "linux_application_runtime": "NOT VERIFIED",
-                      "controller_guard": {"registered_before_third_party": True, "unexpected_denials": {}},
+                      "controller_guard": GUARD.evidence(),
                       "profiles": {}, "stages": [stage_fixture("preflight")], "wheels": []}
             for profile in PROFILES:
                 report["stages"] += [stage_fixture("bootstrap", profile, role) for role in ("resolve", "replay")]
@@ -2643,6 +3302,88 @@ def self_test(repo):
         check("untrusted-or-extended-stderr-is-unknown", lambda: expect(
             stream_evidence(b"unshare: unshare failed: Operation not permitted\nBearer synthetic", True, 1)["classification"] == "unknown"
             and stream_evidence(b"unshare: unshare failed: Operation not permitted\n", False, 1)["classification"] == "unknown"))
+        uid_map_literal = b"unshare: write failed /proc/self/uid_map: Operation not permitted\n"
+        check("hosted-uid-map-literal-exact-66-byte-digest", lambda: expect(
+            len(uid_map_literal) == 66 and hashlib.sha256(uid_map_literal).hexdigest() == "6b50086233b9e3c0f8f5ac5e8094da06d7a05f1c3be0b88baf49578943392a94"
+            and stream_evidence(uid_map_literal, True, 1)["classification"] == "unshare-permission-denial"))
+        for extra in (b" ", b"\n", b"Bearer synthetic", b"/private/fixture"):
+            check("uid-map-permission-refuses-extra-" + str(len(extra)), lambda extra=extra: expect(
+                stream_evidence(uid_map_literal + extra, True, 1)["classification"] == "unknown"))
+        check("uid-map-permission-refuses-untrusted-or-success-exit", lambda: expect(
+            stream_evidence(uid_map_literal, False, 1)["classification"] == "unknown"
+            and stream_evidence(uid_map_literal, True, 0)["classification"] == "unknown"))
+        reject("invalid-supervised-namespace-optin", lambda: validate_grant(
+            {**env, "MDS_LNX02_ALLOW_SUPERVISED_NETNS": "TRUE"}, "generate", sha, base))
+        supervised_fixture = copy.deepcopy(diagnostic_fixture_report)
+        supervised_fixture.update(isolation_mode="supervised_net", supervised_opt_in=True)
+        primitive = supervised_fixture["probes"][0]
+        primitive.update(status="FAIL", exit_code=1, stderr=stream_evidence(uid_map_literal, True, 1), failure_code="rootless-primitive-failed")
+        worker_record = supervised_fixture["probes"][1]
+        namespace = worker_record["namespace"]
+        namespace["distinct_user_namespace"] = False
+        namespace["child_namespace_inodes"]["user"] = namespace["parent_namespace_inodes"]["user"]
+        snapshot = {"uids": [1001] * 4, "gids": [1001] * 4, "groups": [], "no_new_privs": 1,
+                    "capabilities": {key: 0 for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")}}
+        proof = {"before": snapshot, "after": copy.deepcopy(snapshot), "pdeathsig": 9,
+                 "negative_probes": {"setresuid": 1, "setresgid": 1, "setgroups": 1, "capset": 1, "ambient_raise": 1, "no_new_privs_unset": 22}}
+        ready = {"format": "lnx02-ready-v1", "pid": worker_record["guard"]["pid"], "start_ticks": 123,
+                 "helper_sha256": helper_sha, "job_sha256": "3" * 64, "privilege": proof, "namespace": namespace,
+                 "alarm_seconds": 610, "parent_pid": 500,
+                 "alarm": {"handler_default": True, "unblocked": True, "remaining_seconds": 600.0, "configured_seconds": 610}}
+        worker_record.update(isolation_mode="supervised_net", privilege=proof, worker_started=True, worker_pidfd_bound=True,
+                             worker_termination_confirmed=True, worker_readiness=ready,
+                             supervisor_binary_sha256={name: "1" * 64 for name in ("sudo", "unshare", "setpriv", "env")},
+                             worker_topology={"kind": "sudo_monitor", "controller_pid": supervised_fixture["controller_guard"]["pid"],
+                                              "launcher_pid": 500, "worker_pid": ready["pid"], "worker_parent_pid": 500,
+                                              "launcher_parent_pid": supervised_fixture["controller_guard"]["pid"]})
+        check("supervised-closed-diagnostic-pass-proof", lambda: validate_diagnostic_report(supervised_fixture))
+        for name, mutation in (
+                ("missing-optin", lambda value: value.pop("supervised_opt_in")),
+                ("unknown-denial", lambda value: value["probes"][0]["stderr"].update(classification="unknown", safe_summary=STREAM_SUMMARIES["unknown"])),
+                ("changed-userns", lambda value: value["probes"][1]["namespace"]["child_namespace_inodes"].update(user=11)),
+                ("privileged-root-uid", lambda value: value["probes"][1]["privilege"]["before"].update(uids=[0] * 4)),
+                ("saved-root-gid", lambda value: value["probes"][1]["privilege"]["before"]["gids"].__setitem__(2, 0)),
+                ("supplementary-group", lambda value: value["probes"][1]["privilege"]["before"].update(groups=[1001])),
+                ("bounding-capability", lambda value: value["probes"][1]["privilege"]["before"]["capabilities"].update(CapBnd=1)),
+                ("no-new-privs-unset", lambda value: value["probes"][1]["privilege"]["before"].update(no_new_privs=0)),
+                ("negative-probe-missing", lambda value: value["probes"][1]["privilege"]["negative_probes"].pop("capset")),
+                ("regain-probe-success", lambda value: value["probes"][1]["privilege"]["negative_probes"].update(setresuid=0)),
+                ("pdeathsig-unset", lambda value: value["probes"][1]["privilege"].update(pdeathsig=0)),
+                ("alarm-handler", lambda value: value["probes"][1]["worker_readiness"]["alarm"].update(handler_default=False)),
+                ("alarm-blocked", lambda value: value["probes"][1]["worker_readiness"]["alarm"].update(unblocked=False)),
+                ("alarm-expired", lambda value: value["probes"][1]["worker_readiness"]["alarm"].update(remaining_seconds=0)),
+                ("alarm-nan", lambda value: value["probes"][1]["worker_readiness"]["alarm"].update(remaining_seconds=float("nan"))),
+                ("missing-topology", lambda value: value["probes"][1].pop("worker_topology")),
+                ("wrong-controller", lambda value: value["probes"][1]["worker_topology"].update(controller_pid=999)),
+                ("pidfd-unbound", lambda value: value["probes"][1].update(worker_pidfd_bound=False)),
+                ("worker-alive", lambda value: value["probes"][1].update(worker_termination_confirmed=False)),
+                ("helper-mismatch", lambda value: value["probes"][1]["worker_readiness"].update(helper_sha256="0" * 64))):
+            variant = copy.deepcopy(supervised_fixture)
+            mutation(variant)
+            reject("supervised-refuses-" + name, lambda variant=variant: validate_diagnostic_report(variant))
+        output = root / "supervised-diagnostic-fixture"
+        output.mkdir(mode=0o700)
+        finalize_output(output, supervised_fixture)
+        check("supervised-flat-two-file-artifact-audit", lambda: audit_output(argparse.Namespace(
+            output=str(output), expected_sha=sha, expected_base=base, mode="diagnostic", success="true")))
+        supervised_profile_fixture = success_fixture("generate")
+        supervised_profile_fixture.update(isolation_mode="supervised_net", supervised_opt_in=True,
+                                          rootless_primitive=copy.deepcopy(primitive))
+        for record in supervised_profile_fixture["stages"]:
+            if record["kind"] not in {"resolve", "verify-setup"}:
+                for key in ("isolation_mode", "privilege", "worker_started", "worker_pidfd_bound", "worker_termination_confirmed",
+                            "worker_readiness", "supervisor_binary_sha256", "worker_topology", "termination_confirmed"):
+                    record[key] = copy.deepcopy(worker_record[key])
+                record["namespace"] = copy.deepcopy(worker_record["namespace"])
+        check("supervised-three-profile-success-audit", lambda: validate_success_evidence(supervised_profile_fixture, profile_locks))
+        mixed_profile_fixture = copy.deepcopy(supervised_profile_fixture)
+        mixed_profile_fixture["stages"][1]["isolation_mode"] = "rootless_user_net"
+        reject("supervised-refuses-mixed-offline-profile-mode", lambda: validate_success_evidence(mixed_profile_fixture, profile_locks))
+        handshake = root / "jobs" / "handshake-fixture.json"
+        check("handshake-atomic-complete-json", lambda: atomic_handshake(root, handshake, {"complete": True}))
+        reject("handshake-refuses-clobber", lambda: atomic_handshake(root, handshake, {"complete": False}))
+        check("handshake-original-preserved", lambda: expect(read_json(handshake) == {"complete": True}))
+        check("supervisor-bounded-pidfd-launch-refusals", lambda: supervised_negative_tests(root, nonce, expect))
         check("real-subprocess-diagnostic-negative-json-and-cleanup", lambda: diagnostic_negative_tests(root, nonce, expect))
     finally:
         cleanup(root, nonce)

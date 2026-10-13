@@ -61,6 +61,10 @@ jobs:
           test "$TASK_RUNNER_ENVIRONMENT" = github-hosted
           test "$TASK_DELETED" = false
           test "$MDS_LNX02_SETUP_APPROVED" = true
+          case "$MDS_LNX02_ALLOW_SUPERVISED_NETNS" in
+            false|true) ;;
+            *) exit 1 ;;
+          esac
           [[ "$MDS_LNX02_APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$MDS_LNX02_APPROVED_BASE" =~ ^[0-9a-f]{40}$ ]]
           test "$MDS_LNX02_APPROVED_SHA" = "$TASK_EVENT_SHA"
