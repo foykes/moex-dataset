@@ -93,6 +93,9 @@ def _network_policy(error):
             return 'SOURCE', False, 'TLS_FAILURE'
         if isinstance(current, socket.gaierror):
             return 'SOURCE', current.errno == socket.EAI_AGAIN, 'DNS_FAILURE'
+        if isinstance(current, urllib3_errors.NameResolutionError):
+            reason = current._reason
+            return 'SOURCE', isinstance(reason, socket.gaierror) and reason.errno == socket.EAI_AGAIN, 'DNS_FAILURE'
         # NewConnectionError/NameResolutionError наследуют ConnectTimeoutError.
         if isinstance(current, urllib3_errors.NewConnectionError):
             continue  # Typed дети проходят тот же bounded walk, без reset depth.

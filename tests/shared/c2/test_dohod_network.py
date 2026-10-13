@@ -562,3 +562,21 @@ def test_current_permanent_decoding_or_config_failure_beats_historical_timeout(
     assert caught.value is error and len(calls) == 1 and parsed == written == waits == []
     assert events(context)[-1]['error']['category'] == 'SOURCE'
     failed(context)
+
+
+@pytest.mark.parametrize('temporary', [False, True])
+def test_current_dns_reason_beats_historical_timeout(monkeypatch, model, tmp_path, context, temporary):
+    module, _, waits = model
+    def error():
+        nested = ue.NameResolutionError('fixture.invalid', None,
+            socket.gaierror(socket.EAI_AGAIN if temporary else socket.EAI_NONAME, 'current'))
+        nested.__cause__ = requests.ReadTimeout('historical')
+        return requests.ConnectionError(ue.MaxRetryError(None, URL, nested))
+    errors = [error() for _ in range(3 if temporary else 1)]
+    calls, parsed, written = overview(monkeypatch, model, tmp_path, errors)
+    with pytest.raises(requests.ConnectionError) as caught:
+        module.get_main(URL, logging_context=context)
+    assert caught.value is errors[-1] and len(calls) == len(errors) and parsed == written == []
+    assert waits == ([1, 2] if temporary else [])
+    assert events(context)[-1]['error']['category'] == 'SOURCE'
+    failed(context)
