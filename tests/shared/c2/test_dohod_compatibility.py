@@ -14,7 +14,7 @@ import requests
 
 from tests.shared.c2.test_dohod_network import (
     URL, DETAIL, DISCOVERY, model, context, reply, source, parser, writers, events, failed,
-    assert_requests, ROOT,
+    assert_requests, ROOT, _html_bytes,
 )
 
 
@@ -233,7 +233,8 @@ def test_historical_detail_parser_skip_but_budget_stays_outside_bare_except(monk
     module, clock, _ = model
     source(monkeypatch, module, [(URL, reply(DISCOVERY)), (DETAIL, reply(b'bad'))])
     written = writers(monkeypatch, module, tmp_path)
-    def read(raw):
+    def read(reader, *, encoding=None):
+        assert _html_bytes(reader, encoding=encoding) == b'bad'
         clock[0] = 35
         raise ValueError('fixture no tables')
     monkeypatch.setattr(module.pd, 'read_html', read)
@@ -247,7 +248,10 @@ def test_200_overview_parser_error_zero_writers_no_transport_retry(monkeypatch, 
     calls = source(monkeypatch, module, [(URL, reply(b'malformed'))])
     written = writers(monkeypatch, module, tmp_path)
     error = ValueError('fixture missing tables')
-    monkeypatch.setattr(module.pd, 'read_html', lambda raw: (_ for _ in ()).throw(error))
+    def read(reader, *, encoding=None):
+        assert _html_bytes(reader, encoding=encoding) == b'malformed'
+        raise error
+    monkeypatch.setattr(module.pd, 'read_html', read)
     with pytest.raises(ValueError) as caught:
         module.main(URL, logging_context=context)
     assert caught.value is error and len(calls) == 1 and waits == written == []
@@ -283,7 +287,8 @@ def test_healthy_budget_unrecognized_detail_retains_historical_empty_skip(
         monkeypatch, model, tmp_path, context, table_count):
     module, _, waits = model
     calls = source(monkeypatch, module, [(URL, reply(DISCOVERY)), (DETAIL, reply(b'unknown'))])
-    def read(raw):
+    def read(reader, *, encoding=None):
+        assert _html_bytes(reader, encoding=encoding) == b'unknown'
         if table_count == 0:
             raise ValueError('fixture no tables')
         return [pd.DataFrame([['irrelevant']])] * table_count
