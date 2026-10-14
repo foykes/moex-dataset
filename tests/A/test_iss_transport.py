@@ -33,6 +33,7 @@ def response(status, text=''):
     result.status_code = status
     result._content = text.encode('utf-8')
     result.encoding = 'utf-8'
+    result.headers['Content-Type'] = 'text/csv; charset=utf-8'
     return result
 
 
@@ -93,7 +94,7 @@ def test_review_console_uses_real_flog_levels_without_duplicates(
     primary = requests.exceptions.SSLError(markers[-1])
     original_args = primary.args
     calls, sleeps = transport(gathering, monkeypatch, [
-        response(503, markers[4]), response(200, CANDLE_CSV.replace('candles\n', markers[4] + '\n')),
+        response(503, markers[4]), response(200, CANDLE_CSV),
         primary,
     ])
     monkeypatch.setattr(gathering, 'header', {'User-Agent': markers[2]})
@@ -453,7 +454,11 @@ def test_console_and_logger_canaries_are_safe_together(gathering, monkeypatch, e
         def parse(*args, **kwargs):
             raise primary
         monkeypatch.setattr(gathering.pd, 'read_csv', parse)
-        outcomes = [response(200, markers[-1])] * 5
+        # Парсер получает допустимый envelope; body canary остаётся в header,
+        # а primary canary — в исходном pandas exception без изменения args.
+        parsed_response = response(200, CANDLE_CSV)
+        parsed_response.headers['X-A2-Canary'] = markers[-1]
+        outcomes = [parsed_response] * 5
     elif kind == 'rotation':
         outcomes = [primary, response(200, CANDLE_CSV)]
     else:
