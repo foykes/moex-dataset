@@ -55,7 +55,8 @@ def test_candle_retry_503_then_200_has_literal_rows_and_keys(monkeypatch, tmp_pa
     previous_hash = hashlib.sha256(previous.read_bytes()).hexdigest()
     content = (FIXTURES / 'candles.csv').read_text(encoding='utf-8')
     responses = iter((SimpleNamespace(status_code=503, text='', content=b''),
-                      SimpleNamespace(status_code=200, text=content, content=content.encode('utf-8'))))
+                      SimpleNamespace(status_code=200, text=content, content=content.encode('utf-8'),
+                                      headers={'Content-Type': 'text/csv; charset=utf-8'})))
     calls, sleeps = [], []
     clock = iter(range(100))
 
