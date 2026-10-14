@@ -1,0 +1,254 @@
+name: Linux hash-locked environment
+
+on:
+  push:
+    branches: [codex/lnx-02]
+  workflow_dispatch:
+    inputs:
+      allow_network_setup:
+        description: Explicitly approve public PyPI SETUP for this exact merge SHA
+        required: true
+        type: boolean
+        default: false
+      approved_sha:
+        description: Approved current main commit (40 lowercase hexadecimal characters)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lnx02-environment-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  environment:
+    name: Linux environment (explicit exact-SHA grant)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MDS_LNX02_SETUP_APPROVED: ${{ vars.MDS_LNX02_SETUP_APPROVED }}
+      MDS_LNX02_APPROVED_SHA: ${{ vars.MDS_LNX02_APPROVED_SHA }}
+      MDS_LNX02_APPROVED_BASE: ${{ vars.MDS_LNX02_APPROVED_BASE }}
+      MDS_LNX02_OPERATION: ${{ vars.MDS_LNX02_OPERATION }}
+      MDS_LNX02_ALLOW_SUPERVISED_NETNS: ${{ vars.MDS_LNX02_ALLOW_SUPERVISED_NETNS }}
+      TASK_EVENT: ${{ github.event_name }}
+      TASK_EVENT_SHA: ${{ github.sha }}
+      TASK_EVENT_REF: ${{ github.ref }}
+      TASK_REPOSITORY: ${{ github.repository }}
+      TASK_ACTOR: ${{ github.actor }}
+      TASK_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+      TASK_DELETED: ${{ github.event.deleted || false }}
+      TASK_DISPATCH_ALLOW: ${{ inputs.allow_network_setup || false }}
+      TASK_DISPATCH_SHA: ${{ inputs.approved_sha || '' }}
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_CONFIG_FILE: /dev/null
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      # An absent or stale grant fails this job. It is never a skipped PASS.
+      - name: Require the owner's exact source and SETUP grant
+        # The runner context is available in step env, not in job env.
+        env:
+          TASK_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$TASK_REPOSITORY" = foykes/moex-dataset
+          test "$TASK_ACTOR" = foykes
+          test "$TASK_TRIGGERING_ACTOR" = foykes
+          test "$TASK_RUNNER_ENVIRONMENT" = github-hosted
+          test "$TASK_DELETED" = false
+          test "$MDS_LNX02_SETUP_APPROVED" = true
+          case "$MDS_LNX02_ALLOW_SUPERVISED_NETNS" in
+            false|true) ;;
+            *) exit 1 ;;
+          esac
+          [[ "$MDS_LNX02_APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MDS_LNX02_APPROVED_BASE" =~ ^[0-9a-f]{40}$ ]]
+          test "$MDS_LNX02_APPROVED_SHA" = "$TASK_EVENT_SHA"
+          case "$MDS_LNX02_OPERATION" in
+            diagnostic|generate|verify) ;;
+            *) exit 1 ;;
+          esac
+          case "$TASK_EVENT" in
+            push)
+              test "$TASK_EVENT_REF" = refs/heads/codex/lnx-02
+              ;;
+            workflow_dispatch)
+              test "$TASK_EVENT_REF" = refs/heads/main
+              test "$TASK_DISPATCH_ALLOW" = true
+              test "$TASK_DISPATCH_SHA" = "$MDS_LNX02_APPROVED_SHA"
+              test "$MDS_LNX02_APPROVED_BASE" = "$MDS_LNX02_APPROVED_SHA"
+              test "$MDS_LNX02_OPERATION" = verify
+              ;;
+            *) exit 1 ;;
+          esac
+          printf 'TASK_RUNNER_ENVIRONMENT=%s\n' "$TASK_RUNNER_ENVIRONMENT" >> "$GITHUB_ENV"
+          echo 'Owner, event, exact SHA, base and operation grant accepted.'
+
+      - name: Checkout the approved source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require current main, approved ancestry and a clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MDS_LNX02_APPROVED_SHA"
+          test -z "$(git status --porcelain)"
+          git -c core.hooksPath=/dev/null fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$MDS_LNX02_APPROVED_BASE"
+          git merge-base --is-ancestor "$MDS_LNX02_APPROVED_BASE" HEAD
+          if test "$TASK_EVENT" = workflow_dispatch; then
+            test "$(git rev-parse origin/main)" = "$MDS_LNX02_APPROVED_SHA"
+          fi
+
+      - name: Create owned evidence staging before native preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          task_run_root="$(mktemp -d "$RUNNER_TEMP/lnx02-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.XXXXXXXX")"
+          printf 'TASK_RUN_ROOT=%s\nTASK_ARTIFACT_ROOT=%s\nTASK_ARTIFACT_MODE=diagnostic\n' \
+            "$task_run_root" "$task_run_root/prerequisite" >> "$GITHUB_ENV"
+
+      # No installer is permitted. A pinned action alone does not pin its cold-cache pip upgrade.
+      - name: Require ready cached ordinary GIL CPython 3.14.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_cache="$RUNNER_TOOL_CACHE/Python/3.14.8/x64"
+          test -d "$task_cache"
+          test -f "$RUNNER_TOOL_CACHE/Python/3.14.8/x64.complete"
+          test -x "$task_cache/bin/python3.14"
+          printf 'TASK_CACHED_PYTHON=%s\n' "$task_cache/bin/python3.14" >> "$GITHUB_ENV"
+
+      - name: Diagnose native network isolation before package SETUP
+        id: prerequisite
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          MDS_LNX02_OPERATION=diagnostic \
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 \
+            .github/lnx02/verify_env.py diagnose \
+            --repo-root "$GITHUB_WORKSPACE" --output "$TASK_ARTIFACT_ROOT" \
+            --expected-sha "$MDS_LNX02_APPROVED_SHA" \
+            --expected-base "$MDS_LNX02_APPROVED_BASE"
+          task_exit=$?
+          set -e
+          printf 'exit_code=%s\n' "$task_exit" >> "$GITHUB_OUTPUT"
+          exit "$task_exit"
+
+      - name: Select the already checked cached interpreter
+        if: ${{ success() && env.MDS_LNX02_OPERATION != 'diagnostic' }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.14.8"
+          architecture: x64
+          check-latest: false
+          freethreaded: false
+
+      - name: Recheck interpreter identity and local helper refusal tests
+        if: ${{ success() && env.MDS_LNX02_OPERATION != 'diagnostic' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(realpath "$(command -v python)")" = "$(realpath "$TASK_CACHED_PYTHON")"
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py identity
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py self-test
+
+      - name: SETUP then independently replay all three profiles OFFLINE
+        id: profiles
+        if: ${{ success() && env.MDS_LNX02_OPERATION != 'diagnostic' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MDS_LNX02_APPROVED_BASE"
+          test "$(git rev-parse HEAD)" = "$MDS_LNX02_APPROVED_SHA"
+          test -z "$(git status --porcelain)"
+          task_artifact_root="$TASK_RUN_ROOT/artifact"
+          printf 'TASK_ARTIFACT_ROOT=%s\nTASK_ARTIFACT_MODE=%s\n' \
+            "$task_artifact_root" "$MDS_LNX02_OPERATION" >> "$GITHUB_ENV"
+          set +e
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py run \
+            --mode "$MDS_LNX02_OPERATION" --repo-root "$GITHUB_WORKSPACE" \
+            --output "$task_artifact_root" --expected-sha "$MDS_LNX02_APPROVED_SHA" \
+            --expected-base "$MDS_LNX02_APPROVED_BASE"
+          task_exit=$?
+          set -e
+          printf 'exit_code=%s\n' "$task_exit" >> "$GITHUB_OUTPUT"
+          exit "$task_exit"
+
+      - name: Admit only the closed sanitized evidence bundle
+        id: artifact_guard
+        if: ${{ always() && env.TASK_ARTIFACT_ROOT != '' }}
+        env:
+          TASK_PROFILE_EXIT: ${{ steps.profiles.outputs.exit_code }}
+          TASK_PREREQUISITE_EXIT: ${{ steps.prerequisite.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_success=false
+          if test "$TASK_ARTIFACT_MODE" = diagnostic; then
+            if test "$TASK_PREREQUISITE_EXIT" = 0; then task_success=true; fi
+          elif test "$TASK_PROFILE_EXIT" = 0; then task_success=true; fi
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py audit-output \
+            --output "$TASK_ARTIFACT_ROOT" --expected-sha "$MDS_LNX02_APPROVED_SHA" \
+            --expected-base "$MDS_LNX02_APPROVED_BASE" --mode "$TASK_ARTIFACT_MODE" \
+            --success "$task_success"
+          {
+            echo 'paths<<LNX02_CLOSED_ARTIFACT_PATHS'
+            printf '%s\n' "$TASK_ARTIFACT_ROOT/report.json" "$TASK_ARTIFACT_ROOT/manifest.json"
+            if test "$task_success" = true && test "$TASK_ARTIFACT_MODE" != diagnostic; then
+              printf '%s\n' "$TASK_ARTIFACT_ROOT/linux-cp314-runtime.lock" \
+                "$TASK_ARTIFACT_ROOT/linux-cp314-test.lock" "$TASK_ARTIFACT_ROOT/linux-cp314-dev.lock"
+            fi
+            echo 'LNX02_CLOSED_ARTIFACT_PATHS'
+          } >> "$GITHUB_OUTPUT"
+
+      # GitHub report transport is outside OFFLINE and is not a package index.
+      - name: Preserve sanitized exact-SHA evidence
+        id: evidence
+        if: ${{ always() && steps.artifact_guard.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lnx02-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.artifact_guard.outputs.paths }}
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 7
+
+      - name: Clean only the owned evidence staging after preservation
+        if: ${{ always() && steps.evidence.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(realpath "$(dirname "$TASK_RUN_ROOT")")" = "$(realpath "$RUNNER_TEMP")"
+          [[ "$(basename "$TASK_RUN_ROOT")" == lnx02-"${GITHUB_RUN_ID}"-"${GITHUB_RUN_ATTEMPT}".* ]]
+          test ! -L "$TASK_RUN_ROOT"
+          test "$(stat -c %u "$TASK_RUN_ROOT")" = "$(id -u)"
+          test "$(stat -c %a "$TASK_RUN_ROOT")" = 700
+          for task_bundle in prerequisite artifact; do
+            task_bundle_root="$TASK_RUN_ROOT/$task_bundle"
+            if test ! -d "$task_bundle_root"; then continue; fi
+            test ! -L "$task_bundle_root"
+            test "$(stat -c %u "$task_bundle_root")" = "$(id -u)"
+            for task_name in report.json manifest.json linux-cp314-runtime.lock \
+                linux-cp314-test.lock linux-cp314-dev.lock; do
+              if test -f "$task_bundle_root/$task_name"; then
+                test ! -L "$task_bundle_root/$task_name"
+                test "$(stat -c %h "$task_bundle_root/$task_name")" = 1
+                rm -- "$task_bundle_root/$task_name"
+              fi
+            done
+            rmdir -- "$task_bundle_root"
+          done
+          rmdir -- "$TASK_RUN_ROOT"
