@@ -707,3 +707,21 @@ draft Stage A PR use Refs #39, #41, #47, #67, #78, without closing keywords.
 Stage B, automatic PR merge, issue closure, production/staging, MOEX/Google/FTP
 writes, deployments and cron remain unauthorized. Rollback is separately
 controlled and preserves foreign worktrees, environments and every evidence set.
+
+## LNX-03 Stage A — PR #104 CODE_CHANGES R2
+
+The owner's independent review requests two local P1 corrections: truthful
+F-LOG outcomes after a partial fixture launch and complete ownership of bootstrap
+and witness pipe FDs. This is a correction inside the existing twelve-path H;
+`run_logging.py`, legacy grants/locks, Windows tools and Windows D2 remain
+unchanged. Preserve the accepted 95a563752f9bee186fc27e1ef2711c67879e23f3 evidence
+and integrated base c98664b7da20375cf0bfed8125a94d64008d0d63. Observed main
+945c424ecbf7bdd4459de50711929e21e6a3aeb4 has only disjoint A2 drift; no automatic
+main integration or rebase is authorized or performed.
+
+Local minimal correction, fault regressions and self-review are authorized.
+New exact-SHA push/PR update, hosted Linux native execution and Windows mandatory
+side effects require a separate owner CI grant. Old LNX-03 grants are revoked;
+the expired night budget must not be reused or extended. Local portable evidence
+does not replace Linux native acceptance. No merge, Stage B, issue closure,
+production, staging or remote publication is authorized.

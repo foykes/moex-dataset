@@ -24,6 +24,186 @@ SOURCE_PATHS = (
 )
 
 
+LIFECYCLE_FAULTS = (
+    ('second_ticket', 'ticket:ftp', {'tracker', 'google'}),
+    ('second_launch_constructor_refusal', 'popen:ftp', {'tracker', 'google'}),
+    ('second_pidfd_bind_failure', 'pidfd:ftp', {'tracker', 'google', 'ftp'}),
+    ('second_registry_refusal', 'registry:ftp', {'tracker', 'google', 'ftp'}),
+)
+
+
+def assert_lifecycle_fault_reached(state, boundary, born_roles):
+    """Independent witnesses distinguish intended faults from earlier failure."""
+    assert state.fault_reached is True
+    assert {process.role for process in state.processes} == born_roles
+    birth = state.trace.index(('popen-return', 'google'))
+    injection = state.trace.index(('fault', boundary))
+    assert birth < injection
+    assert state.result['status'] in {'FAIL', 'INCOMPLETE'}
+    assert state.result['application_exit'] == 1
+    assert state.result['logging']['delivery_outcome'] == 'INCOMPLETE'
+    assert state.result['logging']['storage_sealed'] is False
+    assert state.result['logging']['worker_final_count'] == 0
+    assert state.session['_worker_finals'] == {}
+
+
+@pytest.mark.parametrize('fault,boundary,born_roles', LIFECYCLE_FAULTS,
+                         ids=[item[0] for item in LIFECYCLE_FAULTS])
+def test_native_lifecycle_fault_closes_every_owned_fd_once(
+        native_lifecycle, fault, boundary, born_roles):
+    state = native_lifecycle.run(fault)
+    assert_lifecycle_fault_reached(state, boundary, born_roles)
+    assert state.unknown_closes == []
+    assert state.unowned_intact() is True
+    # The fixture has not performed its independent teardown yet. These are
+    # actual local descriptors, not a reported cleanup flag or mocked fstat.
+    assert state.active == {}
+    assert state.allocations
+    assert all(record['closed'] == 1 for record in state.allocations)
+
+
+@pytest.mark.parametrize('fault,boundary,born_roles', LIFECYCLE_FAULTS,
+                         ids=[item[0] for item in LIFECYCLE_FAULTS])
+def test_native_lifecycle_fault_keeps_born_roles_and_logging_truthful(
+        native_lifecycle, fault, boundary, born_roles):
+    state = native_lifecycle.run(fault)
+    assert_lifecycle_fault_reached(state, boundary, born_roles)
+    workers = {process.role: process for process in state.processes
+               if process.role in {'google', 'ftp'}}
+    for role, process in workers.items():
+        assert process.returncode is not None
+        assert process.waits, 'a process-double returncode alone is not a wait witness'
+        outcomes = [outcome for outcome in state.outcomes if outcome['role'] == role]
+        assert outcomes
+        assert all(outcome['started'] is True for outcome in outcomes)
+        assert outcomes[-1]['exit_status'] == process.returncode
+    records = {record['role']: record for record in state.result['worker_records']}
+    assert set(records) == set(workers)
+    for role, process in workers.items():
+        assert records[role]['pid'] == process.pid
+        assert records[role]['exitcode'] == process.returncode
+        assert records[role]['reaped'] is True
+    if fault == 'second_launch_constructor_refusal':
+        # A failed constructor returned no Popen. The supervisor cannot infer
+        # started=False/no children merely from that missing object.
+        assert not any(outcome['role'] == 'ftp' for outcome in state.outcomes)
+        assert state.result['status'] == 'INCOMPLETE'
+        assert state.result['all_workers_settled'] is False
+        unknown = [item for retained in state.retained
+                   for item in retained.get('unknown_births', [])]
+        assert len(unknown) == 1 and unknown[0]['role'] == 'ftp'
+        assert unknown[0]['birth_attempted'] is True and unknown[0]['process'] is None
+    else:
+        assert not any(outcome['role'] not in workers and outcome['started'] is True
+                       for outcome in state.outcomes)
+    assert state.reports
+    assert all(report['execution_outcome'] == 'FAILED' and report['exit_status'] == 1
+               and report['storage_sealed'] is False for report in state.reports)
+
+
+@pytest.mark.parametrize('fault,boundary,born_roles', [
+    ('second_prepare_registration', 'prepare:ftp', {'tracker'}),
+    ('pipe_acquisition_3', 'pipe:3', {'tracker'}),
+    ('pipe_acquisition_5', 'pipe:5', {'tracker', 'google'}),
+    ('bootstrap_write_failure', 'bootstrap-write', {'tracker', 'google'}),
+    ('witness_read_failure', 'witness-read', {'tracker', 'google', 'ftp'}),
+    ('ticket_write_failure', 'write:ftp.json', {'tracker', 'google'}),
+    ('registry_write_failure', 'write:pid-registry.pending', {'tracker', 'google', 'ftp'}),
+], ids=[
+    'prepare-registration', 'first-worker-second-pipe', 'second-worker-second-pipe',
+    'bootstrap-write', 'witness-read', 'ticket-write', 'registry-write',
+])
+def test_native_lifecycle_partial_acquisition_and_transfer_fail_closed(
+        native_lifecycle, fault, boundary, born_roles):
+    state = native_lifecycle.run(fault)
+    assert state.fault_reached is True
+    injection = state.trace.index(('fault', boundary))
+    assert {process.role for process in state.processes} == born_roles
+    if 'google' in born_roles:
+        assert state.trace.index(('popen-return', 'google')) < injection
+    else:
+        assert not any(event[0] == 'popen-attempt' and event[1] in {'google', 'ftp'}
+                       for event in state.trace)
+    if fault == 'second_prepare_registration':
+        assert state.trace.index(('registered', 'google')) < injection
+        assert set(state.session['_expected']) == {'google'}
+        assert state.result['two_workers_registered'] is False
+    if fault in {'ticket_write_failure', 'registry_write_failure'}:
+        name = boundary.removeprefix('write:')
+        assert state.trace.index(('open', 'file', name)) < injection
+        assert any(record['name'] == name and record['closed'] == 1
+                   for record in state.allocations)
+    assert state.result['status'] in {'FAIL', 'INCOMPLETE'}
+    assert state.result['application_exit'] == 1
+    assert state.result['logging']['delivery_outcome'] == 'INCOMPLETE'
+    assert state.result['logging']['storage_sealed'] is False
+    assert state.result['logging']['worker_final_count'] == 0
+    assert state.session['_worker_finals'] == {}
+    assert state.reports
+    assert all(report['execution_outcome'] == 'FAILED' and report['exit_status'] == 1
+               for report in state.reports)
+    workers = {process.role: process for process in state.processes
+               if process.role in {'google', 'ftp'}}
+    records = {record['role']: record for record in state.result['worker_records']}
+    assert set(records) == set(workers)
+    for role, process in workers.items():
+        assert process.waits and process.returncode is not None
+        assert records[role]['reaped'] is True
+        assert records[role]['exitcode'] == process.returncode
+        outcomes = [item for item in state.outcomes if item['role'] == role]
+        assert outcomes and all(item['started'] is True for item in outcomes)
+        assert outcomes[-1]['exit_status'] == process.returncode
+    for outcome in state.outcomes:
+        if outcome['role'] not in workers:
+            assert outcome['started'] is False and outcome['exit_status'] is None
+    assert state.unknown_closes == []
+    assert state.unowned_intact() is True
+    assert state.active == {}
+    assert all(record['closed'] == 1 for record in state.allocations)
+
+
+def test_native_lifecycle_unsettled_worker_preserves_ownership_without_fabricated_exit(
+        native_lifecycle):
+    state = native_lifecycle.run('unsettled_after_second_ticket')
+    assert_lifecycle_fault_reached(state, 'ticket:ftp', {'tracker', 'google'})
+    assert ('cleanup-requested',) in state.trace
+    google = next(process for process in state.processes if process.role == 'google')
+    assert google.returncode is None and google.waits == []
+    records = state.result['worker_records']
+    assert len(records) == 1 and records[0]['pid'] == google.pid
+    assert records[0]['exitcode'] is None and records[0]['reaped'] is False
+    assert records[0]['events'] == []
+    assert state.result['status'] == 'INCOMPLETE'
+    assert state.result['all_workers_settled'] is False
+    assert state.result['auxiliary']['settled'] is False
+    outcomes = [item for item in state.outcomes if item['role'] == 'google']
+    assert outcomes and all(item['started'] is True and item['exit_status'] is None
+                            for item in outcomes)
+    assert state.reports and all(report['exit_status'] == 1 for report in state.reports)
+    assert state.retained
+
+    def retained_descriptors(value):
+        if isinstance(value, dict):
+            found = {item for key, item in value.items()
+                     if key in {'pidfd', 'tracker_write'} and type(item) is int}
+            for item in value.values():
+                found.update(retained_descriptors(item))
+            return found
+        if isinstance(value, (list, tuple)):
+            return set().union(*(retained_descriptors(item) for item in value))
+        return set()
+
+    retained = retained_descriptors(state.retained)
+    assert state.active and set(state.active) <= retained
+    for record in state.allocations:
+        if record['fd'] in state.active and state.active[record['fd']] is record:
+            assert record['closed'] == 0
+            os.fstat(record['fd'])
+        else:
+            assert record['closed'] == 1
+    assert state.unknown_closes == [] and state.unowned_intact() is True
+
+
 def install_grants(values, grant, setup=True):
     values['MDS_LNX03_ADMISSION_GRANT'] = json.dumps(grant, sort_keys=True)
     if setup:

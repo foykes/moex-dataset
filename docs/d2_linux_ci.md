@@ -269,3 +269,30 @@ application proof therefore retains scratch and reports `INCOMPLETE`; it never
 asserts complete descendant containment. Abrupt controller cancellation still
 requires hosted runner teardown. None of these Linux mechanisms is accepted
 until separately authorized exact-SHA hosted execution and independent review.
+
+## PR #104 R2 partial-launch correction
+
+The fixture parent publishes its owned `Popen` immediately after birth and
+publishes the pidfd before identity binding. A later binding or registration
+refusal uses that same owner for bounded cleanup; an absent pidfd permits only
+the owned `Popen` to signal its own child. Actual exits are consumed only by
+`Popen`. F-LOG outcomes are recorded after cleanup from those observations,
+including partial starts. No parent path manufactures a worker final. A
+constructor exception without a returned `Popen` leaves birth uncertain, omits
+an invented `started=False` outcome and retains a fail-closed marker for outer
+containment. Live/unsettled children exclude success and retain their owners.
+
+All four per-worker pipe ends are owned from allocation, including partial
+allocation, ticket and launch failures. Only a successful launch transfers the
+witness reader to post-settlement collection. Registry/bootstrap failures and
+normal completion close the remaining ends once; exclusive ticket/registry
+writes also close their raw file FD on failure. Unrelated descriptors are never
+closed. Existing thirteen native cases remain unchanged; additional fixed fault
+tests observe actual F-LOG reports, OS reaping and complete FD identity balance.
+Portable tests use real local FDs with explicit process/kernel/F-LOG doubles;
+their PASS does not establish Linux process settlement.
+
+The R2 correction is local-only until a fresh owner exact-SHA grant covers push,
+Linux native CI and Windows mandatory side effects. Previous revoked grants and
+the expired night budget provide no authority. New-SHA hosted evidence remains
+NOT VERIFIED until that execution and independent review.

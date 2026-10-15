@@ -155,13 +155,25 @@ def _json_bytes(value):
                        ensure_ascii=True, allow_nan=False) + '\n').encode('ascii')
 
 
+def _write_exclusive(path, data):
+    """Own the raw FD through every write failure; no fdopen handoff gap."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, memoryview(data)[offset:])
+            if written <= 0:
+                raise NativeAdmissionError('LNX03_NATIVE_FILE_WRITE_FAILED')
+            offset += written
+    finally:
+        os.close(descriptor)
+
+
 def _ticket(path, value):
     data = _json_bytes(value)
     if len(data) > 65536:
         raise NativeAdmissionError('LNX03_NATIVE_TICKET_BOUND')
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'wb') as handle:
-        handle.write(data)
+    _write_exclusive(path, data)
 
 
 class _PassedFd:
@@ -207,7 +219,7 @@ def _serialize(bootstrap, repo):
     return first.getvalue(), second.getvalue(), adapter.descriptors
 
 
-def _launch(repo, ticket, descriptors):
+def _launch(repo, ticket, descriptors, *, owner):
     guard = install_process_guard()
     command = (str(Path(sys.executable).absolute()), '-I', '-S', '-B', '-X', 'utf8',
                str(repo / 'tests/linux_bootstrap/native_worker.py'), '--ticket', str(ticket))
@@ -215,31 +227,21 @@ def _launch(repo, ticket, descriptors):
         raise NativeAdmissionError('LNX03_NATIVE_LAUNCH_BUSY')
     guard.command, guard.owner = command, threading.get_ident()
     try:
+        # Publish each observation before the next fallible operation. Even a
+        # binding/registration failure leaves the sole Popen reaper with us.
+        owner['birth_attempted'] = True
         child = subprocess.Popen(command, executable=command[0], cwd=repo,
             env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
                  'LNX03_NATIVE_ROOT': str(_native_root(repo))},
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             close_fds=True, pass_fds=tuple(sorted(descriptors)), start_new_session=True)
+        owner['process'] = child
     finally:
         guard.command, guard.owner = None, None
-    # Binding failure is never permission to abandon a process already born.
-    descriptor = None
-    try:
-        descriptor = os.pidfd_open(child.pid, 0)
-        identity = _process_identity(child.pid)
-    except BaseException:
-        try:
-            child.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            child.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            raise NativeAdmissionError('LNX03_NATIVE_BIRTH_UNSETTLED') from None
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-        raise NativeAdmissionError('LNX03_NATIVE_PIDFD_BIND_FAILED') from None
+    descriptor = os.pidfd_open(child.pid, 0)
+    owner['pidfd'] = descriptor
+    identity = _process_identity(child.pid)
+    owner['identity'] = identity
     return child, descriptor, identity
 
 
@@ -263,13 +265,13 @@ def _registry(work, children, tracker):
     """Owned emergency inventory; no claim of settlement merely from a PID."""
     records = []
     for item in ([tracker] if tracker is not None else []) + children:
+        if item['process'] is None:
+            continue
         records.append(dict(pid=item['process'].pid, **item['identity'],
                             role=item.get('role', 'tracker'), pidfd_bound=True))
     path = work / 'pid-registry.json'
     temporary = work / 'pid-registry.pending'
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'wb') as handle:
-        handle.write(_json_bytes(dict(schema='lnx03-pid-registry-v1', processes=records)))
+    _write_exclusive(temporary, _json_bytes(dict(schema='lnx03-pid-registry-v1', processes=records)))
     os.replace(temporary, path)
 
 
@@ -391,8 +393,13 @@ def _settle(children, timeout=10):
     for item in children:
         if item['process'].poll() is None:
             try:
-                signal.pidfd_send_signal(item['pidfd'], signal.SIGTERM)
-            except ProcessLookupError:
+                if item['pidfd'] is not None:
+                    signal.pidfd_send_signal(item['pidfd'], signal.SIGTERM)
+                else:
+                    # Only the already-owned Popen, never an unbound PID from
+                    # a ticket/registry. This covers post-birth bind refusal.
+                    item['process'].terminate()
+            except OSError:
                 pass
     term_deadline = min(deadline, time.monotonic() + 5)
     while time.monotonic() < term_deadline and any(item['process'].poll() is None for item in children):
@@ -400,8 +407,11 @@ def _settle(children, timeout=10):
     for item in children:
         if item['process'].poll() is None:
             try:
-                signal.pidfd_send_signal(item['pidfd'], signal.SIGKILL)
-            except ProcessLookupError:
+                if item['pidfd'] is not None:
+                    signal.pidfd_send_signal(item['pidfd'], signal.SIGKILL)
+                else:
+                    item['process'].kill()
+            except OSError:
                 pass
     for item in children:
         try:
@@ -504,12 +514,28 @@ def _run_native_case(case, repo, scratch, attestation):
     work = scratch / ('native-' + uuid.uuid4().hex)
     work.mkdir(mode=0o700)
     children, session, bootstraps = [], None, []
-    tracker = None
+    tracker = dict(role='tracker', process=None, pidfd=None, identity=None, birth_attempted=False)
+    owned_fds = set()
+    tracker_read = tracker_write = foreign = None
     transport_settled = True
-    tracker_read, tracker_write = os.pipe()
-    foreign = os.open(work / 'foreign-marker', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-    os.set_inheritable(foreign, True)
-    foreign_identity = list(_fd_identity(foreign))
+    execution_complete = cleanup_attempted = cleanup_failed = False
+
+    def owned_pipe():
+        pair = os.pipe()
+        owned_fds.update(pair)
+        return pair
+
+    def close_owned(descriptor):
+        nonlocal cleanup_failed
+        if descriptor in owned_fds:
+            # Relinquish once before close, even if close raises: retrying an
+            # integer later could close an unrelated reused descriptor.
+            owned_fds.remove(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                cleanup_failed = True
+
     result = dict(schema='lnx03-native-case-v1', case=case, status='INCOMPLETE',
         failure_code='LNX03_NATIVE_INCOMPLETE', application_exit=1,
         deadline_seconds=DEADLINE_SECONDS, deadline_detected=False, cleanup_requested=False,
@@ -518,16 +544,19 @@ def _run_native_case(case, repo, scratch, attestation):
         auxiliary=dict(owned=False, pid=None, pidfd_bound=False, settled=False, reaped=False, exitcode=None),
         source_attestation=attestation, console_canary_absent=False)
     try:
+        tracker_read, tracker_write = owned_pipe()
+        foreign = os.open(work / 'foreign-marker', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        owned_fds.add(foreign)
+        os.set_inheritable(foreign, True)
+        foreign_identity = list(_fd_identity(foreign))
         tracker_ticket = work / 'tracker.json'
         _ticket(tracker_ticket, dict(schema='lnx03-native-ticket-v1', role='tracker',
             case=case, tracker_fd=tracker_read, repo=str(repo), parent_pid=os.getpid(),
             expected_fds=[tracker_read]))
-        process, descriptor, identity = _launch(repo, tracker_ticket, {tracker_read})
-        tracker = dict(process=process, pidfd=descriptor, identity=identity)
+        process, descriptor, identity = _launch(repo, tracker_ticket, {tracker_read}, owner=tracker)
         result['auxiliary'].update(owned=True, pid=process.pid, pidfd_bound=True)
         _registry(work, children, tracker)
-        os.close(tracker_read)
-        tracker_read = None
+        close_owned(tracker_read)
         # The pinned resource tracker checks this existing pipe. Its _pid stays
         # None: our Popen owns this tracker and is the only allowed reaper.
         tracker_state._fd = tracker_write
@@ -535,7 +564,8 @@ def _run_native_case(case, repo, scratch, attestation):
             environment='offline', producer_sha=os.environ['LNX03_SOURCE_SHA'],
             config={'log_root': '.f-log/lnx03', 'retained_runs': 1, 'critical_deadline_s': 0.5,
                     'shutdown_deadline_s': 2.0}, sensitive_values=(CANARY.decode('ascii'),))
-        bootstraps = [run_logging.prepare_worker(session, role) for role in ('google', 'ftp')]
+        for role in ('google', 'ftp'):
+            bootstraps.append(run_logging.prepare_worker(session, role))
         result['two_workers_registered'] = len(session['_expected']) == 2
         if case == 'listener_failure':
             # The real listener encounters a closed native output stream on
@@ -547,45 +577,48 @@ def _run_native_case(case, repo, scratch, attestation):
             session['_ack_senders'][bootstraps[0]['_token']].close()
         deadline = time.monotonic() + DEADLINE_SECONDS
         for index, role in enumerate(('google', 'ftp')):
-            preparation, payload, descriptors = _serialize(bootstraps[index], repo)
-            read_end, write_end = os.pipe()
-            witness_read, witness_write = os.pipe()
-            ticket = work / (role + '.json')
-            inherited = descriptors | {read_end, witness_write, tracker_write}
-            admission_events = []
-            if case == 'foreign_fd' and index == 0:
-                try:
-                    _admit_descriptors(inherited, inherited | {foreign})
-                except NativeAdmissionError:
-                    admission_events.append('FOREIGN_FD_REFUSED')
-                else:
-                    raise NativeAdmissionError('LNX03_NATIVE_FOREIGN_FD_ACCEPTED')
-            _admit_descriptors(inherited, inherited)
-            _ticket(ticket, dict(schema='lnx03-native-ticket-v1', role=role, case=case,
-                tracker_fd=tracker_write, bootstrap_fd=read_end, witness_fd=witness_write,
-                foreign_fd=foreign, foreign_identity=foreign_identity, repo=str(repo),
-                parent_pid=os.getpid(), expected_fds=sorted(inherited)))
-            try:
-                process, descriptor, identity = _launch(repo, ticket, inherited)
-            finally:
-                os.close(read_end)
-                os.close(witness_write)
-            item = dict(role=role, process=process, pidfd=descriptor,
-                        witness=witness_read, parent_events=admission_events, session_owned=False, identity=identity)
+            item = dict(role=role, process=None, pidfd=None, identity=None,
+                        birth_attempted=False, witness=None, parent_events=[], session_owned=False)
             children.append(item)
-            _registry(work, children, tracker)
+            local_fds = []
             try:
-                item['session_owned'] = os.getsid(process.pid) == process.pid
-            except ProcessLookupError:
-                pass
-            try:
+                preparation, payload, descriptors = _serialize(bootstraps[index], repo)
+                read_end, write_end = owned_pipe()
+                local_fds.extend((read_end, write_end))
+                witness_read, witness_write = owned_pipe()
+                local_fds.extend((witness_read, witness_write))
+                ticket = work / (role + '.json')
+                inherited = descriptors | {read_end, witness_write, tracker_write}
+                if case == 'foreign_fd' and index == 0:
+                    try:
+                        _admit_descriptors(inherited, inherited | {foreign})
+                    except NativeAdmissionError:
+                        item['parent_events'].append('FOREIGN_FD_REFUSED')
+                    else:
+                        raise NativeAdmissionError('LNX03_NATIVE_FOREIGN_FD_ACCEPTED')
+                _admit_descriptors(inherited, inherited)
+                _ticket(ticket, dict(schema='lnx03-native-ticket-v1', role=role, case=case,
+                    tracker_fd=tracker_write, bootstrap_fd=read_end, witness_fd=witness_write,
+                    foreign_fd=foreign, foreign_identity=foreign_identity, repo=str(repo),
+                    parent_pid=os.getpid(), expected_fds=sorted(inherited)))
+                process, descriptor, identity = _launch(repo, ticket, inherited, owner=item)
+                # Only a successful launch transfers this reader to the final
+                # witness collection. All other pipe ends stay scope-owned.
+                item['witness'] = witness_read
+                local_fds.remove(witness_read)
+                close_owned(read_end)
+                close_owned(witness_write)
+                _registry(work, children, tracker)
+                try:
+                    item['session_owned'] = os.getsid(process.pid) == process.pid
+                except ProcessLookupError:
+                    pass
                 if case == 'bootstrap_pipe_failure' and index == 0:
                     # A real write failure after native birth, before bootstrap
                     # transfer. No other file operation can reuse this fd
                     # between the intentional close and the failing write.
                     refused = write_end
-                    os.close(write_end)
-                    write_end = None
+                    close_owned(write_end)
                     try:
                         os.write(refused, preparation + payload)
                     except OSError:
@@ -599,8 +632,8 @@ def _run_native_case(case, repo, scratch, attestation):
                     except BrokenPipeError:
                         item['parent_events'].append('BOOTSTRAP_PIPE_WRITE_REFUSED')
             finally:
-                if write_end is not None:
-                    os.close(write_end)
+                for descriptor in local_fds:
+                    close_owned(descriptor)
         # No mutable checkpoint polling occurs. Only pidfds/process handles and
         # F-LOG health are observed while workers execute.
         while True:
@@ -615,51 +648,81 @@ def _run_native_case(case, repo, scratch, attestation):
             if time.monotonic() >= deadline:
                 result['deadline_detected'] = True
                 result['cleanup_requested'] = True
+                cleanup_attempted = True
                 _settle(children)
                 break
             # Fixed fixture peers are allowed to finish; a failed sibling never
             # makes them successful. A hanging peer is still bounded by this
             # same parent deadline. This avoids inventing pre-entry witnesses.
             time.sleep(0.02)
-        for item in children:
-            process = item['process']
-            settled = process.returncode is not None
-            events = item['parent_events'] + (_read_events(item['witness']) if settled else [])
-            result['worker_records'].append(dict(role=item['role'], pid=process.pid,
-                pidfd_bound=True, session_owned=item['session_owned'] or 'SESSION_OWNED' in events, exitcode=process.returncode,
-                reaped=settled, events=events, foreign_fd_absent='FOREIGN_FD_ABSENT' in events,
-                stdio_redirected='STDIO_BOUND' in events))
-            run_logging.record_worker_outcome(session, item['role'], started=True,
-                exit_status=process.returncode, timed_out=result['deadline_detected'] and process.returncode != 0)
-        result['all_workers_settled'] = all(item['process'].returncode is not None for item in children)
-        actual_success = (result['all_workers_settled'] and not result['deadline_detected']
-                          and all(item['process'].returncode == 0 for item in children))
-        report = run_logging.finalize_logging(session,
-            execution_outcome='COMPLETED' if actual_success else 'FAILED', exit_status=0 if actual_success else 1)
-        result['logging'] = dict(delivery_outcome=report['delivery_outcome'],
-            storage_sealed=report['storage_sealed'], exit_status=report['exit_status'],
-            worker_final_count=len(session['_worker_finals']))
-        result['application_exit'] = 0 if (actual_success and report['delivery_outcome'] == 'COMPLETE'
-                                          and report['storage_sealed']) else 1
-        result['console_canary_absent'] = all(record['stdio_redirected'] for record in result['worker_records'])
+        execution_complete = True
     except BaseException:
         # Fault details, raw streams, exception strings and tracebacks never
         # cross the result boundary. Missing evidence remains INCOMPLETE.
         result['failure_code'] = 'LNX03_NATIVE_EXECUTION_INCOMPLETE'
     finally:
-        if any(item['process'].poll() is None for item in children):
+        born = [item for item in children if item['process'] is not None]
+        unknown_birth = any(item['birth_attempted'] and item['process'] is None
+                            for item in [tracker] + children)
+        if not cleanup_attempted and any(item['process'].poll() is None for item in born):
             result['cleanup_requested'] = True
-            _settle(children)
-        if session is not None and session.get('_final') is None:
             try:
-                for role in session['_expected']:
-                    run_logging.record_worker_outcome(session, role, started=False, exit_status=None)
-                run_logging.finalize_logging(session, execution_outcome='FAILED', exit_status=1)
+                _settle(born)
             except BaseException:
-                pass
-        for item in children:
-            os.close(item['witness'])
-            os.close(item['pidfd'])
+                cleanup_failed = True
+        result['all_workers_settled'] = (not unknown_birth and
+                                        all(item['process'].returncode is not None for item in born))
+        for item in born:
+            process = item['process']
+            settled = process.returncode is not None
+            events = list(item['parent_events'])
+            try:
+                if settled and item['witness'] is not None:
+                    events += _read_events(item['witness'])
+            except BaseException:
+                cleanup_failed = True
+            result['worker_records'].append(dict(role=item['role'], pid=process.pid,
+                pidfd_bound=item['pidfd'] is not None,
+                session_owned=item['session_owned'] or 'SESSION_OWNED' in events,
+                exitcode=process.returncode, reaped=settled, events=events,
+                foreign_fd_absent='FOREIGN_FD_ABSENT' in events, stdio_redirected='STDIO_BOUND' in events))
+        if session is not None:
+            result['two_workers_registered'] = set(session['_expected']) == {'google', 'ftp'}
+            for role in session['_expected']:
+                item = next((item for item in children if item['role'] == role), None)
+                if item is not None and item['birth_attempted'] and item['process'] is None:
+                    # A constructor exception supplies neither a no-birth proof
+                    # nor an exit observation. Omit it: F-LOG stays incomplete.
+                    continue
+                process = item['process'] if item is not None else None
+                try:
+                    run_logging.record_worker_outcome(session, role, started=process is not None,
+                        exit_status=process.returncode if process is not None else None,
+                        timed_out=result['deadline_detected'] and process is not None and process.returncode != 0)
+                except BaseException:
+                    cleanup_failed = True
+            actual_success = (execution_complete and not cleanup_failed and len(born) == 2
+                              and result['two_workers_registered'] and result['all_workers_settled']
+                              and not result['deadline_detected']
+                              and all(item['process'].returncode == 0 for item in born))
+            try:
+                report = run_logging.finalize_logging(session,
+                    execution_outcome='COMPLETED' if actual_success else 'FAILED',
+                    exit_status=0 if actual_success else 1)
+                result['logging'] = dict(delivery_outcome=report['delivery_outcome'],
+                    storage_sealed=report['storage_sealed'], exit_status=report['exit_status'],
+                    worker_final_count=len(session['_worker_finals']))
+                result['application_exit'] = 0 if (actual_success and report['delivery_outcome'] == 'COMPLETE'
+                                                  and report['storage_sealed']) else 1
+            except BaseException:
+                cleanup_failed = True
+        result['console_canary_absent'] = (len(born) == 2 and
+                                           all(record['stdio_redirected'] for record in result['worker_records']))
+        for item in born:
+            close_owned(item['witness'])
+            if item['pidfd'] is not None and item['process'].returncode is not None:
+                owned_fds.add(item['pidfd'])
+                close_owned(item['pidfd'])
         if session is not None:
             # F-LOG has finalized before this fixture-only ownership cleanup.
             # cancel_join_thread() is not a feeder exit witness: its real
@@ -670,44 +733,61 @@ def _run_native_case(case, repo, scratch, attestation):
                 session['_queue'].close()
                 if feeder is not None:
                     feeder.join(timeout=2)
-                transport_settled = ((feeder is None or not feeder.is_alive())
+                transport_settled = (all(item['process'].returncode is not None for item in born) and
+                                     (feeder is None or not feeder.is_alive())
                                      and not session['_thread'].is_alive())
             except BaseException:
                 transport_settled = False
             finally:
                 feeder = None
+        # Unknown constructor birth cannot become successful. Once our known
+        # transports stopped, close owned pipe ends; the outer OS containment
+        # still owns any unobserved birth and later cases remain refused.
         if transport_settled:
             bootstraps.clear()
             session = None
             gc.collect()  # SemLock finalizers must send UNREGISTER before EOF.
             if tracker_state._fd == tracker_write:
                 tracker_state._fd = None
-            os.close(tracker_write)
+            close_owned(tracker_write)
         else:
             # No synthetic settlement, premature tracker EOF, or later-case
             # recovery. Preserve live references and the registered tracker for
             # fail-closed runner/controller teardown and its retained scratch.
             _unsettled_transports.append(dict(session=session, bootstraps=bootstraps,
-                                               tracker=tracker, tracker_write=tracker_write))
+                                               tracker=tracker, tracker_write=tracker_write, children=children))
             result['application_exit'] = 1
             result['cleanup_requested'] = True
-        if tracker_read is not None:
-            os.close(tracker_read)
-        os.close(foreign)
-        if tracker is not None and transport_settled:
+        for descriptor in tuple(owned_fds):
+            if transport_settled or descriptor != tracker_write:
+                close_owned(descriptor)
+        if tracker['process'] is not None and transport_settled:
+            process = tracker['process']
+            result['auxiliary'].update(owned=True, pid=process.pid, pidfd_bound=tracker['pidfd'] is not None)
             try:
-                tracker['process'].wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _settle([tracker], timeout=5)
-            result['auxiliary'].update(settled=tracker['process'].returncode is not None,
-                                       reaped=tracker['process'].returncode is not None,
-                                       exitcode=tracker['process'].returncode)
-            os.close(tracker['pidfd'])
-    if not transport_settled:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _settle([tracker], timeout=5)
+            except BaseException:
+                cleanup_failed = True
+            result['auxiliary'].update(settled=process.returncode is not None,
+                                       reaped=process.returncode is not None, exitcode=process.returncode)
+            if tracker['pidfd'] is not None and process.returncode is not None:
+                owned_fds.add(tracker['pidfd'])
+                close_owned(tracker['pidfd'])
+            elif process.returncode is None:
+                _unsettled_transports.append(dict(tracker=tracker))
+        if unknown_birth:
+            _unsettled_transports.append(dict(unknown_births=[item for item in [tracker] + children
+                if item['birth_attempted'] and item['process'] is None]))
+    if (not transport_settled or unknown_birth or cleanup_failed
+            or not result['all_workers_settled'] or not result['auxiliary']['settled']):
+        result['application_exit'] = 1
         result['status'] = 'INCOMPLETE'
-        result['failure_code'] = 'LNX03_NATIVE_TRANSPORT_UNSETTLED'
+        result['failure_code'] = 'LNX03_NATIVE_CLEANUP_INCOMPLETE'
         return result
-    passed = _case_passed(case, result)
+    passed = execution_complete and _case_passed(case, result)
     result['status'] = 'PASS' if passed else 'FAIL'
     result['failure_code'] = None if passed else 'LNX03_NATIVE_ORACLE_FAILED'
     return result

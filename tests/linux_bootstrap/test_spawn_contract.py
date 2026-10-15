@@ -1,10 +1,12 @@
 """Native oracles: refusing Windows is not Linux runtime acceptance."""
 
+import errno
 import importlib
 import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -183,3 +185,286 @@ def test_native_process_logging_and_bootstrap_oracles(
         # The native implementation must prove the scanner rejected its positive
         # control, not merely report that redirected stdout was empty.
         assert any('CANARY_REJECTED' in worker['events'] for worker in workers)
+
+
+def _native_fd_inventory():
+    """Observe every live FD identity after listdir's own directory FD closes."""
+    result = {}
+    for name in os.listdir('/proc/self/fd'):
+        descriptor = int(name)
+        try:
+            info = os.fstat(descriptor)
+        except OSError as error:
+            if error.errno != errno.EBADF:
+                raise
+            continue
+        result[descriptor] = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
+    return result
+
+
+def _native_assert_reaped(process):
+    assert type(process.returncode) is int
+    # WNOWAIT never competes with Popen's consuming reap. ECHILD proves that
+    # the test did not need to repair an unreaped child to obtain its result.
+    with pytest.raises(ChildProcessError):
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+
+
+@pytest.mark.parametrize('fault', [
+    'google_launch_refused', 'ftp_launch_refused', 'ftp_ticket_refused',
+    'google_pidfd_refused', 'google_identity_refused', 'google_registry_refused',
+    'google_registration_refused', 'ftp_registration_refused',
+])
+def test_native_partial_launch_preserves_real_outcomes_and_owned_fds(
+        native_guard, repo, monkeypatch, fault):
+    """Additional native faults are not replacements for the original 13 cases.
+
+    Every observer delegates to real Popen/F-LOG/OS operations. Constructor
+    uncertainty is a separate portable oracle: these pre-birth refusals occur
+    before entering Popen, so absence of a birth is independently established.
+    """
+    import run_logging
+
+    configured = os.environ.get('LNX03_NATIVE_ROOT')
+    assert configured
+    parent = Path(configured)
+    assert parent.is_absolute() and parent.resolve() == parent and parent.is_dir()
+    root = parent / ('fault-' + uuid.uuid4().hex)
+    root.mkdir(mode=0o700)
+    state = dict(armed=False, reached=False, active_role=None, active_owner=None,
+                 births=[], owners={}, publications=[], outcomes=[], reports=[])
+    processes = []
+    foreign = None
+    foreign_identity = None
+    verified = False
+    real_launch = native_guard._launch
+    real_popen = native_guard.subprocess.Popen
+    real_pidfd = native_guard.os.pidfd_open
+    real_identity = native_guard._process_identity
+    real_ticket = native_guard._ticket
+    real_registry = native_guard._registry
+    real_prepare = run_logging.prepare_worker
+    real_outcome = run_logging.record_worker_outcome
+    real_finalize = run_logging.finalize_logging
+
+    def ticket_role(path):
+        role = Path(path).stem
+        assert role in {'tracker', 'google', 'ftp'}
+        assert Path(path).is_relative_to(root)
+        return role
+
+    def observe_popen(command, *args, **kwargs):
+        assert tuple(command)[-2] == '--ticket'
+        assert Path(command[-3]) == repo / 'tests/linux_bootstrap/native_worker.py'
+        role = ticket_role(command[-1])
+        process = real_popen(command, *args, **kwargs)
+        processes.append(process)
+        if state['armed']:
+            state['births'].append((role, process))
+        return process
+
+    def observe_launch(actual_repo, ticket, descriptors, *, owner=None):
+        role = ticket_role(ticket)
+        previous = state['active_role'], state['active_owner']
+        state['active_role'], state['active_owner'] = role, owner
+        try:
+            if state['armed'] and fault == role + '_launch_refused':
+                state['reached'] = True
+                # No constructor call, native birth, or fabricated exit.
+                raise native_guard.NativeAdmissionError('LNX03_TEST_BEFORE_BIRTH')
+            return real_launch(actual_repo, ticket, descriptors, owner=owner)
+        finally:
+            if state['armed']:
+                assert type(owner) is dict
+                state['owners'][role] = {
+                    key: owner.get(key) for key in ('process', 'pidfd', 'identity', 'birth_attempted')}
+            state['active_role'], state['active_owner'] = previous
+
+    def observe_pidfd(pid, flags=0):
+        if state['armed'] and state['active_role'] in {'tracker', 'google', 'ftp'}:
+            owner = state['active_owner']
+            process = next(process for role, process in state['births'] if process.pid == pid)
+            published = type(owner) is dict and owner.get('process') is process
+            state['publications'].append((state['active_role'], published))
+            assert published, 'Popen ownership must precede pidfd binding'
+            if fault == state['active_role'] + '_pidfd_refused':
+                state['reached'] = True
+                raise PermissionError('LNX03_TEST_PIDFD_REFUSED')
+        return real_pidfd(pid, flags)
+
+    def observe_identity(pid):
+        if (state['armed'] and state['active_role'] is not None
+                and fault == state['active_role'] + '_identity_refused'):
+            assert state['active_owner']['process'].pid == pid
+            state['reached'] = True
+            raise OSError('LNX03_TEST_IDENTITY_REFUSED')
+        return real_identity(pid)
+
+    def observe_ticket(path, value):
+        if state['armed'] and fault == value['role'] + '_ticket_refused':
+            assert any(role == 'google' for role, process in state['births'])
+            assert not any(role == 'ftp' for role, process in state['births'])
+            state['reached'] = True
+            raise OSError('LNX03_TEST_TICKET_REFUSED')
+        return real_ticket(path, value)
+
+    def observe_registry(work, children, tracker):
+        if (state['armed'] and fault == 'google_registry_refused'
+                and any(item.get('role') == 'google' and item.get('process') is not None
+                        for item in children)):
+            state['reached'] = True
+            raise OSError('LNX03_TEST_REGISTRY_REFUSED')
+        return real_registry(work, children, tracker)
+
+    def observe_prepare(session, role):
+        if state['armed'] and fault == role + '_registration_refused':
+            state['reached'] = True
+            raise OSError('LNX03_TEST_REGISTRATION_REFUSED')
+        return real_prepare(session, role)
+
+    def observe_outcome(session, role, **kwargs):
+        result = real_outcome(session, role, **kwargs)
+        if state['armed']:
+            # Primitive snapshots only: retaining session/Queue references would
+            # itself prevent real semaphore cleanup before tracker EOF.
+            state['outcomes'].append((role, dict(session['_outcomes'][role])))
+        return result
+
+    def observe_finalize(session, **kwargs):
+        expected = set(session['_expected'])
+        report = real_finalize(session, **kwargs)
+        if state['armed']:
+            state['reports'].append((expected, report))
+        return report
+
+    monkeypatch.setattr(native_guard.subprocess, 'Popen', observe_popen)
+    monkeypatch.setattr(native_guard, '_launch', observe_launch)
+    monkeypatch.setattr(native_guard.os, 'pidfd_open', observe_pidfd)
+    monkeypatch.setattr(native_guard, '_process_identity', observe_identity)
+    monkeypatch.setattr(native_guard, '_ticket', observe_ticket)
+    monkeypatch.setattr(native_guard, '_registry', observe_registry)
+    monkeypatch.setattr(run_logging, 'prepare_worker', observe_prepare)
+    monkeypatch.setattr(run_logging, 'record_worker_outcome', observe_outcome)
+    monkeypatch.setattr(run_logging, 'finalize_logging', observe_finalize)
+    try:
+        # RawValue's attested global Arena cache legitimately keeps backing FDs.
+        # Warm it with actual successful transport before the complete FD oracle.
+        warm = native_guard.run_native_case('success', repo, root)
+        assert warm['status'] == 'PASS' and warm['application_exit'] == 0
+        for process in processes:
+            _native_assert_reaped(process)
+        foreign = os.open(root / 'unrelated-fd', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        info = os.fstat(foreign)
+        foreign_identity = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
+        before_fds = _native_fd_inventory()
+        assert before_fds[foreign] == foreign_identity
+        state['armed'] = True
+        record = native_guard.run_native_case('success', repo, root)
+        assert state['reached'], 'the selected fault boundary was not reached'
+        assert set(record) == CASE_FIELDS
+        assert record['status'] in {'FAIL', 'INCOMPLETE'}
+        assert record['application_exit'] == 1
+        assert record['failure_code'] is not None
+
+        expected = {'google', 'ftp'}
+        if fault == 'google_registration_refused':
+            expected = set()
+        elif fault == 'ftp_registration_refused':
+            expected = {'google'}
+        assert len(state['reports']) == 1
+        registered, report = state['reports'][0]
+        assert registered == expected
+        assert report['execution_outcome'] == 'FAILED' and report['exit_status'] == 1
+        assert set(report['worker_outcomes']) == expected
+        assert record['two_workers_registered'] is (expected == {'google', 'ftp'})
+
+        born = {role: process for role, process in state['births'] if role != 'tracker'}
+        expected_born = set() if fault in {
+            'google_launch_refused', 'google_registration_refused', 'ftp_registration_refused'} else {'google'}
+        assert set(born) == expected_born
+        for process in processes:
+            _native_assert_reaped(process)
+        assert all(published for role, published in state['publications'])
+        for role in expected:
+            outcome = report['worker_outcomes'][role]
+            assert outcome['started'] is (role in born)
+            assert outcome['exit_status'] == (born[role].returncode if role in born else None)
+        assert {role for role, outcome in state['outcomes']} == expected
+        for role, outcome in state['outcomes']:
+            assert outcome['started'] is (role in born)
+            assert outcome['exit_status'] == (born[role].returncode if role in born else None)
+        for role, owner in state['owners'].items():
+            if role in born:
+                assert owner['process'] is born[role] and owner['birth_attempted'] is True
+            elif fault == role + '_launch_refused':
+                assert owner['process'] is None and owner['birth_attempted'] is False
+
+        workers = {worker['role']: worker for worker in record['worker_records']}
+        assert set(workers) == set(born)
+        for role, worker in workers.items():
+            assert set(worker) == WORKER_FIELDS
+            assert worker['pid'] == born[role].pid
+            assert worker['exitcode'] == born[role].returncode and worker['reaped'] is True
+            if fault == 'google_pidfd_refused':
+                assert worker['pidfd_bound'] is False
+        actual_finals = {row['worker_id']: row['final_report']
+                         for row in report['expected_producers'] if row['worker_id'] != 'parent'}
+        for role in expected - set(born):
+            assert actual_finals[role] is None
+        if fault in {'google_pidfd_refused', 'google_identity_refused', 'google_registry_refused'}:
+            assert actual_finals['google'] is None
+            assert 'WORKER_WRAPPER' not in workers['google']['events']
+        assert record['logging'] == {
+            'delivery_outcome': report['delivery_outcome'], 'storage_sealed': report['storage_sealed'],
+            'exit_status': report['exit_status'],
+            'worker_final_count': sum(value is not None for value in actual_finals.values()),
+        }
+        tracker = [process for role, process in state['births'] if role == 'tracker']
+        assert len(tracker) == 1
+        assert record['auxiliary']['pid'] == tracker[0].pid
+        assert record['auxiliary']['settled'] is True and record['auxiliary']['reaped'] is True
+        assert record['auxiliary']['exitcode'] == tracker[0].returncode == 0
+        assert record['all_workers_settled'] is True
+        assert _native_fd_inventory() == before_fds
+        assert _native_fd_inventory()[foreign] == foreign_identity
+        verified = True
+    finally:
+        # Independent fixture safety after a failed assertion; this cannot make
+        # the earlier settlement/FD assertions pass or authorize another case.
+        deadline = time.monotonic() + 5
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=min(1, max(0, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=max(0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    pass
+        if foreign is not None and foreign_identity is not None:
+            try:
+                info = os.fstat(foreign)
+            except OSError as error:
+                if error.errno != errno.EBADF:
+                    raise
+            else:
+                # A failed subject may have closed/reused the integer. Never
+                # close another owner's replacement while cleaning this test.
+                current = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
+                if current == foreign_identity:
+                    os.close(foreign)
+        if verified and all(process.returncode is not None for process in processes):
+            assert root.resolve().parent == parent
+            shutil.rmtree(root)
