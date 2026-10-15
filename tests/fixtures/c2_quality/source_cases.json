@@ -1,0 +1,794 @@
+{
+  "fixture_version": 1,
+  "baseline": {
+    "sha": "b423a7817e9a508fc167cdd47704d0b788252a8c",
+    "python_blob": "7e63237528dbf43d2fe9dd3fba7ac277f477dc35",
+    "notebook_blob": "2b297e85944ad7445889ec85c5ce4931271adc3f"
+  },
+  "columns": [
+    "registryclosedate",
+    "value",
+    "currencyid"
+  ],
+  "cases": [
+    {
+      "case_id": "healthy",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "historical_2111",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "HISTORICAL_AUDIT_RECONSTRUCTION",
+      "isin": "RU000A0JR4A1",
+      "ticker": "MOEX",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2111-01-01\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "valid_leap_day",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-02-29\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "invalid_leap_day",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2023-02-29\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "future_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2030-01-01\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "empty_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "null_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[null,17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "malformed_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"not-a-date\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "numeric_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[123,17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "zero_integer",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",0,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "0",
+          "decimal_reference": "0",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "zero_float",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",0.0,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "0.0",
+          "decimal_reference": "0.0",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "tiny_positive",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",0.000000000001,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "0.000000000001",
+          "decimal_reference": "0.000000000001",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "underflow_positive",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",1e-400,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "1e-400",
+          "decimal_reference": "1e-400",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "negative_amount",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",-17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "-17.35",
+          "decimal_reference": "-17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "long_decimal",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",0.10000000000000001,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "0.10000000000000001",
+          "decimal_reference": "0.10000000000000001",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "many_decimal_digits",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",1.23456789012345678901234567890123456789,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "1.23456789012345678901234567890123456789",
+          "decimal_reference": "1.23456789012345678901234567890123456789",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "large_integer",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",9007199254740993,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "9007199254740993",
+          "decimal_reference": "9007199254740993",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "null_amount",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",null,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "null",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_NULL"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "numeric_string",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",\"0.000000000001\",\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "\"0.000000000001\"",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_STRING"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "boolean_amount",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",true,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "true",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_BOOLEAN"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "list_amount",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",[1,2],\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "[1,2]",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_CONTAINER"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "object_amount",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",{\"amount\":1},\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "{\"amount\":1}",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_CONTAINER"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "overflow_number",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",1e309,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "1e309",
+          "decimal_reference": "1e309",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "nonstandard_nan",
+      "input_kind": "NONSTANDARD_JSON_EXTENSION",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",NaN,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "NaN",
+          "decimal_reference": null,
+          "comparison_reason": "NONSTANDARD_NONFINITE_TOKEN"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "nonstandard_inf",
+      "input_kind": "NONSTANDARD_JSON_EXTENSION",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",Infinity,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "Infinity",
+          "decimal_reference": null,
+          "comparison_reason": "NONSTANDARD_NONFINITE_TOKEN"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "nonstandard_negative_inf",
+      "input_kind": "NONSTANDARD_JSON_EXTENSION",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",-Infinity,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "-Infinity",
+          "decimal_reference": null,
+          "comparison_reason": "NONSTANDARD_NONFINITE_TOKEN"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "runtime_nan",
+      "input_kind": "PYTHON_RUNTIME",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": null,
+      "runtime_rows": [
+        [
+          "2024-07-11",
+          {
+            "runtime_float": "nan"
+          },
+          "RUB"
+        ]
+      ],
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": null,
+          "decimal_reference": null,
+          "comparison_reason": "NOT_APPLICABLE"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "runtime_inf",
+      "input_kind": "PYTHON_RUNTIME",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": null,
+      "runtime_rows": [
+        [
+          "2024-07-11",
+          {
+            "runtime_float": "inf"
+          },
+          "RUB"
+        ]
+      ],
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": null,
+          "decimal_reference": null,
+          "comparison_reason": "NOT_APPLICABLE"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "runtime_negative_inf",
+      "input_kind": "PYTHON_RUNTIME",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": null,
+      "runtime_rows": [
+        [
+          "2024-07-11",
+          {
+            "runtime_float": "-inf"
+          },
+          "RUB"
+        ]
+      ],
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": null,
+          "decimal_reference": null,
+          "comparison_reason": "NOT_APPLICABLE"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "null_currency",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,null]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "empty_currency",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "unknown_currency",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"ZZZ\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "numeric_currency",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,7]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "list_currency",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,[\"RUB\"]]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "serializer_illegal_character",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"RUB\\u0001\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "xlsx"
+    },
+    {
+      "case_id": "distinct_same_date_payouts",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"RUB\"],[\"2024-07-11\",0.5,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        },
+        {
+          "row_ordinal": 1,
+          "raw_token": "0.5",
+          "decimal_reference": "0.5",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "identical_source_rows",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"RUB\"],[\"2024-07-11\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        },
+        {
+          "row_ordinal": 1,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "zero_and_null",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",0,\"RUB\"],[\"2024-07-12\",null,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "0",
+          "decimal_reference": "0",
+          "comparison_reason": null
+        },
+        {
+          "row_ordinal": 1,
+          "raw_token": "null",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_NULL"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "large_integer_and_null",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",9007199254740993,\"RUB\"],[\"2024-07-12\",null,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "9007199254740993",
+          "decimal_reference": "9007199254740993",
+          "comparison_reason": null
+        },
+        {
+          "row_ordinal": 1,
+          "raw_token": "null",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_NULL"
+        }
+      ],
+      "expected_failure_stage": null
+    },
+    {
+      "case_id": "late_malformed_row",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"RUB\"],[\"2024-07-12\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "parse"
+    },
+    {
+      "case_id": "valid_empty",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[]}}",
+      "runtime_rows": null,
+      "value_inputs": [],
+      "expected_failure_stage": "main"
+    }
+  ]
+}
