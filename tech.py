@@ -485,7 +485,7 @@ def _calculator_impl(filename, logging_context, state):
             STOCHRSI_full_fastd = pd.concat([STOCHRSI_full_fastd,STOCHRSI_ticker_fastd])
 
         TRIX_real_ticker = talib.TRIX(df_ticker['close'], timeperiod=30)
-        if len(TRIX_real_ticker) > 0: _full = pd.concat([TRIX_full, TRIX_real_ticker])
+        if len(TRIX_real_ticker) > 0: TRIX_full = pd.concat([TRIX_full, TRIX_real_ticker])
   
         ULTOSC_real_ticker = talib.ULTOSC(df_ticker['high'], df_ticker['low'], df_ticker['close'], timeperiod1=7, timeperiod2=14, timeperiod3=28)
         if len(ULTOSC_real_ticker) > 0: ULTOSC_full = pd.concat([ULTOSC_full,ULTOSC_real_ticker])
