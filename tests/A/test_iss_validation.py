@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+from urllib3._collections import HTTPHeaderDict
 
 
 RAW_COLUMNS = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end']
@@ -38,16 +39,22 @@ def response(body=BODY, content_type='text/csv', status=200):
     result.encoding = 'utf-8'  # Baseline-compatible; V1 must decode content itself.
     if content_type is not None:
         result.headers['Content-Type'] = content_type
+    class RawBody(io.BytesIO):
+        def read(self, amt=None, decode_content=False):
+            assert type(amt) is int and 0 < amt <= 65536
+            assert decode_content is False
+            return super().read(amt)
+
+    result.raw = RawBody(result._content)
+    result.raw.headers = HTTPHeaderDict(result.headers)
     return result
 
 
 def transport(gathering, monkeypatch, outcomes):
     sequence = iter(outcomes)
     calls, sleeps = [], []
-    elapsed = iter(range(1000))
-
-    def get(url, headers, timeout, verify=None, allow_redirects=None):
-        calls.append((url, dict(headers), timeout, verify, allow_redirects))
+    def get(url, headers, timeout, verify=None, allow_redirects=None, stream=None):
+        calls.append((url, dict(headers), timeout, verify, allow_redirects, stream))
         item = next(sequence)
         if isinstance(item, BaseException):
             raise item
@@ -57,7 +64,8 @@ def transport(gathering, monkeypatch, outcomes):
     monkeypatch.setattr(gathering, 'header', {'User-Agent': 'AGENT_A'})
     monkeypatch.setattr(gathering, 'get_next_header', lambda current: {'User-Agent': 'AGENT_B'})
     monkeypatch.setattr(gathering, 'time',
-                        SimpleNamespace(sleep=sleeps.append, perf_counter=lambda: next(elapsed)))
+                        SimpleNamespace(sleep=sleeps.append, perf_counter=lambda: 0.0,
+                                        time=lambda: 1709380800.0))
     return calls, sleeps
 
 
@@ -78,7 +86,7 @@ def assert_refusal(gathering, monkeypatch, body, content_type='text/csv'):
         query(gathering, max_retries=1)
     if type(captured.value) is ValueError:
         assert captured.value.args == (SCHEMA_CODE,)
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A'}, 30, True, False)]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
     assert sleeps == []
 
 
@@ -114,7 +122,7 @@ def test_accepted_profile_preserves_literal_values_dtypes_and_index(
         ('FIXTURE_SHARE', 24, '2024-02-29 00:00:00'),
         ('FIXTURE_SHARE', 24, '2024-03-01 00:00:00'),
     ]
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A'}, 30, True, False)]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
     assert sleeps == [3]
     returned = event_log.events[-1]
     assert (returned['event'], returned['outcome']) == (
@@ -297,7 +305,7 @@ def test_bond_route_keeps_request_bound_identity_without_payload_identity_claim(
     assert result.columns.tolist() == OUTPUT_COLUMNS and result.index.tolist() == [0, 1]
     assert result.dtypes.astype(str).tolist() == DTYPES
     assert calls == [(HTTPS_QUERY.replace('/shares/', '/bonds/').replace('FIXTURE_SHARE', 'FIXTURE_BOND'),
-                     {'User-Agent': 'AGENT_A'}, 30, True, False)]
+                     {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
     assert sleeps == [3]
 
 
@@ -328,44 +336,46 @@ def test_decode_failure_keeps_native_primary_and_safe_closed_record(
     assert len(calls) == 1 and sleeps == []
     final = event_log.events[-1]
     assert (final['event'], final['outcome'], final['error']['code'], final['error']['category']) == (
-        'a2_query_failed', 'RETRY_EXHAUSTED', DECODE_CODE, 'SOURCE')
+        'a2_query_failed', 'RESPONSE_REJECTED', DECODE_CODE, 'SOURCE')
     assert final['error']['final'] is True and final['error']['retryable'] is False
     assert final['retries'] == {'attempt': 1, 'limit': 1}
     assert final['fields'] == {}
 
 
-def test_schema_failure_retains_legacy_attempt_limit_header_rotation_and_backoff(
+def test_schema_failure_is_terminal_without_header_rotation_or_backoff(
         gathering, monkeypatch, event_log):
     invalid = changed_row('open', 'INVALID_NUMBER')
     calls, sleeps = transport(gathering, monkeypatch, [response(invalid)] * 5 + [response()])
     with pytest.raises(ValueError) as captured:
         query(gathering, logging_context=event_log.context)
     assert captured.value.args == (SCHEMA_CODE,)
-    assert len(calls) == 5 and sleeps == [3, 6, 12, 24]
-    assert [item[1] for item in calls] == [{'User-Agent': 'AGENT_A'}] + [{'User-Agent': 'AGENT_B'}] * 4
+    assert len(calls) == 1 and sleeps == []
+    assert [item[1] for item in calls] == [
+        {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}]
     retries = [item for item in event_log.events if item['event'] == 'a2_query_retry']
-    assert len(retries) == 4
-    assert [item['retries'] for item in retries] == [
-        {'attempt': attempt, 'limit': 5} for attempt in range(1, 5)]
-    assert all(item['outcome'] == 'RETRY_PENDING' and item['error']['code'] == SCHEMA_CODE
-               and item['error']['category'] == 'SOURCE' and item['error']['final'] is False
-               and item['error']['retryable'] is True and item['fields'] == {} for item in retries)
+    assert retries == []
     final = event_log.events[-1]
-    assert (final['event'], final['outcome']) == ('a2_query_failed', 'RETRY_EXHAUSTED')
-    assert final['retries'] == {'attempt': 5, 'limit': 5}
+    assert (final['event'], final['outcome']) == ('a2_query_failed', 'RESPONSE_REJECTED')
+    assert final['retries'] == {'attempt': 1, 'limit': 5}
     assert final['error']['code'] == SCHEMA_CODE
+    assert final['error']['category'] == 'SOURCE' and final['fields'] == {}
     assert final['error']['final'] is True and final['error']['retryable'] is False
     assert not any(item['event'] == 'a2_query_returned' for item in event_log.events)
 
 
-def test_schema_then_success_keeps_literal_frame_and_both_sleeps(gathering, monkeypatch):
+def test_schema_refusal_does_not_consume_success_for_an_independent_query(gathering, monkeypatch):
     calls, sleeps = transport(gathering, monkeypatch, [response(changed_row('open', 'BAD')), response()])
+    with pytest.raises(ValueError) as captured:
+        query(gathering, max_retries=2)
+    assert captured.value.args == (SCHEMA_CODE,)
+    assert len(calls) == 1 and sleeps == []
+    # The prepared valid response is consumed only by a distinct query.
     result = query(gathering, max_retries=2)
     assert result.values.tolist() == ROWS and result.columns.tolist() == OUTPUT_COLUMNS
     assert result.dtypes.astype(str).tolist() == DTYPES and result.index.tolist() == [0, 1]
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A'}, 30, True, False),
-                     (HTTPS_QUERY, {'User-Agent': 'AGENT_B'}, 30, True, False)]
-    assert sleeps == [3, 3]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
+                     (HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
+    assert sleeps == [3]
 
 
 @pytest.mark.parametrize('with_context', [False, True], ids=['none', 'context'])
@@ -418,26 +428,28 @@ def test_response_validation_console_and_logger_canaries_remain_safe(
         assert final['error']['category'] == 'SOURCE' and final['fields'] == {}
 
 
-@pytest.mark.parametrize('point,failure', [
-    pytest.param('error', 'throw', id='error-throw'),
-    pytest.param('error', 'rejected', id='error-rejected'),
-    pytest.param('error', 'unconfirmed', id='error-unconfirmed'),
-    pytest.param('error', 'unhealthy', id='error-unhealthy'),
-    pytest.param('error', 'health_throw', id='error-health-throw'),
-    pytest.param('retry', 'throw', id='retry-throw'),
-    pytest.param('retry', 'rejected', id='retry-rejected'),
-    pytest.param('retry', 'unhealthy', id='retry-unhealthy'),
-    pytest.param('retry', 'health_throw', id='retry-health-throw'),
+@pytest.mark.parametrize('limit,failure', [
+    pytest.param(1, 'throw', id='one-attempt-error-throw'),
+    pytest.param(1, 'rejected', id='one-attempt-error-rejected'),
+    pytest.param(1, 'unconfirmed', id='one-attempt-error-unconfirmed'),
+    pytest.param(1, 'unhealthy', id='one-attempt-error-unhealthy'),
+    pytest.param(1, 'health_throw', id='one-attempt-error-health-throw'),
+    pytest.param(2, 'throw', id='two-attempt-error-throw'),
+    pytest.param(2, 'rejected', id='two-attempt-error-rejected'),
+    pytest.param(2, 'unconfirmed', id='two-attempt-error-unconfirmed'),
+    pytest.param(2, 'unhealthy', id='two-attempt-error-unhealthy'),
+    pytest.param(2, 'health_throw', id='two-attempt-error-health-throw'),
 ])
 @pytest.mark.parametrize('kind', ['schema', 'decode'], ids=['schema', 'decode'])
 def test_response_primary_precedes_failed_diagnostics_without_another_request(
-        gathering, monkeypatch, event_log, capsys, point, failure, kind):
+        gathering, monkeypatch, event_log, capsys, limit, failure, kind):
     body = changed_row('open', 'A2_V1_PRIMARY_BODY_CANARY')
     if kind == 'decode':
         body = body.encode('utf-8').replace(b'candles\n', b'candles\n\x98', 1)
     calls, sleeps = transport(gathering, monkeypatch,
                              [response(body, 'text/csv; charset=utf-8')] * 2)
-    target = 'a2_query_failed' if point == 'error' else 'a2_query_retry'
+    # Representation failures no longer reach the retry-warning path.
+    target = 'a2_query_failed'
     original_diagnostic = gathering._a2_diagnostic
     original_emit = event_log.logger.emit_event
     observed, targeted = [], []
@@ -467,7 +479,7 @@ def test_response_primary_precedes_failed_diagnostics_without_another_request(
     monkeypatch.setattr(event_log.logger, 'check_logging_health', health)
     expected = UnicodeDecodeError if kind == 'decode' else ValueError
     with pytest.raises(expected) as captured:
-        query(gathering, max_retries=1 if point == 'error' else 2,
+        query(gathering, max_retries=limit,
               logging_context=event_log.context)
     assert observed == [(captured.value, captured.value.args)]
     assert captured.value.__notes__ == ['A2_LOGGING_FAILURE: LOGGING_INCOMPLETE']
@@ -521,7 +533,7 @@ def test_later_invalid_response_prevents_partial_return_and_local_writers(
             gathering.data_update([{'interval': 24, 'years': 10, 'filename': 'fixture_v1_previous',
                                     'word': 'часа'}], root, catalogue, snapshot, logging_context=context)
     assert captured.value.args == (SCHEMA_CODE,)
-    assert len(calls) == 6 and sleeps == [3, 3, 6, 12, 24] and writers == []
+    assert len(calls) == 2 and sleeps == [3] and writers == []
     assert all((path.read_bytes(), hashlib.sha256(path.read_bytes()).hexdigest()) == value
                for path, value in previous.items())
     if operation == 'annual':
