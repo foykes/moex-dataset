@@ -20,6 +20,8 @@ import errno, re, socket, ssl, time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from urllib3 import exceptions as urllib3_errors
+from io import BytesIO
+from types import SimpleNamespace
 
 df_overview_full = pd.DataFrame()
 df_years_full = pd.DataFrame()
@@ -30,6 +32,18 @@ current_path = sys.path[0]
 url = 'https://www.dohod.ru/ik/analytics/dividend'
 
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
+
+
+def _read_dohod_html(raw):
+    with BytesIO(raw) as buffer:
+        # Generic reader сохраняет bytes и выбор encoding обеими parser-ветками.
+        reader = SimpleNamespace(
+            read=buffer.read,
+            seek=buffer.seek,
+            seekable=buffer.seekable,
+            tell=buffer.tell,
+        )
+        return pd.read_html(reader, encoding=None)
 
 
 def _network_clock():
@@ -329,7 +343,7 @@ def _prepare_main(url, source_deadline, logging_context):
 
 def _main_frame(url, deadline, logging_context, state):
     html = _request_page(url, deadline, logging_context, state)
-    df_list = pd.read_html(html)
+    df_list = _read_dohod_html(html)
     _check_budget(deadline, state=state)
     df_mainpage = df_list[-1]
 
@@ -428,7 +442,7 @@ def _page_frames(url, source_deadline, logging_context, state):
         deadline = min(source_deadline, state['started'] + 35)
         html = _request_page(url, deadline, logging_context, state)
         try:
-            df_list = pd.read_html(html)
+            df_list = _read_dohod_html(html)
         except:
             df_list = pd.DataFrame()
             print('Не смог найти таблицы на этой странице: {}',format(url))

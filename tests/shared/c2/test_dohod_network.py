@@ -127,11 +127,24 @@ def source(monkeypatch, module, sequence):
     return calls
 
 
+def _html_bytes(reader, *, encoding=None):
+    # C2 keeps literal body/transport oracles across the C3 byte-reader boundary.
+    assert encoding is None
+    assert not isinstance(reader, (str, bytes))
+    assert reader.seekable() and reader.tell() == 0
+    raw = reader.read()
+    assert type(raw) is bytes
+    assert reader.tell() == len(raw)
+    assert reader.seek(0) == 0 and reader.tell() == 0
+    return raw
+
+
 def parser(monkeypatch, module, *, detail_count=3, after_parse=None, overview_empty=False):
     calls = []
-    def read(raw):
+    def read(reader, *, encoding=None):
+        raw = _html_bytes(reader, encoding=encoding)
         calls.append(raw)
-        assert type(raw) is bytes  # Historical #31 remains outside B.
+        assert type(raw) is bytes  # Original body bytes; real HTML parsing is tested by C3.
         if after_parse:
             after_parse(raw)
         if raw == b'overview':

@@ -1,4 +1,4 @@
-# dohod.ru cooperative acquisition (C2-02B)
+# dohod.ru acquisition and HTML compatibility
 
 This transport-only slice starts from `3b6e78f11f7681cdcd9c813fff4236a8c63ab677`.
 The owner accepted PLAN R2 and granted condition H exclusive ownership of
@@ -35,8 +35,9 @@ terminal 1xx/3xx raises a fixed-message HTTPError. Requests' existing TLS,
 proxy, authentication and redirect defaults and the historical User-Agent
 are unchanged. There is no persistent Session or adapter retry policy.
 
-`.content` supplies the historical raw bytes to pandas. Discovery consumes the
-same cached body and uses Requests' `.text` encoding behavior after closing.
+`.content` supplies the cached body bytes to the C3 HTML adapter described below.
+Discovery consumes the same cached body and uses Requests' `.text` encoding
+behavior after closing.
 Every obtained response is closed, including falsey HTTP-error responses and
 exception-attached responses; identity deduplication prevents double close.
 Partial bytes from a failed read never reach the parser. A secondary cleanup
@@ -162,7 +163,7 @@ writer, live HTTP or real sleep. Literal PASS criteria include:
   markers. A stubbed AST-extracted parent function propagates the dohod failure,
   records stage FAILED and cannot reach upload/final success.
 
-RED on unchanged production pair: 76 failed / 3 passed. New logging/helper API
+C2-02B RED on unchanged production pair: 76 failed / 3 passed. New logging/helper API
 absence is distinguished from positional timeout/retry/cleanup/parser-budget
 failures; it is not the sole RED oracle. Final clean-HEAD counts, source identity,
 guard reconciliation, notebook parity and applicable hosted Windows/Linux results
@@ -191,9 +192,10 @@ close and logging may overrun before a checkpoint; body size/memory and actual
 process supervision remain unbounded here. No live/VPS/source-quality or real
 production-writer evidence is claimed.
 
-C3 #31 raw-bytes pandas compatibility, #32 canonical/allowed URLs and #33
-table semantics/completeness remain separate. Literal parser-output doubles
-do not prove today's real HTML works with pandas. C2-03 quality and C2-04/D
+C2-02B's literal parser-output doubles do not prove genuine HTML compatibility.
+C3-01 below addresses #31 with a byte-reader adapter and synthetic real-parser
+regressions; today's live dohod HTML remains unverified. #32 canonical/allowed
+URLs and #33 table semantics/completeness remain separate. C2-03 quality and C2-04/D
 publication/previous integrity, D2/F child supervision and parent diagnostic
 hookup remain open integration AC. HTTP 200, an empty/skipped detail or a
 successful writer does not establish complete data or publication success.
@@ -207,5 +209,67 @@ Compatible foreign-zone main movement may be safely merged into a clean feature
 branch; revalidate and review the final integrated HEAD. No automatic rebase,
 reset, force-push or PR merge is permitted. Deliver one draft PR for independent
 CODE_REVIEW, with NO_AUTO_MERGE=true and no issue closure or next-slice activation.
-Rollback is a reviewed revert of the five-path commit/pair; it cannot undo
-historical partial output or provide D-owned data recovery.
+The original C2-02B rollback is a reviewed five-path revert; the C3-01 rollback
+is described below. Neither can undo historical partial output or provide
+D-owned data recovery.
+
+## C3-01 HTML/pandas compatibility
+
+C3-01 starts from `2b222d16782f986ecbaf4e3efb04a81eefa1a0ba`, after a new
+explicit owner/coordinator transfer. Its exact six paths are the dohod Python/
+notebook pair, the two existing C2 pytest files, this document and
+`tests/shared/c3/test_dohod_html.py`. Shared runner, guard, logger, CI and
+coordination files are not part of this transfer.
+
+The private adapter owns a fresh `BytesIO` in a context manager and passes a
+generic reader exposing only bound `read`, `seek`, `seekable` and `tell` to
+`pd.read_html(..., encoding=None)`. The reader has no mode, encoding, path
+protocol or IOBase inheritance. Pandas' default lxml-to-bs4/html5lib fallback
+remains enabled. Every backend receives unchanged cached bytes; the adapter
+selects no charset, decodes no text and adds no HTTP request or parser retry.
+The owned buffer closes on success or failure, and pandas can rewind it before
+fallback. Discovery's existing Requests text policy is unchanged.
+
+This boundary is deliberate for the approved Windows CPython 3.14.8 profile:
+pandas 2.3.3, lxml 6.0.2, beautifulsoup4 4.14.2 and html5lib 1.1. Direct
+`BytesIO` with `encoding=None` reaches pandas' UTF-8/strict text wrapper on the
+second backend; the generic reader instead preserves the byte input and each
+backend's own document/meta/BOM inference and recovery. See versioned
+[pandas HTML parsing](https://github.com/pandas-dev/pandas/blob/v2.3.3/pandas/io/html.py),
+[pandas IO handling](https://github.com/pandas-dev/pandas/blob/v2.3.3/pandas/io/common.py)
+and [lxml file-like parsing](https://github.com/lxml/lxml/blob/lxml-6.0.2/src/lxml/parser.pxi).
+Other dependency versions require separate verification.
+Preserving `encoding=None` and the default flavor alone does not prove parity
+with historical raw-byte decoding; the byte handoff and real fallback must be
+verified. Changing the IO object can change upstream parser exception messages
+or their input representation. C3 introduces no new diagnostic category/code or
+transport-error reclassification; existing fixed C2 diagnostics/redaction stay.
+
+C3 uses synthetic overview/detail HTML with hand-written literal rows, columns,
+dtypes, indices, names and duplicates. Real UTF-8 and declared windows-1251
+Cyrillic cases cover normal lxml parsing and a controlled first-backend failure
+after prefix/full consumption; the second backend and DataFrames remain real.
+The windows-1251 fixture diagnoses fallback compatibility; it is not a confirmed
+live dohod charset, and these cases provide no guarantee for every charset.
+Malformed/no-table inputs, native encoding recovery, path-shaped HTTP bodies,
+closed resources, external budget checks and redacted logging are exercised.
+Repeated calls retain returned A frames and original global placeholder objects,
+advance the same fake clock, use fresh response/log contexts and require only B
+rows after failure/skip. Repeated `main` checks preserve both nine-writer success
+groups and literal later-six previous bytes/hashes after a second detail fails.
+The existing C2 doubles adapt only their reader input; their literal frames,
+transport-policy assertions, writer order/kwargs and exception identities stay
+unchanged.
+
+Overview parser errors still propagate before writer admission. Detail parsing
+retains its historical bare `except` and skip behavior; 2/3-table transforms and
+unrecognized counts are unchanged. Stream compatibility does not establish page
+completeness, atomic publication, URL safety, strict deadlines or a live encoding
+contract. #32, #33, C2-03 quality, D publication and D/F diagnostics remain separate.
+Final exact-HEAD regression, notebook, F1/F2/F-LOG/F3 and Linux syntax results
+belong to the handoff/PR; skipped checks are NOT VERIFIED. No live HTTP, real
+sleep, production writers, credentials, cron, Google or FTP is used for C3 tests.
+
+C3 rollback is a reviewed revert of these six paths, including both notebook
+pair members and the C2 boundary adaptations. It does not restore an already
+published release or repair historical partial output.
