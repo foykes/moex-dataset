@@ -1308,3 +1308,70 @@ The selected set A-t1, A-t2, B-t3 is fixed solely for this illustrative binding 
   "negative_case": {"input_contract":"metadata","input":{"contract_version":1,"run_id":"ILLUSTRATIVE_RUN_A","snapshot_id":"ILLUSTRATIVE_SNAPSHOT_A","dataset_id":"10years_data_1d_interval","as_of":"2026-10-04T09:00:00Z","schema_version":"ILLUSTRATIVE_MINI_RAW9_RSI14","source":"MOEX_ISS_RAW","requested_bounds":{"start":{"value":"2024-01-01 00:00:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null},"end":{"value":"2026-10-04 12:00:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null}},"actual_bounds":{"start":{"value":null,"state":"EMPTY","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"Successful empty source response"},"end":{"value":null,"state":"EMPTY","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"Successful empty source response"}},"collection_status":"VALID_EMPTY","coverage_status":"COMPLETE","counts":{"rows_received":0,"rows_accepted":0,"rows_quarantined":0,"pages":1,"instruments":1},"identity_records":[{"record_id":"ILLUSTRATIVE_IDENTITY_1_24","identity":{"engine":"stock","market":"shares","raw_instrument_id":"ILLUSTRATIVE_SECID","source_scope":"AGGREGATE","board":null,"isin":null,"display_ticker":"ILLUSTRATIVE_TICKER","null_reasons":{"board":"Explicit board-less aggregate endpoint","isin":"UNKNOWN"}},"interval":24,"provenance":[{"endpoint":"https://iss.moex.com/iss/engines/stock/markets/shares/securities/ILLUSTRATIVE_SECID/candles.csv","section":"candles","acquired_at":"2026-10-04T09:00:00Z","source_scope":"AGGREGATE","metadata_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","response_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","evidence_ref":"ILLUSTRATIVE/source-response"}],"requested_bounds":{"start":{"value":"2024-01-01 00:00:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null},"end":{"value":"2026-10-04 12:00:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null}},"instrument_bounds":{"issue_date":{"value":null,"state":"UNKNOWN","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"ILLUSTRATIVE source fact unavailable"},"listing_date":{"value":null,"state":"UNKNOWN","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"ILLUSTRATIVE source fact unavailable"},"admission_date":{"value":null,"state":"UNKNOWN","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"ILLUSTRATIVE source fact unavailable"},"first_trade":{"value":null,"state":"UNKNOWN","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"ILLUSTRATIVE source fact unavailable"},"last_trade":{"value":null,"state":"UNKNOWN","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"ILLUSTRATIVE source fact unavailable"},"delisting_date":{"value":null,"state":"UNKNOWN","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"ILLUSTRATIVE source fact unavailable"}},"available_bounds":{"start":{"value":"2024-01-01 10:00:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null},"end":{"value":"2024-01-03 18:45:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null}},"actual_bounds":{"start":{"value":null,"state":"EMPTY","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"Successful empty source response"},"end":{"value":null,"state":"EMPTY","precision":"UNKNOWN","timezone":null,"evidence_ref":null,"reason":"Successful empty source response"}},"collection_status":"VALID_EMPTY","coverage_status":"COMPLETE","coverage_evidence":{"expected_rows":3,"evidence_ref":"ILLUSTRATIVE/captured-source-membership-three","reason":"ILLUSTRATIVE prior captured source inventory has three expected raw keys, but this successfully parsed response received zero"},"counts":{"rows_received":0,"rows_accepted":0,"rows_quarantined":0,"pages":1,"instruments":1},"gaps":[],"logical_successor":null,"mapping_evidence_ref":null,"quality_ref":"ILLUSTRATIVE/quality","quarantine_ref":null,"completion_evidence_ref":null,"null_reasons":{"logical_successor":"NO_EVIDENCED_MAPPING","mapping_evidence_ref":"NO_EVIDENCED_MAPPING","quarantine_ref":"NO_QUARANTINE_ARTIFACT","completion_evidence_ref":"NO_COMPLETED_BAR_IN_EMPTY_RESPONSE"}}],"row_bindings":{"snapshot_id":"ILLUSTRATIVE_SNAPSHOT_A","dataset_id":"10years_data_1d_interval","schema_version":"ILLUSTRATIVE_MINI_RAW9_RSI14","frame_fingerprint":{"basis":"LOGICAL_ROWS_SHA256","value":"70d8d43e4448ee943db42b232ad2b4610eba7265c2770ddd7ccd545145937e3f","schema_version":"ILLUSTRATIVE_MINI_RAW9_RSI14"},"row_count":0,"binding_fingerprint":{"basis":"LOGICAL_ROWS_SHA256","value":"ba0b6842fb1a673dc3105649226df1b440a5f44424c78959cb358a5257671cd7","schema_version":"ILLUSTRATIVE_MINI_RAW9_RSI14"},"binding_evidence_ref":"ILLUSTRATIVE/E02/producer-selection","entries":[]},"quality_ref":"ILLUSTRATIVE/quality","errors":[]},"expected_error":"EMPTY_COVERAGE_MISMATCH","illustrative_evidence":{"serialization_profile":"ILLUSTRATIVE_JSON_ARRAYS_V1","frame_payload":["ILLUSTRATIVE_MINI_RAW9_RSI14",["open","close","high","low","value","volume","begin","end","ticker","RSI14"],[]],"retained_sources":[{"provenance_ref":"ILLUSTRATIVE/source-response","identity_record_id":"ILLUSTRATIVE_IDENTITY_1_24","rows":[]}],"source_membership":[{"identity_record_id":"ILLUSTRATIVE_IDENTITY_1_24","evidence_ref":"ILLUSTRATIVE/captured-source-membership-three","expected_raw_keys":[{"engine":"stock","market":"shares","source_scope":"AGGREGATE","board":null,"raw_instrument_id":"ILLUSTRATIVE_SECID","interval":24,"begin":"2024-01-01 10:00:00","null_reasons":{"board":"Explicit AGGREGATE scope"}},{"engine":"stock","market":"shares","source_scope":"AGGREGATE","board":null,"raw_instrument_id":"ILLUSTRATIVE_SECID","interval":24,"begin":"2024-01-02 10:00:00","null_reasons":{"board":"Explicit AGGREGATE scope"}},{"engine":"stock","market":"shares","source_scope":"AGGREGATE","board":null,"raw_instrument_id":"ILLUSTRATIVE_SECID","interval":24,"begin":"2024-01-03 10:00:00","null_reasons":{"board":"Explicit AGGREGATE scope"}}],"identity":{"engine":"stock","market":"shares","raw_instrument_id":"ILLUSTRATIVE_SECID","source_scope":"AGGREGATE","board":null,"isin":null,"display_ticker":"ILLUSTRATIVE_TICKER","null_reasons":{"board":"Explicit board-less aggregate endpoint","isin":"UNKNOWN"}},"interval":24,"requested_bounds":{"start":{"value":"2024-01-01 00:00:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null},"end":{"value":"2026-10-04 12:00:00","state":"KNOWN","precision":"SECOND","timezone":"Europe/Moscow","evidence_ref":"ILLUSTRATIVE/source-time-and-zone-evidence","reason":null}}}],"producer_selection":{"snapshot_id":"ILLUSTRATIVE_SNAPSHOT_A","dataset_id":"10years_data_1d_interval","schema_version":"ILLUSTRATIVE_MINI_RAW9_RSI14","frame_fingerprint":{"basis":"LOGICAL_ROWS_SHA256","value":"70d8d43e4448ee943db42b232ad2b4610eba7265c2770ddd7ccd545145937e3f","schema_version":"ILLUSTRATIVE_MINI_RAW9_RSI14"},"entries":[],"binding_fingerprint":{"basis":"LOGICAL_ROWS_SHA256","value":"ba0b6842fb1a673dc3105649226df1b440a5f44424c78959cb358a5257671cd7","schema_version":"ILLUSTRATIVE_MINI_RAW9_RSI14"},"evidence_ref":"ILLUSTRATIVE/E02/producer-selection"}}}
 }
 ```
+
+## B1-02 amendment: TRIX(30), B1-02-TRIX30-H89
+
+The owner approved this amendment for code, integration and exact-head merge only,
+following the coordinator's named handoff of this appended section and the B1 test
+assets. This approval does not approve a new canonical production schema or a
+consumer migration. Production/dashboard consumer acceptance remains **NOT VERIFIED**;
+production schema versioning, deployment and publication require separate approval.
+`B1-02-TRIX30-H89` is a documented contract identifier, not an emitted runtime
+`schema_version`. B1-02 introduces no version field, sidecar, adapter or new test
+infrastructure. The historical F0 inventory and illustrative schemas above are retained.
+
+The accepted source is `main@3b6e78f11f7681cdcd9c813fff4236a8c63ab677`, with
+`tech.py` blob `ca7cc63bc5a95238dd587b46f68765cbf6ff38a1` and `tech.ipynb` blob
+`96539b049af5e46c2436ad54bc93e9430ea4a265`. In that source, line 488 assigns the
+native TRIX result to unused `_full`; `TRIX_full` remains empty and its later
+rename/join adds no column. B1-02 changes only that accumulator assignment in the
+paired sources. The call stays `talib.TRIX(close, timeperiod=30)` for each ticker,
+using its existing row order, and the existing TRIX drop/rejoin behavior is retained.
+
+For the nonempty synthetic fixture's ordered raw-nine input, the exported schema
+changes from **H88 (9 raw + 79 indicators) to H89 (9 raw + 80 indicators)**.
+`TRIX` is column 63 (zero-based index 62), between `STOCHRSI_fastd` and `ULTOSC`.
+Every old name and relative order is preserved; `ULTOSC` and following positions
+shift by one. These absolute counts/positions apply to this fixture, not arbitrary
+inputs: retained extra non-indicator columns increase the width and shift the
+absolute indicator positions. A stale input TRIX is removed and replaced once in
+the canonical indicator slot, not retained at its former arbitrary position.
+`schema.json` retains historical H88 `columns`; `candidate_columns` records H89.
+
+TRIX is the native one-bar percent rate of change of a triple-smoothed EMA; 30
+means bars, not days. The expected native state is compatibility 0 and EMA unstable
+period 0. For finite clean closes, lookback is `3 * (30 - 1) + 1 = 88`: the first
+88 ticker-local values are NaN; the first eligible output is at index 88 (bar 89).
+Native behavior is the oracle, with no fill, truncation or warm-up reset. See the
+[TA-Lib TRIX implementation](https://github.com/TA-Lib/ta-lib/blob/v0.6.4/src/ta_func/ta_TRIX.c)
+and [EMA lookback](https://github.com/TA-Lib/ta-lib/blob/v0.6.4/src/ta_func/ta_EMA.c).
+Tests check the accepted native state through getters rather than changing it.
+
+| Consumer | Expected impact | Acceptance boundary |
+|---|---|---|
+| Full CSV/XLSX | Future calculator outputs gain TRIX with the order described above. | Existing checked-in or production files are not refreshed by code/merge. |
+| Positional/strict-schema readers | H88 width checks and old positions from ULTOSC onward require migration. | Production canonical-schema and consumer agreement are separate. |
+| Dashboards | Existing named fields retain their calculations; new TRIX needs field binding and schema acceptance. | No tracked dashboard implementation was found; external acceptance is NOT VERIFIED. |
+| Research exports | Future enriched files expose H89; historical raw-nine exports are not reclassified or regenerated. | Research workflows and their schemas remain separately owned. |
+| Google projection | Existing whitelist keeps ordered raw nine plus RSI14 and removes TRIX, preserving ten columns. | This is upload.py source evidence, not live Google execution or acceptance. |
+| FTP/full-file publication | A future publication would send the enriched representation including TRIX. | Remote contracts, deployment and publication remain outside B1-02. |
+
+The offline acceptance oracle checks native TRIX(30) per ticker, exact array shape
+and NaN mask, then finite values with the existing `rtol=atol=1e-12`. CSV and XLSX
+cover warm-up lengths 7/88/89, long histories, ticker/index alignment, repeat
+calculator, and stale/sentinel TRIX plus retained extra columns. The existing CSV
+flat-series case also checks native TRIX within that tolerance. Each pass
+uses the native oracle on that pass's parsed raw input. Same-format, identical-pass
+inputs must preserve every accepted-base output column **EXACTLY**, including
+values, dtypes, NaN masks, row count, keys and order, after excluding only the new
+TRIX from the candidate. TRIX cross-format/replay comparisons use the stated
+numerical tolerance. These fixture checks do not establish full CSV byte
+idempotence, universal CSV/XLSX parity, atomic writes or production readiness.
+
+The existing guarded HOST F2/F3/F-LOG and GitHub CI remain the integration gates;
+actual commands, guard outcomes and exact-head results are recorded separately.
+The published [B2 decision](https://github.com/foykes/moex-dataset/issues/76#issuecomment-6133109560)
+`CONTINUE_ACROSS_QUARANTINE` is retained. B2 implementation
+and #16/#55/#56 remain separate and outside this slice. No sorting, deduplication,
+segmentation, other indicator change, reload, cron, Google/FTP execution or dataset
+rewrite belongs to this slice.
