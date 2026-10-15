@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import talib
+from talib import abstract
 import mds_offline_guard as guard
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -21,6 +22,10 @@ FIXTURES = ROOT / 'tests/fixtures/b1'
 REVIEWED_BASE = 'ebc66fc376a2077ce027cf33689aae31728709c2'
 REFERENCE_SOURCE_REF = '07945ed4ded747145b40d7a7c25e8ce97abeaa0d'
 EXPECTED_REFERENCE_TECH_BLOB = '5cab43aaaffcadcbf23feb96ab8783a9acdfc986'
+ACCEPTED_B1_SOURCE_REF = '3b6e78f11f7681cdcd9c813fff4236a8c63ab677'
+EXPECTED_ACCEPTED_B1_TECH_BLOB = 'ca7cc63bc5a95238dd587b46f68765cbf6ff38a1'
+TRIX_BASE_LINE = b'        if len(TRIX_real_ticker) > 0: _full = pd.concat([TRIX_full, TRIX_real_ticker])\n'
+TRIX_FIXED_LINE = b'        if len(TRIX_real_ticker) > 0: TRIX_full = pd.concat([TRIX_full, TRIX_real_ticker])\n'
 CANARY = 'B1_SYNTHETIC_SECRET_CANARY'
 PRIVATE_PATH = 'C:/B1_SYNTHETIC_PRIVATE/source'
 
@@ -77,6 +82,104 @@ def reference(tmp_path):
         pytest.fail('REFERENCE_PREPARATION_FAILURE: complete module import failed')
 
 
+def _accepted_git(git, arguments, records, *, expected_exit=0):
+    command = [git, *arguments]
+    ticket = guard.issue_ticket('native-git', command, native=True, expected_exit=expected_exit)
+    result = guard.run_child(command, role='native-git', ticket=ticket, timeout=10)
+    if (not result.validated or result.report_errors or result.timed_out
+            or result.returncode != result.actual_exit
+            or expected_exit is not None and (result.actual_exit != expected_exit or result.stderr != b'')):
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: native command not validated')
+    records.append({'command': ['git', *arguments], 'ticket_id': ticket['ticket_id'],
+                    'expected_exit': expected_exit, 'actual_exit': result.actual_exit,
+                    'validated': result.validated, 'guard_report_errors': result.report_errors,
+                    'timed_out': result.timed_out})
+    return result
+
+
+def _git_blob(raw):
+    return hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
+
+
+def _trix_profile(schema):
+    function = abstract.Function('TRIX')
+    state = {'compatibility': talib.get_compatibility(),
+             'ema_unstable_period': talib.get_unstable_period('EMA')}
+    if (function.parameters != schema['trix_parameters']
+            or function.parameters != {'timeperiod': 30}
+            or function.lookback != schema['trix_lookback'] or function.lookback != 88
+            or state != schema['trix_native_state']
+            or state != {'compatibility': 0, 'ema_unstable_period': 0}):
+        pytest.fail('TRIX_ORACLE_PREPARATION_FAILURE: native profile mismatch')
+    return {'python': sys.version.split()[0], 'talib_wrapper': talib.__version__,
+            'talib_native': talib.__ta_version__.decode('ascii'),
+            'parameters': dict(function.parameters), 'lookback': function.lookback,
+            'native_state': state}
+
+
+@pytest.fixture
+def accepted_b1_reference(tmp_path, schema):
+    # Historical STOCH reference stays independent; this is the accepted H88 source.
+    git = shutil.which('git')
+    if git is None:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: Git unavailable')
+    records = []
+    head_result = _accepted_git(git, ['show', 'HEAD:tech.py'], records)
+    head_raw = head_result.stdout
+    head_blob = _git_blob(head_raw)
+    restored = head_raw
+    transformation_count = 0
+    if head_blob != EXPECTED_ACCEPTED_B1_TECH_BLOB:
+        if head_raw.count(TRIX_FIXED_LINE) != 1 or head_raw.count(TRIX_BASE_LINE) != 0:
+            pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: single TRIX line required')
+        restored = head_raw.replace(TRIX_FIXED_LINE, TRIX_BASE_LINE, 1)
+        transformation_count = 1
+    if _git_blob(restored) != EXPECTED_ACCEPTED_B1_TECH_BLOB:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: candidate source has foreign changes')
+
+    availability = _accepted_git(git, ['rev-parse', '--verify', ACCEPTED_B1_SOURCE_REF + '^{commit}'],
+                                 records, expected_exit=None)
+    if (availability.actual_exit == 0 and availability.stderr == b''
+            and availability.stdout.rstrip(b'\r\n') == ACCEPTED_B1_SOURCE_REF.encode('ascii')):
+        source_result = _accepted_git(git, ['show', ACCEPTED_B1_SOURCE_REF + ':tech.py'], records)
+        raw = source_result.stdout
+        method = 'DIRECT_ACCEPTED_GIT_OBJECT'
+        source_ref = ACCEPTED_B1_SOURCE_REF
+        reference_transformations = 0
+    elif (availability.actual_exit == 128 and availability.stdout == b''
+          and availability.stderr.rstrip(b'\r\n') == b'fatal: Needed a single revision'):
+        raw = restored
+        method = 'STRICT_SINGLE_TRIX_REVERSAL' if transformation_count else 'HEAD_ACCEPTED_SOURCE'
+        source_ref = 'HEAD'
+        reference_transformations = transformation_count
+    else:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: object availability unresolved')
+    actual_blob = _git_blob(raw)
+    if actual_blob != EXPECTED_ACCEPTED_B1_TECH_BLOB:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: accepted blob mismatch')
+    source = tmp_path / 'accepted-b1-tech.py'
+    source.write_bytes(raw)
+    provenance = {'accepted_base': ACCEPTED_B1_SOURCE_REF,
+                  'tested_sha': guard.report_metadata().get('tested_sha'),
+                  'retrieved_source_ref': source_ref, 'reference_path': 'tech.py',
+                  'candidate_source_ref': 'HEAD', 'candidate_tech_blob': head_blob,
+                  'candidate_source_sha256': hashlib.sha256(head_raw).hexdigest(),
+                  'candidate_identity_transformations': transformation_count,
+                  'reference_preparation_method': method,
+                  'reference_transformations': reference_transformations,
+                  'expected_reference_tech_blob': EXPECTED_ACCEPTED_B1_TECH_BLOB,
+                  'actual_reference_tech_blob': actual_blob,
+                  'source_sha256': hashlib.sha256(raw).hexdigest(),
+                  'native_commands': records, 'native_profile': _trix_profile(schema),
+                  'reference_preparation': 'PASS'}
+    (tmp_path / 'accepted-b1-reference-provenance.json').write_text(
+        json.dumps(provenance, sort_keys=True), encoding='utf-8')
+    try:
+        return _load_module(source)
+    except Exception:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: complete module import failed')
+
+
 def _fixture():
     return pd.read_csv(FIXTURES / 'ohlc.csv')
 
@@ -126,6 +229,47 @@ def _assert_approx(actual, expected, tolerance, label):
     assert np.allclose(actual, expected, equal_nan=True, **tolerance), label + ' value mismatch'
 
 
+def _historical_projection(output, schema):
+    assert output.columns.tolist() == schema['candidate_columns']
+    projected = output.drop(columns=['TRIX'])
+    assert projected.columns.tolist() == schema['columns']
+    return projected
+
+
+def _assert_trix_native(input_frame, output, schema):
+    profile = _trix_profile(schema)
+    assert output['TRIX'].dtype == np.dtype('float64')
+    for ticker in input_frame['ticker'].drop_duplicates():
+        mask = input_frame['ticker'] == ticker
+        expected = talib.TRIX(input_frame.loc[mask, 'close'].to_numpy(dtype=float),
+                              **schema['trix_parameters'])
+        actual = output.loc[mask, 'TRIX'].to_numpy()
+        _assert_approx(actual, expected, schema['tolerance'], 'TRIX30 ' + ticker)
+        assert np.isnan(actual[:profile['lookback']]).all()
+        assert np.isfinite(actual[profile['lookback']:]).all()
+    assert _trix_profile(schema) == profile
+
+
+def _assert_accepted_b1(input_frame, before, after, schema, *, extra_columns=()):
+    baseline_columns = list(schema['columns'])
+    candidate_columns = list(schema['candidate_columns'])
+    insertion = len(schema['raw_columns'])
+    baseline_columns[insertion:insertion] = extra_columns
+    candidate_columns[insertion:insertion] = extra_columns
+    assert before.columns.tolist() == baseline_columns
+    assert after.columns.tolist() == candidate_columns
+    pd.testing.assert_frame_equal(before, after.drop(columns=['TRIX']),
+                                  check_exact=True, check_dtype=True)
+    assert len(before) == len(after) == len(input_frame)
+    pd.testing.assert_frame_equal(after[schema['raw_columns']], input_frame[schema['raw_columns']],
+                                  check_exact=False, check_dtype=True, **schema['tolerance'])
+    pd.testing.assert_frame_equal(after[['ticker', 'begin']], input_frame[['ticker', 'begin']],
+                                  check_exact=True, check_dtype=True)
+    assert not after[['ticker', 'begin']].duplicated().any()
+    _assert_native(input_frame, after, schema)
+    _assert_trix_native(input_frame, after, schema)
+
+
 @pytest.mark.parametrize('actual, expected, failure', [
     ([1.0, 2.0], [[1.0, 2.0]], 'shape mismatch'),
     ([np.nan, 1.0], [0.0, 1.0], 'NaN mask mismatch'),
@@ -173,7 +317,7 @@ def test_stoch_slowd_matches_native_second_output(reference, candidate, tmp_path
     input_frame, before, after, _ = _pair(reference, candidate, tmp_path, monkeypatch, suffix)
     if before.columns.tolist() != schema['columns']:
         pytest.fail('RUNTIME_BASELINE_H88_MISMATCH')
-    assert after.columns.tolist() == schema['columns']
+    after = _historical_projection(after, schema)
     assert len(after) == schema['rows'] == 333
     assert after[['ticker', 'begin']].to_records(index=False).tolist() == input_frame[['ticker', 'begin']].to_records(index=False).tolist()
     _assert_native(input_frame, after, schema, require_difference=True)
@@ -182,6 +326,7 @@ def test_stoch_slowd_matches_native_second_output(reference, candidate, tmp_path
 @pytest.mark.parametrize('suffix', ['csv', 'xlsx'])
 def test_before_after_preserves_every_other_column(reference, candidate, tmp_path, monkeypatch, schema, suffix):
     input_frame, before, after, _ = _pair(reference, candidate, tmp_path, monkeypatch, suffix)
+    after = _historical_projection(after, schema)
     assert before.columns.tolist() == after.columns.tolist() == schema['columns']
     pd.testing.assert_frame_equal(before.drop(columns=['STOCH_slowd']), after.drop(columns=['STOCH_slowd']),
                                   check_exact=True, check_dtype=True)
@@ -203,6 +348,8 @@ def test_repeat_calculator_matches_reference_on_identical_pass_inputs(reference,
     replay_input = _read(path)[schema['raw_columns']]
     reference_second = _calculate(reference, reference_path, monkeypatch)
     second = _calculate(candidate, path, monkeypatch)
+    first = _historical_projection(first, schema)
+    second = _historical_projection(second, schema)
     for actual, expected, parsed_input in [(first, reference_first, initial),
                                            (second, reference_second, replay_input)]:
         assert actual.columns.tolist() == expected.columns.tolist() == schema['columns']
@@ -232,10 +379,17 @@ def test_short_and_flat_match_native_masks(candidate, tmp_path, monkeypatch, sch
         frame.loc[:, ['open', 'close', 'high', 'low']] = 100.0
     path = _input(tmp_path / kind, 'csv', frame)
     output = _calculate(candidate, path, monkeypatch)
-    assert output.columns.tolist() == schema['columns']
+    assert output.columns.tolist() == schema['candidate_columns']
     _assert_native(_read(path)[schema['raw_columns']], output, schema)
+    _assert_trix_native(_read(path)[schema['raw_columns']], output, schema)
     if kind == 'short':
         assert output[['STOCH_slowk', 'STOCH_slowd']].isna().all().all()
+        assert output['TRIX'].isna().all()
+    else:
+        for ticker in frame['ticker'].drop_duplicates():
+            values = output.loc[frame['ticker'] == ticker, 'TRIX'].iloc[schema['trix_lookback']:]
+            _assert_approx(values.to_numpy(), np.zeros(len(values)), schema['tolerance'],
+                           'TRIX30 flat fixture evidence')
 
 
 def test_csv_xlsx_stoch_rsi_parity_and_reference_equivalence(reference, candidate, tmp_path, monkeypatch, schema):
@@ -243,9 +397,13 @@ def test_csv_xlsx_stoch_rsi_parity_and_reference_equivalence(reference, candidat
     # Full derived CSV/XLSX parity and equality of all inferred pandas output dtypes
     # across formats remain mandatory B3 work (Refs #54, #63).
     outputs = []
+    trix_outputs = []
     for suffix in ['csv', 'xlsx']:
         parsed_input, expected, actual, _ = _pair(reference, candidate, tmp_path / suffix,
                                                   monkeypatch, suffix)
+        _assert_trix_native(parsed_input, actual, schema)
+        trix_outputs.append(actual['TRIX'])
+        actual = _historical_projection(actual, schema)
         assert actual.columns.tolist() == expected.columns.tolist() == schema['columns']
         assert len(actual) == len(expected) == schema['rows'] == 333
         assert actual.dtypes.equals(expected.dtypes)
@@ -267,6 +425,85 @@ def test_csv_xlsx_stoch_rsi_parity_and_reference_equivalence(reference, candidat
     for column in ['STOCH_slowk', 'STOCH_slowd', 'RSI14']:
         _assert_approx(csv[column].to_numpy(), xlsx[column].to_numpy(),
                        schema['tolerance'], column + ' CSV/XLSX fixture evidence')
+    _assert_approx(trix_outputs[0].to_numpy(), trix_outputs[1].to_numpy(),
+                   schema['tolerance'], 'TRIX30 CSV/XLSX fixture evidence')
+
+
+@pytest.mark.parametrize('suffix', ['csv', 'xlsx'])
+def test_trix_preserves_accepted_b1_on_first_and_repeated_pass(
+        accepted_b1_reference, candidate, tmp_path, monkeypatch, schema, suffix):
+    initial, before, first, path = _pair(accepted_b1_reference, candidate, tmp_path,
+                                       monkeypatch, suffix)
+    assert len(initial) == schema['rows'] == 333
+    _assert_accepted_b1(initial, before, first, schema)
+    reference_path = tmp_path / 'reference' / 'datasets' / path.name
+    replay_bytes = path.read_bytes()
+    reference_path.write_bytes(replay_bytes)
+    assert path.read_bytes() == reference_path.read_bytes() == replay_bytes
+    replay_input = _read(path)
+    before_second = _calculate(accepted_b1_reference, reference_path, monkeypatch)
+    second = _calculate(candidate, path, monkeypatch)
+    _assert_accepted_b1(replay_input, before_second, second, schema)
+    assert first['TRIX'].dtype == second['TRIX'].dtype
+    _assert_approx(second['TRIX'].to_numpy(), first['TRIX'].to_numpy(),
+                   schema['tolerance'], 'TRIX30 repeated calculator')
+
+
+@pytest.mark.parametrize('suffix', ['csv', 'xlsx'])
+@pytest.mark.parametrize('instrument_rows', [7, 88, 89])
+def test_trix_warmup_boundary_matches_native(candidate, tmp_path, monkeypatch, schema,
+                                            suffix, instrument_rows):
+    frame = _fixture().groupby('ticker', sort=False).head(instrument_rows).reset_index(drop=True)
+    path = _input(tmp_path / 'warmup', suffix, frame)
+    parsed_input = _read(path)
+    output = _calculate(candidate, path, monkeypatch)
+    assert output.columns.tolist() == schema['candidate_columns']
+    assert len(output) == 2 * instrument_rows
+    pd.testing.assert_frame_equal(output[['ticker', 'begin']], parsed_input[['ticker', 'begin']],
+                                  check_exact=True, check_dtype=True)
+    _assert_trix_native(parsed_input, output, schema)
+    for ticker in parsed_input['ticker'].drop_duplicates():
+        values = output.loc[parsed_input['ticker'] == ticker, 'TRIX'].to_numpy()
+        assert np.isfinite(values).sum() == max(0, instrument_rows - schema['trix_lookback'])
+
+
+@pytest.mark.parametrize('suffix', ['csv', 'xlsx'])
+def test_trix_replaces_stale_column_preserves_extra_and_replays(
+        accepted_b1_reference, candidate, tmp_path, monkeypatch, schema, suffix):
+    extra = 'B1_KEEP_EXTRA'
+    frame = _fixture()
+    frame['TRIX'] = -999.0
+    frame[extra] = np.arange(len(frame), dtype=np.int64)
+    seed = _input(tmp_path / 'seed', suffix, frame)
+    initial = _read(seed)
+    outputs = []
+    paths = []
+    for name, module in [('reference', accepted_b1_reference), ('candidate', candidate)]:
+        destination = tmp_path / name / 'datasets'
+        destination.mkdir(parents=True)
+        path = destination / seed.name
+        path.write_bytes(seed.read_bytes())
+        paths.append(path)
+        outputs.append(_calculate(module, path, monkeypatch))
+    before, first = outputs
+    _assert_accepted_b1(initial, before, first, schema, extra_columns=[extra])
+    pd.testing.assert_series_equal(first[extra], initial[extra], check_exact=True, check_dtype=True)
+    assert first.columns.tolist().count('TRIX') == 1
+    assert not (first['TRIX'] == -999.0).any()
+    reference_path, path = paths
+    replay_bytes = path.read_bytes()
+    reference_path.write_bytes(replay_bytes)
+    assert path.read_bytes() == reference_path.read_bytes() == replay_bytes
+    replay_input = _read(path)
+    before_second = _calculate(accepted_b1_reference, reference_path, monkeypatch)
+    second = _calculate(candidate, path, monkeypatch)
+    _assert_accepted_b1(replay_input, before_second, second, schema, extra_columns=[extra])
+    pd.testing.assert_series_equal(second[extra], first[extra], check_exact=True, check_dtype=True)
+    assert second.columns.tolist().count('TRIX') == 1
+    assert first['TRIX'].dtype == second['TRIX'].dtype
+    _assert_approx(second['TRIX'].to_numpy(), first['TRIX'].to_numpy(),
+                   schema['tolerance'], 'TRIX30 stale-column replay')
+
 
 def _primary():
     return RuntimeError(CANARY + ' ' + PRIVATE_PATH)
@@ -278,14 +515,20 @@ def _fail_stoch(monkeypatch, primary):
     monkeypatch.setattr(talib, 'STOCH', stoch_failure)
 
 
+def _fail_trix(monkeypatch, primary):
+    def trix_failure(*args, **kwargs):
+        raise primary
+    monkeypatch.setattr(talib, 'TRIX', trix_failure)
+
+
 def _assert_primary(caught, primary):
     assert caught.value is primary
-    assert any(frame.name in {'stoch_failure', 'reader_failure', 'writer_failure'}
+    assert any(frame.name in {'stoch_failure', 'trix_failure', 'reader_failure', 'writer_failure'}
                for frame in traceback.extract_tb(caught.value.__traceback__))
 
 
 @pytest.mark.parametrize('suffix', ['csv', 'xlsx'])
-@pytest.mark.parametrize('phase', ['read', 'stoch', 'pre_writer', 'partial_writer'])
+@pytest.mark.parametrize('phase', ['read', 'stoch', 'trix', 'pre_writer', 'partial_writer'])
 def test_io_fault_boundaries_preserve_only_proven_prewrite(candidate, tmp_path, monkeypatch, suffix, phase):
     path = _input(tmp_path / 'fault', suffix)
     original_bytes = path.read_bytes()
@@ -308,6 +551,8 @@ def test_io_fault_boundaries_preserve_only_proven_prewrite(candidate, tmp_path, 
         monkeypatch.setattr(pd, 'read_csv' if suffix == 'csv' else 'read_excel', reader_failure)
     elif phase == 'stoch':
         _fail_stoch(monkeypatch, primary)
+    elif phase == 'trix':
+        _fail_trix(monkeypatch, primary)
     monkeypatch.setattr(candidate, 'current_path', str(path.parent.parent))
     with pytest.raises(RuntimeError) as caught:
         candidate.calculator(path.name)
@@ -353,12 +598,12 @@ def test_contextual_telemetry_is_pure_contract_with_canaries(candidate, tmp_path
     assert returned['counts']['instruments'] == 2
     assert returned['counts']['rows_accepted'] is None
     assert '5/3/3' in events[0]['message'] and '0/0' in events[0]['message']
-    assert '88' in returned['message']
+    assert 'columns=89' in returned['message']
     captured = capsys.readouterr()
     serialized = json.dumps(events) + captured.out + captured.err
     assert CANARY not in serialized and PRIVATE_PATH not in serialized
     assert 'TECH_DIAGNOSTICS_FAILED' not in captured.out + captured.err
-    assert _read(path).columns.tolist() == schema['columns']
+    assert _read(path).columns.tolist() == schema['candidate_columns']
 
 
 @pytest.mark.parametrize('contextual', [False, True])
@@ -435,7 +680,7 @@ def test_diagnostic_failure_after_write_does_not_claim_preservation(candidate, t
     monkeypatch.setattr(candidate, 'current_path', str(path.parent.parent))
     assert candidate.calculator(path.name, logging_context=context) is None
     assert path.read_bytes() != before
-    assert _read(path).columns.tolist() == schema['columns']
+    assert _read(path).columns.tolist() == schema['candidate_columns']
     captured = capsys.readouterr()
     assert 'TECH_DIAGNOSTICS_FAILED' in captured.err
     assert 'WRITTEN' in captured.err
