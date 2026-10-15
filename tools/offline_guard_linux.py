@@ -50,7 +50,7 @@ SPAWN_SOURCES = {
 EVENTS = frozenset({
     'ENTRY', 'STDIO_BOUND', 'FOREIGN_FD_ABSENT', 'PREPARATION_BOUNDARY',
     'PREPARATION_OK', 'UNPICKLE_BOUNDARY', 'UNPICKLE_OK', 'WORKER_WRAPPER',
-    'WORKER_ERROR', 'EXIT23', 'HANG', 'FINAL_CONFIRMED', 'FINAL_UNCONFIRMED',
+    'WORKER_ERROR', 'EXIT23', 'EXIT23_FLUSH_CONFIRMED', 'HANG', 'FINAL_CONFIRMED', 'FINAL_UNCONFIRMED',
     'BOOTSTRAP_IMPORT_BOUNDARY', 'BOOTSTRAP_PIPE_WRITE_REFUSED',
     'CANARY_REJECTED', 'TRACKER_ENTRY', 'AUXILIARY_EOF', 'SESSION_OWNED', 'PDEATH_BOUND',
     'FOREIGN_FD_REFUSED',
@@ -458,7 +458,10 @@ def _case_passed(case, result):
     if case == 'child_error':
         return 'WORKER_ERROR' in events and google['exitcode'] != 0
     if case == 'exit23':
-        return 'EXIT23' in events and google['exitcode'] == 23
+        return ('EXIT23_FLUSH_CONFIRMED' in events and 'EXIT23' in events
+                and events.index('EXIT23_FLUSH_CONFIRMED') < events.index('EXIT23')
+                and google['exitcode'] == 23 and result['logging']['worker_final_count'] < 2
+                and not {'FINAL_CONFIRMED', 'FINAL_UNCONFIRMED'}.intersection(events))
     if case == 'bootstrap_import_failure':
         return 'BOOTSTRAP_IMPORT_BOUNDARY' in events and 'WORKER_WRAPPER' not in events
     if case == 'bootstrap_replay_failure':

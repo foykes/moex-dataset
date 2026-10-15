@@ -4039,7 +4039,7 @@ def lnx03_validate_native_cases(cases, require_complete=True):
                'sharedctypes.py', 'heap.py', 'resource_tracker.py', 'spawn.py', 'popen_spawn_posix.py', 'util.py'}
     allowed_events = {'ENTRY', 'STDIO_BOUND', 'FOREIGN_FD_ABSENT', 'FOREIGN_FD_REFUSED', 'PREPARATION_BOUNDARY',
                       'PREPARATION_OK', 'UNPICKLE_BOUNDARY', 'UNPICKLE_OK', 'WORKER_WRAPPER',
-                      'WORKER_ERROR', 'EXIT23', 'HANG', 'FINAL_CONFIRMED', 'FINAL_UNCONFIRMED',
+                      'WORKER_ERROR', 'EXIT23_FLUSH_CONFIRMED', 'EXIT23', 'HANG', 'FINAL_CONFIRMED', 'FINAL_UNCONFIRMED',
                       'BOOTSTRAP_IMPORT_BOUNDARY', 'BOOTSTRAP_PIPE_WRITE_REFUSED', 'CANARY_REJECTED',
                       'TRACKER_ENTRY', 'AUXILIARY_EOF', 'SESSION_OWNED', 'PDEATH_BOUND', 'GUARD_DENIALS_CONFIRMED'}
     observed_names = [value.get('case') if type(value) is dict else None for value in cases] if type(cases) is list else []
@@ -4102,8 +4102,15 @@ def lnx03_validate_native_cases(cases, require_complete=True):
                         raise PolicyError('lnx03-native-phase-order-invalid')
         elif case['application_exit'] != 1:
             raise PolicyError('lnx03-native-negative-exit-invalid')
-        if name == 'exit23' and not any(worker['exitcode'] == 23 and 'EXIT23' in worker['events'] for worker in workers):
-            raise PolicyError('lnx03-native-exit23-boundary-missing')
+        if name == 'exit23':
+            failed = [worker for worker in workers if worker['exitcode'] == 23]
+            if (len(failed) != 1 or logging['worker_final_count'] >= 2):
+                raise PolicyError('lnx03-native-exit23-boundary-missing')
+            events = failed[0]['events']
+            if (any(event in events for event in ('FINAL_CONFIRMED', 'FINAL_UNCONFIRMED'))
+                    or any(event not in events for event in ('WORKER_WRAPPER', 'EXIT23_FLUSH_CONFIRMED', 'EXIT23'))
+                    or not events.index('WORKER_WRAPPER') < events.index('EXIT23_FLUSH_CONFIRMED') < events.index('EXIT23')):
+                raise PolicyError('lnx03-native-exit23-boundary-missing')
         if name == 'child_error' and not any(worker['exitcode'] != 0 and 'WORKER_ERROR' in worker['events'] for worker in workers):
             raise PolicyError('lnx03-native-error-boundary-missing')
         if name == 'hang' and (not case['deadline_detected'] or not case['cleanup_requested']

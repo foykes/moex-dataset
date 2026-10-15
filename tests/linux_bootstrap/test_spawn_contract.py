@@ -144,7 +144,13 @@ def test_native_process_logging_and_bootstrap_oracles(
         assert record['application_exit'] == 1
 
     if case == 'exit23':
-        assert any(worker['exitcode'] == 23 and 'EXIT23' in worker['events'] for worker in workers)
+        failed = [worker for worker in workers if worker['exitcode'] == 23]
+        assert len(failed) == 1
+        events = failed[0]['events']
+        before(events, 'WORKER_WRAPPER', 'EXIT23_FLUSH_CONFIRMED')
+        before(events, 'EXIT23_FLUSH_CONFIRMED', 'EXIT23')
+        assert 'FINAL_CONFIRMED' not in events and 'FINAL_UNCONFIRMED' not in events
+        assert logging['worker_final_count'] < 2
     elif case == 'foreign_fd':
         assert any('FOREIGN_FD_REFUSED' in worker['events'] for worker in workers)
     elif case == 'child_error':

@@ -176,6 +176,19 @@ def _entry(ticket):
             while True:
                 time.sleep(1)
         if injected and ticket['case'] == 'exit23':
+            # The intended fault is actual death before a worker final. Drain
+            # earlier traffic first, then settle this child-local feeder: ACK
+            # receipt alone can race with its final shared write-lock release.
+            if not run_logging.flush_logging(context)['confirmed']:
+                raise ValueError('LNX03_NATIVE_EXIT23_FLUSH_UNCONFIRMED')
+            feeder = context['_queue']._thread
+            context['_queue'].close()
+            if feeder is None:
+                raise ValueError('LNX03_NATIVE_EXIT23_FEEDER_MISSING')
+            feeder.join(timeout=2)
+            if feeder.is_alive():
+                raise ValueError('LNX03_NATIVE_EXIT23_FEEDER_UNSETTLED')
+            _event(ticket, 'EXIT23_FLUSH_CONFIRMED')
             _event(ticket, 'EXIT23')
             os._exit(23)
         if injected and ticket['case'] == 'child_error':
