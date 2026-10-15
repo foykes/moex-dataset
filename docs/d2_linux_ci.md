@@ -25,12 +25,23 @@ docs/testing.md
 docs/coordination.md
 ```
 
-The approved implementation base is
-`e411a154b47446997fd4697c5cb4d7cc604519bf`, tree
-`307e4b768427d3269318285b0745ba3b77a7558c`. Implementation uses the separate
-`codex/lnx-03-d2-bootstrap` worktree. The owner authorized local implementation,
-safe offline checks and a local commit, but not a first push, repository grant
-activation, hosted SETUP, supervised namespace operation or CI execution.
+The original candidate `15a7b6974b521e62d414a956f7f751108a24742a` and its base
+`e411a154b47446997fd4697c5cb4d7cc604519bf` remain preserved in history and
+evidence. The owner authorized a controlled merge of compatible main
+`c98664b7da20375cf0bfed8125a94d64008d0d63`, producing integration checkpoint
+`70a6dbd502be500eb908ee1905ac383d53088d3b`. Implementation stays in the separate
+`codex/lnx-03-d2-bootstrap` worktree. Each subsequent tested HEAD has its own
+exact source/base grants and evidence; the integration checkpoint is not a
+claim that later source was tested.
+
+The 2026-10-15 owner night grant supersedes the earlier first-push STOP only
+for this Stage A. It permits bounded branch pushes, the existing Linux workflow,
+public hash-locked SETUP, conditional source-attested supervised namespace and
+existing Windows side-effect checks. The window ends at 2026-10-16 09:00 MSK.
+Limits are six Linux executions, four repair cycles, three base integrations,
+one draft PR and two additional Windows checks. Every discovery and rerun attempt
+counts as a Linux execution. No merge, issue closure, production or Stage B is
+authorized.
 
 LNX/coordinator transfers only the new consumer in the shared helper; F3/
 coordinator transfers only Linux admission. Existing LNX-02 modes/grants/schema,
@@ -71,22 +82,35 @@ Three distinct non-secret repository grants are required where applicable:
 
 The admission JSON has exactly `approved`, `consumer`, `repository`, `sha`,
 `base`, `event`, `ref`, `actor`, `triggering_actor`, `workflow`, `job`,
-`run_number`, `attempt` and `ticket_id`. Approval is JSON `true`; run number is
-a positive JSON integer, attempt is integer `1`, ticket ID is 64 lower-case
+`run_number`, `run_id`, `attempt` and `ticket_id`. These are exactly 15 keys.
+Approval is JSON `true`; run number is a positive JSON integer, run ID is a
+positive decimal string, attempt is integer `2`, ticket ID is 64 lower-case
 hexadecimal characters, and the remaining values are strings. SETUP adds only
 `capability: "network-setup"`; supervised authority adds only
 `capability: "supervised-netns"`. All shared identity fields must match.
 Only `foykes/moex-dataset`, owner actors,
 the new workflow and its `linux-bootstrap` job are admitted. Push is restricted
 to `refs/heads/codex/lnx-03-d2-bootstrap`; a later separately granted dispatch
-uses current `main`, with base equal to SHA. Attempt must be one.
+uses `main`, with base equal to SHA. Only exact attempt two is admitted.
 
-A GitHub run number is not reserved in advance. Before granting the first
-trigger, check the proposed identity; any mismatch, foreign run or rerun fails
-closed. Never update a grant automatically to match an observed run. Each
-actual run ID is bound to the derived tickets and evidence. The consumer's
-exclusive job-owned claim survives success and failure until job teardown;
-changing an output directory does not make a consumed ticket reusable.
+A run number is never predicted or reserved. Each new exact source first has
+an identity-discovery attempt with no active LNX-03 grants. Attempt one always
+refuses before checkout and SETUP, including when stale grants are present.
+That actual failed run is not Linux application evidence. The external owner-
+authorized controller reads its actual ID, number, attempt, source, branch,
+workflow and actors from the Actions API, then writes and reads back all
+required matching grants for exactly attempt two of the same run. It requests
+only that rerun and verifies the actual API identity again. Attempts one and
+three or later, foreign runs and any mismatch remain fail-closed. There is no
+mid-job grant refresh, implicit retry or empty commit to obtain another number.
+The consumer's exclusive job-owned claim survives success and failure until job
+teardown; changing an output directory does not make a consumed ticket reusable.
+
+Only the externally verified owner identity may use the delegated repository
+Variables write capability. The CI job remains `contents: read`; it cannot
+write or reissue grants. Missing Variables write authority blocks hosted work.
+The controller revokes the three LNX-03 grants in `finally` and verifies
+readback. Revocation failure requires a separate security BLOCKED handoff.
 
 The workflow gates before checkout or package traffic. Checkout/artifact
 transport are identified control-plane traffic; admission is not permission
@@ -94,6 +118,25 @@ for package SETUP. Missing SETUP grant causes refusal before DNS/download.
 Rootless namespace denial cannot activate supervised mode without its separate
 grant. LNX-03 grants do not authorize old LNX-02 modes, and LNX-02 grants do not
 authorize this consumer. The job cannot create or extend grants.
+
+## Immutable base and compatible main drift
+
+Source admission requires a clean exact HEAD, an existing immutable approved
+base in its ancestry and a candidate diff containing only recorded A/M changes
+in the exact 12 paths. Other statuses, including D/R/C/T, are refused; disabling
+rename detection exposes a rename's removed source as D. The workflow performs
+independent literal Git checks; the helper
+performs its separate LNX-03 source check. Legacy LNX-02 rules stay unchanged.
+
+Before SETUP the workflow fetches and records one observed main snapshot. The
+approved base must be its ancestor, and drift from base to that snapshot must
+be disjoint from the closed 22-path dependency set: the 12 Stage A paths,
+`run_logging.py`, the three Linux locks, the three Windows locks and
+`requirements/runtime.in`, `requirements/test.in`, `requirements/dev.in`.
+Shared-interface drift refuses admission. Disjoint later movement of main does
+not change the tested source SHA, approved base or completed exact-SHA evidence.
+Changing tested source requires a new discovery/grant/test cycle. A later
+integration conflict still blocks readiness and requires its own disposition.
 
 ## Setup and immutable offline phase
 
@@ -167,7 +210,8 @@ old helper. A real separately authorized LNX-02 `verify` on exact post-merge
 
 | Boundary | Required independent oracle |
 |---|---|
-| Authority | Wrong SHA/base/ref/actors, foreign/reused ticket, attempt >1, unsupported mode and missing SETUP grant refuse |
+| Authority | Wrong SHA/base/ref/actors/run ID/number, foreign/reused ticket, attempt other than 2, unsupported mode and missing SETUP grant refuse |
+| Source | Missing ancestry, changes outside 12, disallowed change types and drift inside closed 22 refuse; compatible disjoint drift preserves exact-SHA evidence |
 | Fixed launch | Unknown targets, arguments, module/script/callback and unregistered children refuse before launch |
 | Environment | Hash/closure/interpreter mismatch, changed source/environment and failed cleanup exclude PASS |
 | F-LOG/native | Real Queue/Pipe/RawValue transport, actual process exits, FD inheritance and settlement witnesses |
@@ -175,20 +219,23 @@ old helper. A real separately authorized LNX-02 `verify` on exact post-merge
 | Export | Missing/corrupt/stale/extra evidence and canary-positive control fail rather than export false success |
 | Legacy | Existing LNX-02 routing, grants, source-bound outputs and refusal oracles remain accepted separately |
 
-## First-push and integration gates
+## Hosted execution and integration gates
 
-Stop at the clean local commit and issue `FIRST_PUSH_GRANT_REQUEST` with actual
-base/HEAD/tree, all 12 paths, workflow blob hash, exact network scope, proposed
-closed run identity, completed local checks and pending hosted checks. First
-push, grant activation, hosted SETUP and network execution remain separate owner
-actions. A new workflow must exist on the default branch before manual dispatch.
+Before each bounded branch push, record actual base/clean HEAD/tree, the exact
+12-path diff, workflow blob identity, environment fingerprints, completed local
+checks and remaining execution budgets. Preserve failing evidence through each
+minimal repair. Read back the branch and actual Actions identity after push;
+run only the discovery/exact-attempt-two sequence above. The night grant does
+not make setup, native observations or independent acceptance PASS in advance.
+A new workflow must exist on the default branch before manual dispatch.
 
 A push to this branch also matches the existing `offline-tests.yml` `codex/**`
 trigger. If `MDS_F3_CI_SETUP_APPROVED=true`, Windows F1/F2/F-LOG/F3 and dependent
-notebook checks may execute and need corresponding authorization. The existing
+notebook checks may execute; the night grant authorizes those side effects
+without changing that variable. The existing
 Linux syntax preflight runs on PR to main/main push, not this branch push.
 `linux-environment.yml` still accepts only its old branch/main modes and gains
-no authority from LNX-03. Existing grants must not be changed by this package.
+no authority from LNX-03. Existing LNX-02 and F3 grants must not be changed.
 
 Stage B is NOT AUTHORIZED. It needs independent review on the accepted Stage A
 foundation, a fresh H and owner decision for early unsupported-platform refusal
@@ -197,9 +244,16 @@ methods/macOS, Windows D2, D1 production callers, D4/D5/D6, A8/B3, complete
 #47/#78 integration and #66 staging remain open hookups. No release result,
 remote commit, current generation or previous preservation is asserted here.
 
+After accepted hosted gates and self-review, at most one draft Stage A PR is
+authorized, with `Refs #39, #41, #47, #67, #78` and no closing keywords. Record
+exact Linux and Windows commands, counts/exits, actual identities, redacted
+evidence, AC mapping and remaining acceptance. No automatic merge is allowed.
+
 Rollback is a separately controlled thematic revert of LNX-03 consumer/CI
 changes. Preserve the original LNX-02 foundation, Windows worktree, environments
-and all evidence. Do not reset, clean, merge, close issues or run publication.
+and all evidence. Do not reset, clean, force-push, rebase, close issues or run
+publication. Only the night grant's bounded compatible main integration is
+authorized; it is not production recovery.
 
 ## Native evidence limits
 

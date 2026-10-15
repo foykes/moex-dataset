@@ -39,7 +39,7 @@ CASES = (
 )
 GRANT_KEYS = {
     'approved', 'consumer', 'repository', 'sha', 'base', 'event', 'ref',
-    'actor', 'triggering_actor', 'workflow', 'job', 'run_number', 'attempt', 'ticket_id',
+    'actor', 'triggering_actor', 'workflow', 'job', 'run_number', 'attempt', 'ticket_id', 'run_id',
 }
 
 
@@ -113,7 +113,7 @@ def validate_authority(value, sha):
     for key, width in (('sha', 40), ('base', 40), ('ticket_id', 64)):
         require(type(value[key]) is str and re.fullmatch('[0-9a-f]{' + str(width) + '}', value[key]),
                 'lnx03-runner-authority-identity')
-    require(type(value['attempt']) is int and value['attempt'] == 1
+    require(type(value['attempt']) is int and value['attempt'] == 2
             and type(value['run_number']) is int and value['run_number'] > 0
             and type(value['run_id']) is str and re.fullmatch('[1-9][0-9]*', value['run_id']),
             'lnx03-runner-authority-identity')

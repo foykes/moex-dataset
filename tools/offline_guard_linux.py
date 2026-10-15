@@ -58,6 +58,9 @@ EVENTS = frozenset({
 })
 _guard = None
 _case_lock = threading.Lock()
+# Preserve actual transport ownership if bounded thread shutdown fails. A later
+# case must not hide that lifetime by replacing the global tracker descriptor.
+_unsettled_transports = []
 
 
 class NativeAdmissionError(RuntimeError):
@@ -73,7 +76,17 @@ class _ProcessGuard:
     def __call__(self, event, args):
         if event == 'subprocess.Popen':
             allowed = (self.command is not None and self.owner == threading.get_ident()
-                       and args[0] == self.command[0] and tuple(args[1]) == self.command)
+                       and len(args) >= 2 and args[0] == self.command[0]
+                       and type(args[1]) in {list, tuple} and tuple(args[1]) == self.command)
+            if allowed:
+                return
+        elif event == '_posixsubprocess.fork_exec':
+            # CPython 3.14's internal event also covers direct tracker relaunch
+            # via util.spawnv_passfds, which does not emit subprocess.Popen.
+            allowed = (self.command is not None and self.owner == threading.get_ident()
+                       and len(args) >= 2 and type(args[0]) in {list, tuple}
+                       and tuple(args[0]) == (os.fsencode(self.command[0]),)
+                       and type(args[1]) in {list, tuple} and tuple(args[1]) == self.command)
             if allowed:
                 return
         elif not (event.startswith('socket.') or event in {
@@ -483,12 +496,13 @@ def _run_native_case(case, repo, scratch, attestation):
     import run_logging
     from multiprocessing import resource_tracker
     tracker_state = resource_tracker._resource_tracker
-    if tracker_state._fd is not None or tracker_state._pid is not None:
+    if _unsettled_transports or tracker_state._fd is not None or tracker_state._pid is not None:
         raise NativeAdmissionError('LNX03_NATIVE_FOREIGN_TRACKER')
     work = scratch / ('native-' + uuid.uuid4().hex)
     work.mkdir(mode=0o700)
     children, session, bootstraps = [], None, []
     tracker = None
+    transport_settled = True
     tracker_read, tracker_write = os.pipe()
     foreign = os.open(work / 'foreign-marker', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
     os.set_inheritable(foreign, True)
@@ -643,16 +657,41 @@ def _run_native_case(case, repo, scratch, attestation):
         for item in children:
             os.close(item['witness'])
             os.close(item['pidfd'])
-        bootstraps.clear()
-        session = None
-        gc.collect()
-        if tracker_state._fd == tracker_write:
-            tracker_state._fd = None
-        os.close(tracker_write)
+        if session is not None:
+            # F-LOG has finalized before this fixture-only ownership cleanup.
+            # cancel_join_thread() is not a feeder exit witness: its real
+            # Thread still owns Queue semaphores until consuming the sentinel.
+            # Retain no Queue alias across the subsequent collection.
+            feeder = session['_queue']._thread
+            try:
+                session['_queue'].close()
+                if feeder is not None:
+                    feeder.join(timeout=2)
+                transport_settled = ((feeder is None or not feeder.is_alive())
+                                     and not session['_thread'].is_alive())
+            except BaseException:
+                transport_settled = False
+            finally:
+                feeder = None
+        if transport_settled:
+            bootstraps.clear()
+            session = None
+            gc.collect()  # SemLock finalizers must send UNREGISTER before EOF.
+            if tracker_state._fd == tracker_write:
+                tracker_state._fd = None
+            os.close(tracker_write)
+        else:
+            # No synthetic settlement, premature tracker EOF, or later-case
+            # recovery. Preserve live references and the registered tracker for
+            # fail-closed runner/controller teardown and its retained scratch.
+            _unsettled_transports.append(dict(session=session, bootstraps=bootstraps,
+                                               tracker=tracker, tracker_write=tracker_write))
+            result['application_exit'] = 1
+            result['cleanup_requested'] = True
         if tracker_read is not None:
             os.close(tracker_read)
         os.close(foreign)
-        if tracker is not None:
+        if tracker is not None and transport_settled:
             try:
                 tracker['process'].wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -661,6 +700,10 @@ def _run_native_case(case, repo, scratch, attestation):
                                        reaped=tracker['process'].returncode is not None,
                                        exitcode=tracker['process'].returncode)
             os.close(tracker['pidfd'])
+    if not transport_settled:
+        result['status'] = 'INCOMPLETE'
+        result['failure_code'] = 'LNX03_NATIVE_TRANSPORT_UNSETTLED'
+        return result
     passed = _case_passed(case, result)
     result['status'] = 'PASS' if passed else 'FAIL'
     result['failure_code'] = None if passed else 'LNX03_NATIVE_ORACLE_FAILED'

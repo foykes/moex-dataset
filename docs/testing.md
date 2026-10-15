@@ -213,3 +213,28 @@ Changing the shared helper requires source-bound legacy LNX-02 regressions
 before merge. A separately granted real LNX-02 verify on the exact post-merge
 main must be independently accepted before any Stage B handoff. Older helper
 artifacts, working-tree runs and other-SHA CI cannot establish that acceptance.
+## LNX-03 night execution amendment — 2026-10-15
+
+The owner night grant supersedes the earlier FIRST_PUSH_GRANT_REQUEST STOP for
+Stage A only. The exact 12-path allowlist, legacy LNX-02 rules, Linux locks and
+Windows D2 evidence remain unchanged. Controlled compatible main integration,
+bounded branch pushes, public hash-locked Linux SETUP and existing Windows
+side-effect CI are authorized until 2026-10-16 09:00 MSK. Do not change F3 grants.
+
+Every new tested SHA first produces an ungranted discovery attempt. Attempt one
+must refuse before checkout/SETUP; its failed workflow is not native acceptance.
+The authorized external controller reads actual API run ID/number/source/ref/
+actors, writes and reads back exact matching LNX-03 grants for attempt two of
+that same run, then requests only that rerun. External grants require run_id;
+only exact attempt two is admitted. No predicted or reserved run number,
+mid-job grant refresh, generic retry or empty commit is allowed. Revoke all
+three LNX-03 grants in finally and confirm readback; failure is BLOCKED.
+
+Both discovery and rerun count toward six Linux executions. Remaining limits
+are four repair cycles, three integrations, one draft PR and two additional
+Windows checks. Source admission independently checks clean exact HEAD,
+approved-base ancestry, A/M-only candidate changes in 12 paths and observed
+main drift disjoint from the closed 22 dependencies. Later independent main
+movement does not invalidate completed exact-SHA evidence. Native PASS still
+requires real F-LOG/FD/process/network observations; skips stay NOT VERIFIED.
+Stage B, merge, issue closure, staging and publication remain unauthorized.

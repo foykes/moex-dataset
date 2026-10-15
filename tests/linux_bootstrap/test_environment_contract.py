@@ -162,3 +162,160 @@ def test_legacy_supervised_requires_its_own_opt_in(helper, admission_environment
         dict(grant, capability='supervised-netns'))
     with pytest.raises(helper.PolicyError):
         helper.validate_supervised_grant(values)
+
+
+def test_lnx03_source_accepts_exact_scope_and_approved_ancestor(helper, source_repository):
+    fixture = source_repository
+    assert len(fixture['allowed']) == 12 and len(fixture['protected']) == 10
+    assert set(helper.LNX03_PATHS) == set(fixture['allowed'])
+    assert set(helper.LNX03_DEPENDENCY_PATHS) == set(fixture['allowed'] + fixture['protected'])
+    helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'], fixture['base'])
+    assert fixture['seen'] == [
+        ('rev-parse', 'HEAD'), ('cat-file', '-e', fixture['base'] + '^{commit}'),
+        ('merge-base', '--is-ancestor', fixture['base'], fixture['head']),
+        ('status', '--porcelain=v1', '--untracked-files=all'),
+        ('diff', '--name-status', '--no-renames', '-z', fixture['base'], fixture['head'], '--'),
+        ('merge-base', '--is-ancestor', fixture['base'], fixture['base']),
+        ('diff', '--name-only', '--no-renames', '-z', fixture['base'], fixture['base'], '--'),
+    ]
+
+
+@pytest.mark.parametrize('scope', ['empty', 'one-file'])
+def test_lnx03_source_permits_only_add_or_modify_subset_and_detached_head(
+        helper, source_repository, scope):
+    fixture = source_repository
+    changes = b'' if scope == 'empty' else b'A\0' + fixture['allowed'][0].encode('utf-8') + b'\0'
+    fixture['replies'][('diff', '--name-status', '--no-renames', '-z', fixture['base'],
+                        fixture['head'], '--')] = (0, changes)
+    helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'], fixture['base'])
+    # Detached hosted checkouts are supported: no branch/symbolic-ref query.
+    assert not any('symbolic-ref' in command for command in fixture['seen'])
+
+
+@pytest.mark.parametrize('mutation,code', [
+    ('wrong-source', 'lnx03-source-head-drift'),
+    ('missing-base', 'lnx03-approved-base-missing'),
+    ('missing-ancestry', 'lnx03-base-is-not-source-ancestor'),
+    ('dirty-tracked', 'lnx03-source-is-dirty'),
+    ('dirty-untracked', 'lnx03-source-is-dirty'),
+    ('outside-allowlist', 'lnx03-source-outside-approved-paths'),
+    ('delete', 'lnx03-source-outside-approved-paths'),
+    ('rename', 'lnx03-source-outside-approved-paths'),
+    ('type-change', 'lnx03-source-outside-approved-paths'),
+])
+def test_lnx03_source_independent_git_reply_negative_boundaries(helper, source_repository, mutation, code):
+    fixture = source_repository
+    root, replies = fixture['root'], fixture['replies']
+    sha, base = fixture['head'], fixture['base']
+    if mutation == 'wrong-source':
+        replies[('rev-parse', 'HEAD')] = (0, (base + '\n').encode('ascii'))
+    elif mutation == 'missing-base':
+        replies[('cat-file', '-e', base + '^{commit}')] = (1, b'')
+    elif mutation == 'missing-ancestry':
+        replies[('merge-base', '--is-ancestor', base, sha)] = (1, b'')
+    elif mutation == 'dirty-tracked':
+        replies[('status', '--porcelain=v1', '--untracked-files=all')] = (0, b' M docs/testing.md\n')
+    elif mutation == 'dirty-untracked':
+        replies[('status', '--porcelain=v1', '--untracked-files=all')] = (0, b'?? untracked.txt\n')
+    else:
+        name = fixture['allowed'][0].encode('utf-8')
+        if mutation == 'outside-allowlist':
+            changes = b'M\0unrelated.txt\0'
+        elif mutation == 'delete':
+            changes = b'D\0' + name + b'\0'
+        elif mutation == 'rename':
+            # --no-renames must still refuse the delete/add representation.
+            changes = b'D\0' + name + b'\0A\0outside-renamed.py\0'
+        else:
+            changes = b'T\0' + name + b'\0'
+        replies[('diff', '--name-status', '--no-renames', '-z', base, sha, '--')] = (0, changes)
+    with pytest.raises(helper.PolicyError, match='^' + code + '$'):
+        helper.lnx03_source_identity(root, sha, base, fixture['base'])
+
+
+@pytest.mark.parametrize('changes', [b'M\0docs/testing.md', b'M\0', b'R100\0old.py\0new.py\0',
+                                    b'C100\0old.py\0new.py\0', b'M\0\xff\0'])
+def test_lnx03_source_refuses_malformed_or_ambiguous_diff_records(
+        helper, source_repository, changes):
+    fixture = source_repository
+    fixture['replies'][('diff', '--name-status', '--no-renames', '-z', fixture['base'],
+                        fixture['head'], '--')] = (0, changes)
+    with pytest.raises(helper.PolicyError):
+        helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'])
+
+
+@pytest.mark.parametrize('index', range(10))
+def test_lnx03_source_cannot_amend_readonly_dependencies(helper, source_repository, index):
+    fixture = source_repository
+    fixture['replies'][('diff', '--name-status', '--no-renames', '-z', fixture['base'],
+                        fixture['head'], '--')] = (
+                            0, b'M\0' + fixture['protected'][index].encode('utf-8') + b'\0')
+    with pytest.raises(helper.PolicyError, match='^lnx03-source-outside-approved-paths$'):
+        helper.lnx03_source_identity(fixture['root'], fixture['head'],
+                                    fixture['base'], fixture['base'])
+
+
+@pytest.mark.parametrize('mutation', ['extra', 'missing', 'duplicate', 'reordered'])
+def test_lnx03_approved_allowlist_cannot_be_caller_redefined(
+        helper, source_repository, monkeypatch, mutation):
+    paths = list(source_repository['allowed'])
+    if mutation == 'extra':
+        paths.append('unrelated.txt')
+    elif mutation == 'missing':
+        paths.pop()
+    elif mutation == 'duplicate':
+        paths[-1] = paths[0]
+    else:
+        paths[0], paths[1] = paths[1], paths[0]
+    monkeypatch.setattr(helper, 'LNX03_PATHS', tuple(paths))
+    with pytest.raises(helper.PolicyError, match='^lnx03-approved-path-contract-changed$'):
+        helper.lnx03_source_identity(source_repository['root'], source_repository['head'],
+                                    source_repository['base'])
+
+
+@pytest.mark.parametrize('index', range(22))
+def test_lnx03_observed_main_rejects_each_dependent_interface(
+        helper, source_repository, index):
+    fixture = source_repository
+    main = fixture['main']
+    path = (fixture['allowed'] + fixture['protected'])[index]
+    fixture['replies'][('diff', '--name-only', '--no-renames', '-z', fixture['base'], main, '--')] = (
+        0, path.encode('utf-8') + b'\0')
+    with pytest.raises(helper.PolicyError, match='^lnx03-main-dependent-interface-drift$'):
+        helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'], main)
+
+
+def test_lnx03_accepts_disjoint_main_then_ignores_post_admission_ref_drift(helper, source_repository):
+    fixture = source_repository
+    main = fixture['main']
+    helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'], main)
+    incompatible = 'd' * 40
+    fixture['replies'][('rev-parse', 'refs/remotes/origin/main')] = (0, incompatible.encode('ascii') + b'\n')
+    fixture['replies'][('merge-base', '--is-ancestor', fixture['base'], incompatible)] = (0, b'')
+    fixture['replies'][('diff', '--name-only', '--no-renames', '-z', fixture['base'], incompatible, '--')] = (
+        0, b'run_logging.py\0')
+    # The immutable admission snapshot remains auditable. Final exact-SHA
+    # validation does not silently substitute a newly moved remote main.
+    helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'], main)
+    helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'])
+    assert ('rev-parse', 'refs/remotes/origin/main') not in fixture['seen']
+    with pytest.raises(helper.PolicyError, match='^lnx03-main-dependent-interface-drift$'):
+        helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'], incompatible)
+
+
+@pytest.mark.parametrize('main', ['malformed', 'missing', 'unrelated-history'])
+def test_lnx03_main_snapshot_must_be_valid_descendant(helper, source_repository, main):
+    fixture = source_repository
+    if main == 'malformed':
+        observed = 'not-a-sha'
+        code = 'lnx03-main-observation-invalid'
+    elif main == 'missing':
+        observed = '0' * 40
+        code = 'lnx03-main-is-not-base-descendant'
+    else:
+        observed = 'e' * 40
+        code = 'lnx03-main-is-not-base-descendant'
+    if main != 'malformed':
+        fixture['replies'][('merge-base', '--is-ancestor', fixture['base'], observed)] = (1, b'')
+    with pytest.raises(helper.PolicyError, match='^' + code + '$'):
+        helper.lnx03_source_identity(fixture['root'], fixture['head'], fixture['base'], observed)

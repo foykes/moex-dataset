@@ -56,6 +56,13 @@ def runner():
 
 
 @pytest.fixture
+def process_policy():
+    # Instantiating the callable is a policy unit test, not sys.addaudithook,
+    # native admission, an OS process birth, or Linux lifecycle evidence.
+    return load_definitions(ROOT / 'tools/offline_guard_linux.py', 'lnx03_portable_process_policy')
+
+
+@pytest.fixture
 def repo():
     return ROOT
 
@@ -100,7 +107,7 @@ def admission_environment():
         'event': 'push', 'ref': 'refs/heads/codex/lnx-03-d2-bootstrap',
         'actor': 'foykes', 'triggering_actor': 'foykes',
         'workflow': '.github/workflows/d2-linux-offline.yml',
-        'job': 'linux-bootstrap', 'run_number': 31, 'attempt': 1,
+        'job': 'linux-bootstrap', 'run_number': 31, 'run_id': '731009', 'attempt': 2,
         'ticket_id': 'c' * 64,
     }
     values = {
@@ -108,13 +115,13 @@ def admission_environment():
         'GITHUB_EVENT_NAME': grant['event'], 'GITHUB_REF': grant['ref'],
         'GITHUB_ACTOR': grant['actor'], 'GITHUB_TRIGGERING_ACTOR': grant['triggering_actor'],
         'GITHUB_RUN_ID': '731009', 'GITHUB_RUN_NUMBER': '31',
-        'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_JOB': grant['job'],
+        'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_JOB': grant['job'],
         'GITHUB_WORKFLOW_REF': 'foykes/moex-dataset/' + grant['workflow'] + '@' + grant['ref'],
         'GITHUB_WORKFLOW_SHA': sha,
         'RUNNER_ENVIRONMENT': 'github-hosted', 'TASK_RUNNER_ENVIRONMENT': 'github-hosted',
         'TASK_DELETED': 'false', 'GITHUB_ACTIONS': 'true', 'ImageOS': 'ubuntu24',
         'TASK_WORKFLOW': grant['workflow'], 'TASK_JOB': grant['job'],
-        'TASK_RUN_NUMBER': '31', 'TASK_RUN_ATTEMPT': '1', 'TASK_RUN_ID': '731009',
+        'TASK_RUN_NUMBER': '31', 'TASK_RUN_ATTEMPT': '2', 'TASK_RUN_ID': '731009',
         'MDS_LNX03_ADMISSION_GRANT': json.dumps(grant, sort_keys=True),
         'MDS_LNX03_SETUP_GRANT': json.dumps(dict(grant, capability='network-setup'), sort_keys=True),
     }
@@ -125,3 +132,54 @@ def admission_environment():
     }.items():
         values[task] = values[github]
     return values, sha, base, grant
+
+
+@pytest.fixture
+def source_repository(helper, tmp_path, monkeypatch):
+    """Independent Git protocol vectors, with no subprocess authority.
+
+    Hosted pytest is inside the application process guard. Literal replies
+    exercise the actual source parser; real Git integration belongs to the
+    trusted controller outside this consumer and is separately evidenced.
+    """
+    root = tmp_path / 'source-repository'
+    root.mkdir()
+    paths = (
+        '.github/lnx02/verify_env.py', '.github/workflows/d2-linux-offline.yml',
+        'tools/offline_linux.py', 'tools/offline_guard_linux.py',
+        'tests/linux_bootstrap/conftest.py', 'tests/linux_bootstrap/native_worker.py',
+        'tests/linux_bootstrap/test_environment_contract.py',
+        'tests/linux_bootstrap/test_admission.py', 'tests/linux_bootstrap/test_spawn_contract.py',
+        'docs/d2_linux_ci.md', 'docs/testing.md', 'docs/coordination.md',
+    )
+    protected = ('run_logging.py',) + tuple(
+        'requirements/' + name for name in (
+            'linux-cp314-runtime.lock', 'linux-cp314-test.lock', 'linux-cp314-dev.lock',
+            'windows-cp314-runtime.lock', 'windows-cp314-test.lock', 'windows-cp314-dev.lock',
+            'runtime.in', 'test.in', 'dev.in'))
+    sha, base, main = 'a' * 40, 'b' * 40, 'c' * 40
+    replies = {
+        ('rev-parse', 'HEAD'): (0, (sha + '\n').encode('ascii')),
+        ('cat-file', '-e', base + '^{commit}'): (0, b''),
+        ('merge-base', '--is-ancestor', base, sha): (0, b''),
+        ('status', '--porcelain=v1', '--untracked-files=all'): (0, b''),
+        ('diff', '--name-status', '--no-renames', '-z', base, sha, '--'):
+            (0, b''.join(b'M\0' + name.encode('utf-8') + b'\0' for name in paths)),
+        ('merge-base', '--is-ancestor', base, base): (0, b''),
+        ('diff', '--name-only', '--no-renames', '-z', base, base, '--'): (0, b''),
+        ('merge-base', '--is-ancestor', base, main): (0, b''),
+        ('diff', '--name-only', '--no-renames', '-z', base, main, '--'): (0, b'unrelated.txt\0'),
+    }
+    seen = []
+
+    def read(actual_root, arguments, allowed_failure=False):
+        assert actual_root == root
+        command = tuple(arguments)
+        seen.append(command)
+        assert command in replies, 'unexpected Git query: ' + repr(command)
+        code, stdout = replies[command]
+        return types.SimpleNamespace(returncode=code, stdout=stdout)
+
+    monkeypatch.setattr(helper, 'git_read', read)
+    return {'root': root, 'base': base, 'head': sha, 'main': main,
+            'replies': replies, 'seen': seen, 'allowed': paths, 'protected': protected}

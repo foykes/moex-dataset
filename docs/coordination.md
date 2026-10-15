@@ -663,3 +663,47 @@ platform-entrypoint decision. `run_logging.py`, `dataset_io.py`, production
 settings, datasets, MOEX/Google/FTP/staging writes, D4/D5/D6 and complete
 #47/#78/#66 integration are outside Stage A. Rollback is a separately reviewed
 thematic revert preserving LNX-02, foreign worktrees and all existing evidence.
+## LNX-03 Stage A — bounded owner night grant amendment
+
+On 2026-10-15 the owner superseded the local-only FIRST_PUSH_GRANT_REQUEST STOP
+with a bounded night execution grant, ending 2026-10-16 09:00 MSK. The same
+12-path H remains valid; this append does not rewrite historical reservations
+or grants. Windows D2 and all original evidence remain frozen and preserved.
+
+Original candidate 15a7b6974b521e62d414a956f7f751108a24742a and original base
+e411a154b47446997fd4697c5cb4d7cc604519bf remain in ancestry. The authorized
+compatible main merge used c98664b7da20375cf0bfed8125a94d64008d0d63 and produced
+integration checkpoint 70a6dbd502be500eb908ee1905ac383d53088d3b. Its five B1
+paths do not overlap the Stage A/dependency set. Every subsequent tested source
+requires new exact-HEAD checks and grants; no old evidence becomes new-SHA PASS.
+
+The narrow LNX-03 amendment admits only a clean exact SHA with immutable
+approved-base ancestry, A/M-only candidate diff inside 12 paths and initial
+observed-main drift disjoint from the closed 22 dependencies documented in
+[the contract](d2_linux_ci.md). Legacy source/grant/schema rules are unchanged.
+Disjoint later main movement cannot replace the approved base or invalidate
+actual completed exact-SHA evidence. Incompatible interface drift still blocks.
+
+First publication of each source is an ungranted attempt-one identity discovery
+and must refuse before checkout/SETUP. The authorized external controller uses
+actual Actions API identity, not a predicted number, to write and read back the
+15-key LNX-03 grants containing run_id and exact attempt two for that same run.
+Only this granted rerun is admitted. CI retains contents: read and cannot write
+grants. Variables write authority must be verified externally; missing authority
+blocks hosted work. Revoke all three grants in finally and verify readback;
+revocation failure requires a separate security BLOCKED handoff.
+
+Authorized hosted work is the existing LNX-03 ubuntu-24.04 workflow, fixed
+public hash-locked wheel SETUP and conditional source-attested supervised netns
+after independently proven rootless permission denial. Existing Windows F1/F2/
+F-LOG/F3 and notebook side effects are permitted without modifying F3 authority.
+No new workflow, arbitrary download, privileged launcher or dependency change
+is allowed. Both discovery and rerun count toward six Linux executions; limits
+also remain four repairs, three integrations, one draft PR and two additional
+Windows checks. Failure evidence and independent assertions must be preserved.
+
+Only after required hosted gates, exact-HEAD checks and self-review may one
+draft Stage A PR use Refs #39, #41, #47, #67, #78, without closing keywords.
+Stage B, automatic PR merge, issue closure, production/staging, MOEX/Google/FTP
+writes, deployments and cron remain unauthorized. Rollback is separately
+controlled and preserves foreign worktrees, environments and every evidence set.

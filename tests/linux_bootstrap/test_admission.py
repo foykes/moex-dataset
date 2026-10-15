@@ -31,11 +31,12 @@ def install_grants(values, grant, setup=True):
             dict(grant, capability='network-setup'), sort_keys=True)
 
 
-def test_exact_authority_derives_actual_run_id(helper, admission_environment):
+def test_exact_authority_requires_owner_bound_run_id(helper, admission_environment):
     values, sha, base, grant = admission_environment
     actual = helper.lnx03_validate_grant(values, sha, base)
-    assert actual == dict(grant, run_id='731009')
-    assert 'run_id' not in json.loads(values['MDS_LNX03_ADMISSION_GRANT'])
+    assert actual == grant
+    assert json.loads(values['MDS_LNX03_ADMISSION_GRANT'])['run_id'] == '731009'
+    assert actual['attempt'] == 2
 
 
 @pytest.mark.parametrize('key,value', [
@@ -46,15 +47,17 @@ def test_exact_authority_derives_actual_run_id(helper, admission_environment):
     ('GITHUB_WORKFLOW_REF', 'foykes/moex-dataset/.github/workflows/other.yml@refs/heads/main'),
     ('GITHUB_WORKFLOW_SHA', 'd' * 40), ('GITHUB_JOB', 'other-job'),
     ('GITHUB_RUN_NUMBER', '32'), ('GITHUB_RUN_NUMBER', '031'),
-    ('GITHUB_RUN_ATTEMPT', '2'), ('GITHUB_RUN_ATTEMPT', '01'),
-    ('GITHUB_RUN_ID', 'other-run'), ('RUNNER_ENVIRONMENT', 'self-hosted'),
+    ('GITHUB_RUN_ATTEMPT', '1'), ('GITHUB_RUN_ATTEMPT', '3'), ('GITHUB_RUN_ATTEMPT', '01'),
+    ('GITHUB_RUN_ID', 'other-run'), ('GITHUB_RUN_ID', '731010'),
+    ('RUNNER_ENVIRONMENT', 'self-hosted'),
     ('TASK_RUNNER_ENVIRONMENT', 'self-hosted'), ('ImageOS', 'ubuntu22'),
     ('TASK_DELETED', 'true'), ('TASK_EVENT', 'workflow_dispatch'),
     ('TASK_EVENT_SHA', 'd' * 40), ('TASK_EVENT_REF', 'refs/heads/main'),
     ('TASK_REPOSITORY', 'someone-else/moex-dataset'), ('TASK_ACTOR', 'someone-else'),
     ('TASK_TRIGGERING_ACTOR', 'someone-else'), ('TASK_JOB', 'other-job'),
     ('TASK_WORKFLOW', '.github/workflows/linux-environment.yml'),
-    ('TASK_RUN_NUMBER', '32'), ('TASK_RUN_ATTEMPT', '2'), ('TASK_RUN_ID', '731010'),
+    ('TASK_RUN_NUMBER', '32'), ('TASK_RUN_ATTEMPT', '1'), ('TASK_RUN_ATTEMPT', '3'),
+    ('TASK_RUN_ID', '731010'),
 ])
 def test_identity_mismatch_refused(helper, admission_environment, key, value):
     values, sha, base, _ = admission_environment
@@ -70,7 +73,9 @@ def test_identity_mismatch_refused(helper, admission_environment, key, value):
     ('actor', 'someone-else'), ('triggering_actor', 'someone-else'),
     ('workflow', '.github/workflows/linux-environment.yml'), ('job', 'other-job'),
     ('run_number', 32), ('run_number', True), ('run_number', '31'),
-    ('attempt', 2), ('attempt', True), ('ticket_id', 'c' * 63), ('ticket_id', 'C' * 64),
+    ('attempt', 1), ('attempt', 3), ('attempt', True),
+    ('run_id', '731010'), ('run_id', 731009), ('run_id', None), ('run_id', '0731009'),
+    ('ticket_id', 'c' * 63), ('ticket_id', 'C' * 64),
 ])
 def test_wrong_or_ill_typed_grant_refused(helper, admission_environment, key, value):
     values, sha, base, grant = admission_environment
@@ -78,6 +83,49 @@ def test_wrong_or_ill_typed_grant_refused(helper, admission_environment, key, va
     install_grants(values, grant)
     with pytest.raises(helper.PolicyError):
         helper.lnx03_validate_grant(values, sha, base)
+
+
+@pytest.mark.parametrize('field', ['run_id', 'attempt'])
+@pytest.mark.parametrize('capability', ['admission', 'setup'])
+def test_exact_run_identity_cannot_be_missing_from_either_grant(
+        helper, admission_environment, field, capability):
+    values, sha, base, grant = admission_environment
+    if capability == 'admission':
+        del grant[field]
+        values['MDS_LNX03_ADMISSION_GRANT'] = json.dumps(grant)
+    else:
+        setup = json.loads(values['MDS_LNX03_SETUP_GRANT'])
+        del setup[field]
+        values['MDS_LNX03_SETUP_GRANT'] = json.dumps(setup)
+    with pytest.raises(helper.PolicyError):
+        helper.lnx03_validate_grant(values, sha, base)
+
+
+def test_matching_native_and_task_run_ids_cannot_replace_owner_bound_run_id(
+        helper, admission_environment):
+    values, sha, base, _ = admission_environment
+    values.update(GITHUB_RUN_ID='731010', TASK_RUN_ID='731010')
+    with pytest.raises(helper.PolicyError):
+        helper.lnx03_validate_grant(values, sha, base)
+
+
+@pytest.mark.parametrize('attempt', [1, 3])
+def test_discovery_and_later_attempts_refuse_before_setup_boundary(
+        helper, admission_environment, monkeypatch, attempt):
+    values, sha, base, grant = admission_environment
+    grant['attempt'] = attempt
+    values.update(GITHUB_RUN_ATTEMPT=str(attempt), TASK_RUN_ATTEMPT=str(attempt))
+    install_grants(values, grant)
+    reached = []
+
+    def unexpected_setup(*arguments):
+        reached.append('setup-capability')
+        raise AssertionError('attempt must be refused before SETUP')
+
+    monkeypatch.setattr(helper, 'lnx03_capability', unexpected_setup)
+    with pytest.raises(helper.PolicyError):
+        helper.lnx03_validate_grant(values, sha, base)
+    assert reached == []
 
 
 @pytest.mark.parametrize('which', ['MDS_LNX03_ADMISSION_GRANT', 'MDS_LNX03_SETUP_GRANT'])
@@ -252,7 +300,7 @@ def test_workflow_gate_accepts_exact_identity_only_after_validation(
 @pytest.mark.parametrize('key,value', [
     ('GITHUB_SHA', 'd' * 40), ('GITHUB_REF', 'refs/heads/codex/lnx-02'),
     ('GITHUB_ACTOR', 'someone-else'), ('GITHUB_TRIGGERING_ACTOR', 'someone-else'),
-    ('GITHUB_RUN_NUMBER', '32'), ('GITHUB_RUN_ATTEMPT', '2'),
+    ('GITHUB_RUN_NUMBER', '32'), ('GITHUB_RUN_ATTEMPT', '1'), ('GITHUB_RUN_ATTEMPT', '3'),
     ('GITHUB_RUN_ID', '731010'), ('GITHUB_JOB', 'other-job'),
     ('GITHUB_WORKFLOW_SHA', 'd' * 40), ('ImageOS', 'ubuntu22'),
     ('RUNNER_ENVIRONMENT', 'self-hosted'), ('MDS_LNX03_SETUP_GRANT', ''),
@@ -265,6 +313,37 @@ def test_workflow_refusal_has_no_environment_append(
     original = b'EXISTING=preserved\n'
     output.write_bytes(original)
     values.update({key: value, 'GITHUB_ENV': str(output)})
+    monkeypatch.setattr(os, 'environ', values)
+    with pytest.raises(SystemExit) as exit_info:
+        exec(workflow_authority_gate(repo), {'__name__': 'lnx03_precheckout_oracle'})
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().out == 'LNX03_AUTHORITY_REFUSED\n'
+    assert output.read_bytes() == original
+
+
+@pytest.mark.parametrize('mutation', ['missing-run-id', 'setup-missing-run-id',
+                                      'different-native-run', 'discovery-attempt', 'later-attempt'])
+def test_workflow_exact_run_authority_refuses_before_environment_mutation(
+        repo, admission_environment, tmp_path, monkeypatch, capsys, mutation):
+    values, _, _, grant = admission_environment
+    output = tmp_path / 'github-env'
+    original = b'EXISTING=preserved\n'
+    output.write_bytes(original)
+    if mutation == 'missing-run-id':
+        del grant['run_id']
+        install_grants(values, grant)
+    elif mutation == 'setup-missing-run-id':
+        setup = json.loads(values['MDS_LNX03_SETUP_GRANT'])
+        del setup['run_id']
+        values['MDS_LNX03_SETUP_GRANT'] = json.dumps(setup)
+    elif mutation == 'different-native-run':
+        values.update(GITHUB_RUN_ID='731010', TASK_RUN_ID='731010')
+    else:
+        attempt = 1 if mutation == 'discovery-attempt' else 3
+        grant['attempt'] = attempt
+        install_grants(values, grant)
+        values.update(GITHUB_RUN_ATTEMPT=str(attempt), TASK_RUN_ATTEMPT=str(attempt))
+    values['GITHUB_ENV'] = str(output)
     monkeypatch.setattr(os, 'environ', values)
     with pytest.raises(SystemExit) as exit_info:
         exec(workflow_authority_gate(repo), {'__name__': 'lnx03_precheckout_oracle'})
@@ -496,7 +575,7 @@ def test_result_unknown_fields_refused(helper, admission_environment, section):
     ('source', 'sha', 'd' * 39), ('source', 'base', 'd' * 39),
     ('source', 'helper_sha256', 'e' * 64),
     ('authority', 'sha', 'd' * 40), ('authority', 'base', 'd' * 40),
-    ('authority', 'approved', False), ('authority', 'attempt', 2),
+    ('authority', 'approved', False), ('authority', 'attempt', 1), ('authority', 'attempt', 3),
     ('authority', 'attempt', True), ('authority', 'run_number', True),
     ('authority', 'run_id', 'not-a-run'), ('authority', 'ticket_id', 'e' * 63),
     ('authority', 'repository', 'someone-else/moex-dataset'),
@@ -799,6 +878,93 @@ def test_runner_accepts_only_closed_source_bound_ticket(
 def test_runner_missing_ticket_refused_before_native_import(runner, repo):
     with pytest.raises(runner.Refusal):
         runner.validate_ticket({}, repo)
+
+
+@pytest.mark.parametrize('field,value', [('attempt', 1), ('attempt', 3), ('attempt', True),
+                                       ('run_id', None), ('run_id', 731009), ('run_id', '0731009')])
+def test_runner_authority_requires_exact_rerun_profile(
+        runner, admission_environment, field, value):
+    _, sha, _, grant = admission_environment
+    grant[field] = value
+    with pytest.raises(runner.Refusal):
+        runner.validate_authority(grant, sha)
+
+
+def test_runner_authority_cannot_omit_granted_run_id(runner, admission_environment):
+    _, sha, _, grant = admission_environment
+    del grant['run_id']
+    with pytest.raises(runner.Refusal):
+        runner.validate_authority(grant, sha)
+
+
+@pytest.mark.parametrize('executable_container', [list, tuple], ids=['list-executables', 'tuple-executables'])
+@pytest.mark.parametrize('argument_container', [list, tuple], ids=['list-argv', 'tuple-argv'])
+def test_process_policy_accepts_only_exact_leased_fork_exec_event(
+        process_policy, executable_container, argument_container):
+    guard = process_policy._ProcessGuard()
+    command = ('/fixture/python', '-I', '-S', '-B', '/fixture/native_worker.py', '--ticket', '/fixture/ticket')
+    guard.command, guard.owner = command, process_policy.threading.get_ident()
+    args = (executable_container([os.fsencode(command[0])]), argument_container(command), [])
+    guard('_posixsubprocess.fork_exec', args)
+    assert guard.denials == {}
+    assert guard.command == command and guard.owner == process_policy.threading.get_ident()
+
+
+@pytest.mark.parametrize('mutation', [
+    'unleased', 'wrong-thread', 'wrong-argv', 'extra-argv', 'wrong-executable',
+    'multiple-executables', 'string-executable', 'bytes-argv', 'missing-args',
+])
+def test_process_policy_refuses_direct_fork_exec_bypass_before_any_birth(process_policy, mutation):
+    guard = process_policy._ProcessGuard()
+    command = ('/fixture/python', '-I', '-S', '-B', '/fixture/native_worker.py', '--ticket', '/fixture/ticket')
+    guard.command, guard.owner = command, process_policy.threading.get_ident()
+    executables, arguments = [os.fsencode(command[0])], list(command)
+    args = (executables, arguments, [])
+    if mutation == 'unleased':
+        guard.command, guard.owner = None, None
+    elif mutation == 'wrong-thread':
+        guard.owner += 1
+    elif mutation == 'wrong-argv':
+        arguments[-1] = '/fixture/foreign-ticket'
+    elif mutation == 'extra-argv':
+        arguments.append('arbitrary-callback')
+    elif mutation == 'wrong-executable':
+        executables[0] = b'/bin/true'
+    elif mutation == 'multiple-executables':
+        executables.append(b'/bin/true')
+    elif mutation == 'string-executable':
+        args = (command[0], arguments, [])
+    elif mutation == 'bytes-argv':
+        args = (executables, b'arbitrary-command', [])
+    elif mutation == 'missing-args':
+        args = (executables,)
+    with pytest.raises(process_policy.NativeAdmissionError, match='^LNX03_NATIVE_AUDIT_DENIED$'):
+        guard('_posixsubprocess.fork_exec', args)
+    assert guard.denials == {'_posixsubprocess.fork_exec': 1}
+
+
+@pytest.mark.parametrize('mutation', ['exact', 'unleased', 'wrong-thread', 'wrong-argv', 'wrong-executable'])
+def test_process_policy_keeps_public_popen_lease_closed(process_policy, mutation):
+    guard = process_policy._ProcessGuard()
+    command = ('/fixture/python', '-I', '-S', '-B', '/fixture/native_worker.py')
+    guard.command, guard.owner = command, process_policy.threading.get_ident()
+    executable, arguments = command[0], list(command)
+    if mutation == 'unleased':
+        guard.command, guard.owner = None, None
+    elif mutation == 'wrong-thread':
+        guard.owner += 1
+    elif mutation == 'wrong-argv':
+        arguments[-1] = '/fixture/foreign.py'
+    elif mutation == 'wrong-executable':
+        executable = '/bin/true'
+    args = (executable, arguments, None, {})
+    if mutation == 'exact':
+        guard('subprocess.Popen', args)
+        assert guard.denials == {}
+    else:
+        with pytest.raises(process_policy.NativeAdmissionError, match='^LNX03_NATIVE_AUDIT_DENIED$'):
+            guard('subprocess.Popen', args)
+        assert guard.denials == {'subprocess.Popen': 1}
 
 
 def test_runner_export_scanner_retains_complete_admitted_bytes(runner):

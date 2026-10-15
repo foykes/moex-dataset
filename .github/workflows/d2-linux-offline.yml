@@ -38,7 +38,8 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     steps:
-      # This gate is before checkout or package traffic. It does not consume a ticket.
+      # Attempt 1 discovers an API run identity and always refuses before checkout.
+      # Only an externally granted exact attempt 2 can reach source or SETUP work.
       - name: Require distinct LNX-03 admission and network SETUP authority
         env:
           TASK_RUNNER_ENVIRONMENT: ${{ runner.environment }}
@@ -67,7 +68,7 @@ jobs:
               require(0 < len(raw) <= 16384)
               value = json.loads(raw, object_pairs_hook=pairs)
               keys = {"approved", "consumer", "repository", "sha", "base", "event", "ref",
-                      "actor", "triggering_actor", "workflow", "job", "run_number", "attempt", "ticket_id"}
+                      "actor", "triggering_actor", "workflow", "job", "run_number", "run_id", "attempt", "ticket_id"}
               if capability is not None:
                   keys.add("capability")
               require(isinstance(value, dict) and set(value) == keys)
@@ -77,7 +78,8 @@ jobs:
               require(re.fullmatch("[0-9a-f]{40}", value["base"]) is not None)
               require(re.fullmatch("[0-9a-f]{64}", value["ticket_id"]) is not None)
               require(type(value["run_number"]) is int and value["run_number"] > 0)
-              require(type(value["attempt"]) is int and value["attempt"] == 1)
+              require(re.fullmatch("[1-9][0-9]*", value["run_id"]) is not None)
+              require(type(value["attempt"]) is int and value["attempt"] == 2)
               if capability is not None:
                   require(value.pop("capability") == capability)
               return value
@@ -88,6 +90,7 @@ jobs:
               require(os.environ.get("TASK_RUNNER_ENVIRONMENT") == "github-hosted")
               require(os.environ.get("ImageOS") == "ubuntu24")
               require(os.environ.get("TASK_DELETED") == "false")
+              require(os.environ.get("GITHUB_RUN_ATTEMPT") == os.environ.get("TASK_RUN_ATTEMPT") == "2")
               value = grant("MDS_LNX03_ADMISSION_GRANT")
               expected = {
                   "repository": ("GITHUB_REPOSITORY", "TASK_REPOSITORY", "foykes/moex-dataset"),
@@ -106,7 +109,7 @@ jobs:
               require(str(value["run_number"]) == os.environ.get("GITHUB_RUN_NUMBER") == os.environ.get("TASK_RUN_NUMBER"))
               require(str(value["attempt"]) == os.environ.get("GITHUB_RUN_ATTEMPT") == os.environ.get("TASK_RUN_ATTEMPT"))
               require(re.fullmatch("[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", "")) is not None)
-              require(os.environ.get("GITHUB_RUN_ID") == os.environ.get("TASK_RUN_ID"))
+              require(value["run_id"] == os.environ.get("GITHUB_RUN_ID") == os.environ.get("TASK_RUN_ID"))
               if value["event"] == "push":
                   require(value["ref"] == "refs/heads/codex/lnx-03-d2-bootstrap")
               elif value["event"] == "workflow_dispatch":
@@ -133,16 +136,78 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Recheck exact source, current main and approved ancestry
+      - name: Admit exact source, immutable base and compatible main snapshot
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$TASK_APPROVED_SHA"
-          test -z "$(git status --porcelain)"
           git -c core.hooksPath=/dev/null fetch --no-tags origin \
             refs/heads/main:refs/remotes/origin/main >/dev/null 2>&1
-          test "$(git rev-parse origin/main)" = "$TASK_APPROVED_BASE"
-          git merge-base --is-ancestor "$TASK_APPROVED_BASE" HEAD
+          /usr/bin/python3 -I -S -B -X utf8 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          allowed = {
+              ".github/lnx02/verify_env.py", ".github/workflows/d2-linux-offline.yml",
+              "tools/offline_linux.py", "tools/offline_guard_linux.py",
+              "tests/linux_bootstrap/conftest.py", "tests/linux_bootstrap/native_worker.py",
+              "tests/linux_bootstrap/test_environment_contract.py",
+              "tests/linux_bootstrap/test_admission.py", "tests/linux_bootstrap/test_spawn_contract.py",
+              "docs/d2_linux_ci.md", "docs/testing.md", "docs/coordination.md",
+          }
+          protected = allowed | {
+              "run_logging.py", "requirements/linux-cp314-runtime.lock",
+              "requirements/linux-cp314-test.lock", "requirements/linux-cp314-dev.lock",
+              "requirements/windows-cp314-runtime.lock", "requirements/windows-cp314-test.lock",
+              "requirements/windows-cp314-dev.lock", "requirements/runtime.in",
+              "requirements/test.in", "requirements/dev.in",
+          }
+
+          def require(value):
+              if not value:
+                  raise ValueError()
+
+          def git(arguments, success=True):
+              result = subprocess.run(
+                  ["git", "-c", "core.hooksPath=/dev/null", "-C", os.environ["GITHUB_WORKSPACE"]] + arguments,
+                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  check=False, timeout=30)
+              require(not success or result.returncode == 0)
+              return result
+
+          def sha(arguments):
+              value = git(arguments).stdout.decode("ascii").strip()
+              require(re.fullmatch("[0-9a-f]{40}", value) is not None)
+              return value
+
+          try:
+              head, base = os.environ["TASK_APPROVED_SHA"], os.environ["TASK_APPROVED_BASE"]
+              require(re.fullmatch("[0-9a-f]{40}", head) is not None)
+              require(re.fullmatch("[0-9a-f]{40}", base) is not None)
+              require(sha(["rev-parse", "HEAD"]) == head)
+              require(not git(["status", "--porcelain"]).stdout)
+              require(sha(["rev-parse", "--verify", base + "^{commit}"]) == base)
+              require(git(["merge-base", "--is-ancestor", base, head], False).returncode == 0)
+              fields = git(["diff", "--name-status", "--no-renames", "-z", base, head]).stdout.split(b"\0")
+              require(fields[-1] == b"")
+              fields = fields[:-1]
+              require(len(fields) % 2 == 0)
+              for index in range(0, len(fields), 2):
+                  require(fields[index] in {b"A", b"M"})
+                  require(fields[index + 1].decode("utf-8") in allowed)
+              main = sha(["rev-parse", "refs/remotes/origin/main"])
+              require(git(["merge-base", "--is-ancestor", base, main], False).returncode == 0)
+              drift = git(["diff", "--name-only", "--no-renames", "-z", base, main]).stdout
+              changed = {name.decode("utf-8") for name in drift.split(b"\0") if name}
+              require(not changed & protected)
+          except BaseException:
+              print("LNX03_SOURCE_REFUSED")
+              sys.exit(1)
+          print(json.dumps({"status": "PASS", "scope": "SOURCE_ADMISSION",
+                            "source_sha": head, "base_sha": base, "observed_main_sha": main}, sort_keys=True))
+          PY
 
       - name: Require ready cached ordinary GIL CPython 3.14.8
         shell: bash
@@ -179,7 +244,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f1)" = "$TASK_APPROVED_BASE"
           test "$(git rev-parse HEAD)" = "$TASK_APPROVED_SHA"
           test -z "$(git status --porcelain)"
           set +e

@@ -134,8 +134,15 @@ def _entry(ticket):
         except ProcessLookupError:
             pass
         unexpected.wait(timeout=1)
-    if (not process_denied or guard.install_process_guard().denials != {
-            'socket.getaddrinfo': 1, 'subprocess.Popen': 1}):
+    # Policy-only challenge of the installed CPython 3.14 low-level event. This
+    # dispatch does not create a process; the real Popen probe remains separate.
+    low_level_denied = False
+    try:
+        sys.audit('_posixsubprocess.fork_exec', (b'/bin/true',), ['/bin/true'], [])
+    except guard.NativeAdmissionError:
+        low_level_denied = True
+    if (not process_denied or not low_level_denied or guard.install_process_guard().denials != {
+            'socket.getaddrinfo': 1, 'subprocess.Popen': 1, '_posixsubprocess.fork_exec': 1}):
         raise ValueError('LNX03_NATIVE_PROCESS_PROBE_NOT_DENIED')
     _event(ticket, 'GUARD_DENIALS_CONFIRMED')
     injected = ticket['role'] == 'google'

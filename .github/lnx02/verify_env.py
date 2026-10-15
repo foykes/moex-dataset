@@ -3483,9 +3483,22 @@ LNX03_PATHS = (
     'tests/linux_bootstrap/test_admission.py', 'tests/linux_bootstrap/test_spawn_contract.py',
     'docs/d2_linux_ci.md', 'docs/testing.md', 'docs/coordination.md',
 )
+# This is the approved path contract, independent of a caller-supplied list.
+LNX03_PATHS_SHA256 = '9e50e51b0e02ee70afcffcd97bf0e54ec08c402198b9e29326cc110e4c239ac6'
+LNX03_DEPENDENCY_PATHS = LNX03_PATHS + (
+    'run_logging.py',
+    'requirements/linux-cp314-runtime.lock',
+    'requirements/linux-cp314-test.lock',
+    'requirements/linux-cp314-dev.lock',
+    'requirements/windows-cp314-runtime.lock',
+    'requirements/windows-cp314-test.lock',
+    'requirements/windows-cp314-dev.lock',
+    'requirements/runtime.in', 'requirements/test.in', 'requirements/dev.in',
+)
 LNX03_GRANT_KEYS = frozenset({
     'approved', 'consumer', 'repository', 'sha', 'base', 'event', 'ref',
     'actor', 'triggering_actor', 'workflow', 'job', 'run_number', 'attempt', 'ticket_id',
+    'run_id',
 })
 LNX03_RESULT_KEYS = frozenset({
     'schema_version', 'consumer', 'scope', 'status', 'failure_code', 'source',
@@ -3539,14 +3552,16 @@ def lnx03_validate_grant(env, sha, base, require_setup=True):
             or grant['workflow'] != '.github/workflows/d2-linux-offline.yml'
             or grant['job'] != 'linux-bootstrap'
             or type(grant['run_number']) is not int or grant['run_number'] <= 0
-            or type(grant['attempt']) is not int or grant['attempt'] != 1
+            or type(grant['attempt']) is not int or grant['attempt'] != 2
+            or type(grant['run_id']) is not str or not re.fullmatch(r'[1-9][0-9]*', grant['run_id'])
             or type(grant['ticket_id']) is not str or not HEX.fullmatch(grant['ticket_id'])):
         raise PolicyError('lnx03-authority-invalid')
     expected = {
         'GITHUB_REPOSITORY': grant['repository'], 'GITHUB_SHA': sha,
         'GITHUB_EVENT_NAME': grant['event'], 'GITHUB_REF': grant['ref'],
         'GITHUB_ACTOR': grant['actor'], 'GITHUB_TRIGGERING_ACTOR': grant['triggering_actor'],
-        'GITHUB_RUN_NUMBER': str(grant['run_number']), 'GITHUB_RUN_ATTEMPT': '1',
+        'GITHUB_RUN_NUMBER': str(grant['run_number']), 'GITHUB_RUN_ATTEMPT': '2',
+        'GITHUB_RUN_ID': grant['run_id'],
         'GITHUB_JOB': grant['job'], 'GITHUB_WORKFLOW_SHA': sha,
         'GITHUB_WORKFLOW_REF': grant['repository'] + '/' + grant['workflow'] + '@' + grant['ref'],
         'RUNNER_ENVIRONMENT': 'github-hosted', 'TASK_RUNNER_ENVIRONMENT': 'github-hosted',
@@ -3576,12 +3591,12 @@ def lnx03_validate_grant(env, sha, base, require_setup=True):
         raise PolicyError('lnx03-event-not-authorized')
     if require_setup:
         lnx03_capability(env, grant, 'MDS_LNX03_SETUP_GRANT', 'network-setup')
-    return dict(grant, run_id=run_id)
+    return dict(grant)
 
 
 def lnx03_claim(claim_root, grant):
     root = real_components(Path(claim_root).absolute(), directory=True)
-    if not root.is_dir() or set(grant) != LNX03_GRANT_KEYS | {'run_id'}:
+    if not root.is_dir() or set(grant) != LNX03_GRANT_KEYS:
         raise PolicyError('lnx03-claim-root-or-identity-invalid')
     if (hasattr(os, 'getuid') and
             (root.lstat().st_uid != os.getuid() or stat.S_IMODE(root.lstat().st_mode) != 0o700)):
@@ -3594,6 +3609,56 @@ def lnx03_claim(claim_root, grant):
     except OSError:
         raise PolicyError('lnx03-ticket-already-claimed-or-unavailable') from None
     return digest(path)
+
+
+def lnx03_source_identity(repo, sha, base, observed_main=None):
+    """Bind a clean tested commit to its immutable approved base and scope.
+
+    The fetched main observation is checked once before SETUP. Later source
+    validation deliberately has no dependency on a moving remote reference.
+    Legacy LNX-02 source_identity keeps its original current-main rule.
+    """
+    if (type(sha) is not str or not SHA.fullmatch(sha)
+            or type(base) is not str or not SHA.fullmatch(base)):
+        raise PolicyError('lnx03-source-identity-invalid')
+    canonical = json.dumps(LNX03_PATHS, ensure_ascii=True, separators=(',', ':')).encode('ascii')
+    if (len(LNX03_PATHS) != 12 or len(set(LNX03_PATHS)) != 12
+            or hashlib.sha256(canonical).hexdigest() != LNX03_PATHS_SHA256):
+        raise PolicyError('lnx03-approved-path-contract-changed')
+    if git_read(repo, ['rev-parse', 'HEAD']).stdout.decode('ascii').strip() != sha:
+        raise PolicyError('lnx03-source-head-drift')
+    if git_read(repo, ['cat-file', '-e', base + '^{commit}'], True).returncode:
+        raise PolicyError('lnx03-approved-base-missing')
+    if git_read(repo, ['merge-base', '--is-ancestor', base, sha], True).returncode:
+        raise PolicyError('lnx03-base-is-not-source-ancestor')
+    if git_read(repo, ['status', '--porcelain=v1', '--untracked-files=all']).stdout:
+        raise PolicyError('lnx03-source-is-dirty')
+    changes = git_read(repo, ['diff', '--name-status', '--no-renames', '-z', base, sha, '--']).stdout
+    records = changes.split(b'\0')
+    if records[-1] != b'' or (len(records) - 1) % 2:
+        raise PolicyError('lnx03-source-diff-invalid')
+    for index in range(0, len(records) - 1, 2):
+        try:
+            name = records[index + 1].decode('utf-8')
+        except UnicodeError:
+            raise PolicyError('lnx03-source-diff-invalid') from None
+        if records[index] not in {b'A', b'M'} or name not in LNX03_PATHS:
+            raise PolicyError('lnx03-source-outside-approved-paths')
+    if observed_main is None:
+        return
+    if type(observed_main) is not str or not SHA.fullmatch(observed_main):
+        raise PolicyError('lnx03-main-observation-invalid')
+    if git_read(repo, ['merge-base', '--is-ancestor', base, observed_main], True).returncode:
+        raise PolicyError('lnx03-main-is-not-base-descendant')
+    drift = git_read(repo, ['diff', '--name-only', '--no-renames', '-z', base, observed_main, '--']).stdout
+    if drift and not drift.endswith(b'\0'):
+        raise PolicyError('lnx03-main-drift-invalid')
+    try:
+        drift_names = {name.decode('utf-8') for name in drift.split(b'\0') if name}
+    except UnicodeError:
+        raise PolicyError('lnx03-main-drift-invalid') from None
+    if drift_names.intersection(LNX03_DEPENDENCY_PATHS):
+        raise PolicyError('lnx03-main-dependent-interface-drift')
 
 
 def lnx03_source_manifest(repo):
@@ -3829,14 +3894,14 @@ def lnx03_validate_result(report):
                    for key, value in source['files_sha256'].items())):
         raise PolicyError('lnx03-result-source-invalid')
     authority = report['authority']
-    if (type(authority) is not dict or set(authority) != LNX03_GRANT_KEYS | {'run_id'}
+    if (type(authority) is not dict or set(authority) != LNX03_GRANT_KEYS
             or authority['sha'] != source['sha'] or authority['base'] != source['base']
             or authority['consumer'] != 'linux-bootstrap' or authority['approved'] is not True
             or authority['repository'] != 'foykes/moex-dataset'
             or authority['actor'] != 'foykes' or authority['triggering_actor'] != 'foykes'
             or authority['workflow'] != '.github/workflows/d2-linux-offline.yml'
             or authority['job'] != 'linux-bootstrap'
-            or authority['attempt'] != 1 or type(authority['attempt']) is not int
+            or authority['attempt'] != 2 or type(authority['attempt']) is not int
             or type(authority['run_number']) is not int or authority['run_number'] <= 0
             or type(authority['run_id']) is not str or not re.fullmatch(r'[1-9][0-9]*', authority['run_id'])
             or type(authority['ticket_id']) is not str or not HEX.fullmatch(authority['ticket_id'])):
@@ -4674,7 +4739,8 @@ def lnx03_pipeline(args):
     native_identity = identity()
     if sys.prefix != sys.base_prefix:
         raise PolicyError('lnx03-controller-requires-base-interpreter')
-    source_identity(repo, args.expected_sha, args.expected_base)
+    observed_main = git_read(repo, ['rev-parse', 'refs/remotes/origin/main']).stdout.decode('ascii').strip()
+    lnx03_source_identity(repo, args.expected_sha, args.expected_base, observed_main=observed_main)
     sources = lnx03_source_manifest(repo)
     legacy_sources = source_manifest(repo, 'verify')
     if sources['.github/lnx02/verify_env.py'] != native_identity['helper_sha256']:
@@ -4784,7 +4850,7 @@ def lnx03_pipeline(args):
         if (report['environment']['fingerprint_after'] != before
                 or lnx03_fingerprint(root / 'wheelhouse') != wheel_fingerprint):
             raise PolicyError('lnx03-offline-environment-mutated')
-        source_identity(repo, args.expected_sha, args.expected_base)
+        lnx03_source_identity(repo, args.expected_sha, args.expected_base)
         if lnx03_source_manifest(repo) != sources or source_manifest(repo, 'verify') != legacy_sources:
             raise PolicyError('lnx03-source-mutated')
         if GUARD.unexpected:
