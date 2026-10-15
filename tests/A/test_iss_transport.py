@@ -2,6 +2,7 @@
 
 import builtins
 import hashlib
+import io
 import json
 import sys
 import uuid
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+from urllib3._collections import HTTPHeaderDict
 
 
 CANDLE_CSV = (
@@ -34,18 +36,24 @@ def response(status, text=''):
     result._content = text.encode('utf-8')
     result.encoding = 'utf-8'
     result.headers['Content-Type'] = 'text/csv; charset=utf-8'
+    class RawBody(io.BytesIO):
+        def read(self, amt=None, decode_content=False):
+            assert type(amt) is int and 0 < amt <= 65536
+            assert decode_content is False
+            return super().read(amt)
+
+    result.raw = RawBody(result._content)
+    result.raw.headers = HTTPHeaderDict(result.headers)
     return result
 
 
 def transport(gathering, monkeypatch, outcomes):
     sequence = iter(outcomes)
     calls, sleeps = [], []
-    clock = iter(range(1000))
-
-    def get(url, headers, timeout, verify=None, allow_redirects=None):
+    def get(url, headers, timeout, verify=None, allow_redirects=None, stream=None):
         # Accept baseline kwargs: missing HTTPS policy is an assertion failure,
         # never an accidental TypeError in an obsolete request double.
-        calls.append((url, dict(headers), timeout, verify, allow_redirects))
+        calls.append((url, dict(headers), timeout, verify, allow_redirects, stream))
         outcome = next(sequence)
         if isinstance(outcome, BaseException):
             raise outcome
@@ -55,7 +63,8 @@ def transport(gathering, monkeypatch, outcomes):
     monkeypatch.setattr(gathering, 'header', {'User-Agent': 'AGENT_A'})
     monkeypatch.setattr(gathering, 'get_next_header', lambda current: {'User-Agent': 'AGENT_B'})
     monkeypatch.setattr(gathering, 'time',
-                        SimpleNamespace(sleep=sleeps.append, perf_counter=lambda: next(clock)))
+                        SimpleNamespace(sleep=sleeps.append, perf_counter=lambda: 0.0,
+                                        time=lambda: 1709380800.0))
     return calls, sleeps
 
 
@@ -67,7 +76,7 @@ def query(gathering, **kwargs):
 def test_https_verification_and_no_redirects_keep_literal_rows(gathering, monkeypatch):
     calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
     result = query(gathering)
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A'}, 30, True, False)]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
     assert sleeps == [3]
     assert result.columns.tolist() == CANDLE_COLUMNS
     assert result.values.tolist() == CANDLE_ROWS
@@ -239,7 +248,7 @@ def test_redirect_response_never_requests_location(gathering, monkeypatch, statu
         query(gathering)
     assert captured.value.args == ('A2_ISS_REDIRECT_REJECTED',)
     assert captured.value.response is rejected
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A'}, 30, True, False)]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
     assert sleeps == []
 
 
@@ -258,8 +267,8 @@ def test_transient_retry_retains_rotation_delays_and_literal_result(gathering, m
     first = response(503) if failure == 'http' else requests.exceptions.Timeout('A2_TRANSIENT')
     calls, sleeps = transport(gathering, monkeypatch, [first, response(200, CANDLE_CSV)])
     result = query(gathering)
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A'}, 30, True, False),
-                     (HTTPS_QUERY, {'User-Agent': 'AGENT_B'}, 30, True, False)]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
+                     (HTTPS_QUERY, {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
     assert sleeps == [3, 3]
     assert result.columns.tolist() == CANDLE_COLUMNS
     assert result.values.tolist() == CANDLE_ROWS
@@ -306,7 +315,7 @@ def test_closed_returned_event_reports_unvalidated_rows(gathering, monkeypatch, 
     events = event_log.events
     assert [(item['event'], item['level'], item['outcome'], item['retries']) for item in events] == [
         ('a2_query_started', 'INFO', 'QUERY_STARTED', {'attempt': 0, 'limit': 5}),
-        ('a2_query_attempt_started', 'DEBUG', 'REQUEST_STARTED', {'attempt': 1, 'limit': 5}),
+        ('a2_query_attempt_started', 'DEBUG', 'REQUEST_ADMISSION_STARTED', {'attempt': 0, 'limit': 5}),
         ('a2_query_returned', 'INFO',
          'QUERY_EMPTY_UNVALIDATED' if empty else 'QUERY_RETURNED_UNVALIDATED',
          {'attempt': 1, 'limit': 5}),
@@ -326,8 +335,8 @@ def test_closed_returned_event_reports_unvalidated_rows(gathering, monkeypatch, 
     ('redirect', 'A2_ISS_REDIRECT_REJECTED', 'SOURCE', 'REDIRECT_REJECTED'),
     ('http', 'A2_ISS_HTTP_STATUS', 'SOURCE', 'RETRY_EXHAUSTED'),
     ('timeout', 'A2_ISS_TIMEOUT', 'TIMEOUT', 'RETRY_EXHAUSTED'),
-    ('request', 'A2_ISS_REQUEST_ERROR', 'SOURCE', 'RETRY_EXHAUSTED'),
-    ('parse', 'A2_ISS_PARSE_ERROR', 'SOURCE', 'RETRY_EXHAUSTED'),
+    ('request', 'A2_ISS_REQUEST_ERROR', 'SOURCE', 'REQUEST_FAILED'),
+    ('parse', 'A2_ISS_PARSE_ERROR', 'SOURCE', 'RESPONSE_REJECTED'),
 ])
 def test_closed_failure_event_uses_exact_error_contract(gathering, monkeypatch, event_log,
                                                        kind, code, category, outcome):
@@ -353,7 +362,7 @@ def test_closed_failure_event_uses_exact_error_contract(gathering, monkeypatch, 
     event = event_log.events[-1]
     assert (event['event'], event['level'], event['outcome']) == ('a2_query_failed', 'ERROR', outcome)
     assert event['stage'] == 'data_gathering' and event['fields'] == {}
-    expected_attempt = 1 if kind in ('tls', 'redirect') else 5
+    expected_attempt = 1 if kind in ('tls', 'redirect', 'request', 'parse') else 5
     assert event['retries'] == {'attempt': expected_attempt, 'limit': 5}
     error = event['error']
     assert (error['code'], error['category'], error['stage']) == (code, category, 'data_gathering')
@@ -396,11 +405,15 @@ def test_invalid_retry_arguments_fail_before_network(gathering, monkeypatch, eve
         'A2_RETRY_ARGUMENTS', 'CONFIG', 0)
 
 
-def test_valid_large_attempt_limit_is_not_claimed_as_a_resource_cap(gathering, monkeypatch):
+def test_large_attempt_limit_is_rejected_as_a_resource_cap_before_network(gathering, monkeypatch):
     calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
-    result = query(gathering, max_retries=1000000, retry_sleep_start=0)
-    assert len(calls) == 1 and sleeps == [3]
-    assert result.values.tolist() == CANDLE_ROWS
+    with pytest.raises(ValueError) as captured:
+        query(gathering, max_retries=1000000, retry_sleep_start=0)
+    assert captured.value.args == ('A2_RETRY_ARGUMENTS',)
+    assert calls == [] and sleeps == []
+    # Finite-policy refusal does not alter the successful literal output oracle.
+    result = query(gathering, max_retries=5, retry_sleep_start=0)
+    assert len(calls) == 1 and sleeps == [3] and result.values.tolist() == CANDLE_ROWS
 
 
 def test_no_context_imports_or_calls_no_logger(gathering, monkeypatch):
@@ -428,7 +441,7 @@ def test_no_context_safe_fallback_has_no_attempt_debug_flood(gathering, monkeypa
     assert len(lines) == 2 and output.err == ''
     assert lines[0].startswith('Свечи QUERY_STARTED:')
     assert lines[1].startswith('Свечи QUERY_RETURNED_UNVALIDATED:')
-    assert 'REQUEST_STARTED' not in output.out
+    assert 'REQUEST_ADMISSION_STARTED' not in output.out
     assert all(len(line) <= 256 for line in lines)
     assert len(calls) == 1 and sleeps == [3] and result.values.tolist() == CANDLE_ROWS
 
@@ -503,15 +516,18 @@ def test_console_and_logger_canaries_are_safe_together(gathering, monkeypatch, e
     assert all(len(message) <= 256 and len((fields.get('error') or {}).get('message', '')) <= 256
                for _, _, message, fields in raw_events)
     assert bool(raw_events) is with_context and bool(event_log.events) is with_context
-    expected_attempts = 1 if kind in ('tls', 'redirect') else 2 if kind == 'rotation' else 5
+    expected_attempts = 1 if kind in ('tls', 'redirect', 'parse') else 2 if kind == 'rotation' else 5
     assert len(calls) == expected_attempts
     assert sleeps == ([] if expected_attempts == 1 else [3, 3] if kind == 'rotation' else [3, 6, 12, 24])
-    if kind in ('rotation', 'parse', 'exhaustion'):
+    if kind in ('rotation', 'exhaustion'):
         if with_context:
             assert output.out == ''
             assert any('HEADER_ROTATED' in item['message'] for item in event_log.events)
         else:
             assert 'HEADER_ROTATED' in output.out
+    elif kind == 'parse':
+        assert 'HEADER_ROTATED' not in output.out
+        assert not any('HEADER_ROTATED' in item['message'] for item in event_log.events)
 
 
 @pytest.mark.parametrize('failure', ['throw', 'rejected', 'unconfirmed', 'unhealthy'])
@@ -566,7 +582,7 @@ def test_failure_after_transient_primary_stops_before_next_request(gathering, mo
 
     def emit(context, level, event, message, fields):
         targeted = (event == 'a2_query_retry' if point == 'retry' else
-                    event == 'a2_query_attempt_started' and fields['retries']['attempt'] == 2)
+                    event == 'a2_query_attempt_started' and fields['retries']['attempt'] == 1)
         if targeted:
             if failure == 'throw':
                 raise OSError('A1_SYNTHETIC_CANARY')
@@ -803,7 +819,7 @@ def test_real_reload_console_and_a2_a1_logs_redact_registered_canaries(
     assert captured.value is primary and primary.args == original_args
     assert len(calls) == 1 and sleeps == [] and writers == []
     assert calls[0][0].startswith('https://iss.moex.com/')
-    assert calls[0][3:] == (True, False)
+    assert calls[0][3:] == (True, False, True)
     assert not getattr(primary, '__notes__', [])
     output = capsys.readouterr()
     serialized = json.dumps(event_log.events, ensure_ascii=False)

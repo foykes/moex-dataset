@@ -15,7 +15,10 @@
 
 # %%
 import datetime, pandas as pd, requests, csv, sys, time, os, json, math, re
+import random, socket, errno, calendar
 from io import StringIO
+from urllib3 import exceptions as http_errors
+from urllib3._collections import HTTPHeaderDict
 
 
 today = datetime.datetime.now()
@@ -258,7 +261,7 @@ def moex_tickerlists (current_path, *, logging_context=None):
 # %%
 ### Функция запроса к API по тикеру, датам и нужному интервалу
 def _a2_number(value):
-    # Только предел отображения; общий resource cap остаётся задачей A2-03.
+    # Только предел безопасного отображения, отдельно от runtime policy.
     if type(value) not in (int, float) or not 0 <= value <= 1000000000:
         return 'UNKNOWN'
     if type(value) is float and not math.isfinite(value):
@@ -304,7 +307,150 @@ def _a2_diagnostic(logging_context, level, event, message, fields, primary=None)
         raise primary from None
 
 
-def _a2_candle_codec(response):
+def _a2_header_values(response, name):
+    # Только исходные occurrences pinned urllib3; flattened headers не доказательство.
+    try:
+        raw_headers = getattr(getattr(response, 'raw', None), 'headers', None)
+        if not isinstance(raw_headers, HTTPHeaderDict):
+            return None
+        values = raw_headers.getlist(name)
+        return values if all(type(value) is str for value in values) else None
+    except MemoryError:
+        raise
+    except Exception:
+        return None
+
+
+def _a2_retry_after(response, wall_time):
+    values = _a2_header_values(response, 'Retry-After')
+    if values is None or len(values) > 1:
+        return None, 'RETRY_AFTER_AMBIGUOUS'
+    if not values:
+        return 0, 'RETRY_AFTER_ABSENT'
+    value = values[0]
+    if len(value) > 128:
+        return None, 'RETRY_AFTER_OVERLONG'
+    value = value.strip(' \t')
+    if re.fullmatch(r'[0-9]+', value, re.ASCII):
+        significant = value.lstrip('0') or '0'
+        if len(significant) > 2 or int(significant) > 30:
+            return None, 'RETRY_AFTER_TOO_LONG'
+        return int(significant), 'RETRY_AFTER_VALID'
+    # Сначала полная grammar даты: её одна запятая не является списком.
+    formats = (
+        (r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT', '%a, %d %b %Y %H:%M:%S GMT'),
+        (r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), [0-9]{2}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT', '%A, %d-%b-%y %H:%M:%S GMT'),
+        (r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ( [1-9]|[0-9]{2}) [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}', '%a %b %d %H:%M:%S %Y'),
+    )
+    for pattern, date_format in formats:
+        if re.fullmatch(pattern, value, re.ASCII) is None:
+            continue
+        try:
+            # Wire tokens английские независимо от LC_TIME вызывающего процесса.
+            if '%y' in date_format:
+                weekday, date_part, clock, _ = value.split(' ')
+                day, month, year = date_part.split('-')
+            elif '%a,' in date_format:
+                weekday, day, month, year, clock, _ = value.split(' ')
+            else:
+                weekday, month, day, clock, year = value.split()
+            month = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec').index(month) + 1
+            hour, minute, second = (int(part) for part in clock.split(':'))
+            year, day = int(year), int(day)
+            if '%y' in date_format:
+                now = time.gmtime(wall_time)
+                year = now.tm_year // 100 * 100 + year
+                candidate = (year, month, day, hour, minute, second)
+                if candidate > (now.tm_year + 50, *now[1:6]):
+                    year -= 100
+            parsed = datetime.datetime(year, month, day, hour, minute, second)
+            if weekday[:3] != ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')[parsed.weekday()]:
+                raise ValueError('A2_HTTP_DATE_INVALID')
+            delay = max(0, calendar.timegm(parsed.timetuple()) - wall_time)
+        except (ValueError, OverflowError):
+            return (None, 'RETRY_AFTER_AMBIGUOUS') if ',' in value else (0, 'RETRY_AFTER_INVALID')
+        if delay > 30:
+            return None, 'RETRY_AFTER_TOO_LONG'
+        return delay, 'RETRY_AFTER_VALID'
+    if ',' in value:
+        return None, 'RETRY_AFTER_AMBIGUOUS'
+    return 0, 'RETRY_AFTER_INVALID'
+
+
+def _a2_request_policy(primary):
+    # Ограниченный обход только typed transport wrappers; текст не классифицируем.
+    pending, seen, errors = [(primary, 0)], set(), []
+    incomplete = False
+    while pending and len(seen) < 32:
+        error, depth = pending.pop()
+        if id(error) in seen or not isinstance(error, BaseException):
+            continue
+        if depth > 8:
+            incomplete = True
+            continue
+        seen.add(id(error))
+        errors.append(error)
+        if isinstance(error, (requests.exceptions.RequestException, http_errors.HTTPError)):
+            for item in (getattr(error, 'reason', None), error.__cause__):
+                if isinstance(item, BaseException):
+                    if len(pending) + len(seen) < 32:
+                        pending.append((item, depth + 1))
+                    else:
+                        incomplete = True
+            available = max(0, 32 - len(pending) - len(seen))
+            if len(error.args) > available:
+                incomplete = True
+            for item in error.args[:available]:
+                if isinstance(item, BaseException):
+                    pending.append((item, depth + 1))
+    if any(isinstance(error, (requests.exceptions.SSLError, http_errors.SSLError)) for error in errors):
+        return 'A2_ISS_TLS_FAILED', 'SOURCE', False, 'TLS_FAILED'
+    if isinstance(primary, requests.exceptions.TooManyRedirects):
+        return 'A2_ISS_REDIRECT_REJECTED', 'SOURCE', False, 'REDIRECT_REJECTED'
+    if isinstance(primary, MemoryError):
+        return 'A2_ISS_MEMORY_ERROR', 'MEMORY_ERROR', False, 'REQUEST_FAILED'
+    if any(isinstance(error, (requests.exceptions.ProxyError, requests.exceptions.InvalidURL,
+            requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema,
+            requests.exceptions.URLRequired, requests.exceptions.InvalidHeader,
+            http_errors.ProxyError, http_errors.LocationValueError)) for error in errors):
+        return 'A2_ISS_REQUEST_ERROR', 'CONFIG', False, 'REQUEST_FAILED'
+    if incomplete:
+        return 'A2_ISS_REQUEST_ERROR', 'SOURCE', False, 'REQUEST_FAILED'
+    if any(isinstance(error, requests.exceptions.Timeout) or
+           isinstance(error, (http_errors.ConnectTimeoutError, http_errors.ReadTimeoutError))
+           and not isinstance(error, http_errors.NewConnectionError) for error in errors):
+        return 'A2_ISS_TIMEOUT', 'TIMEOUT', True, None
+    for error in errors:
+        if (isinstance(error, (ConnectionResetError, ConnectionAbortedError)) or
+                isinstance(error, OSError) and error.errno in (errno.ECONNRESET, errno.ECONNABORTED) or
+                isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN):
+            return 'A2_ISS_REQUEST_ERROR', 'SOURCE', True, None
+    category = 'SOURCE' if isinstance(primary, (requests.exceptions.RequestException,
+                                               http_errors.HTTPError, OSError)) else 'UNKNOWN'
+    return 'A2_ISS_REQUEST_ERROR', category, False, 'REQUEST_FAILED'
+
+
+def _a2_candle_body(response, checkpoint):
+    values = _a2_header_values(response, 'Content-Encoding')
+    if (values is None or len(values) > 1 or values and
+            (not values[0].isascii() or values[0].strip(' \t').lower() != 'identity')):
+        raise ValueError('A2_ISS_CONTENT_ENCODING_UNSUPPORTED')
+    content = bytearray()
+    while True:
+        checkpoint()
+        part = response.raw.read(min(65536, 8 * 1024 * 1024 + 1 - len(content)),
+                                 decode_content=False)
+        if type(part) is not bytes:
+            raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+        if len(content) + len(part) > 8 * 1024 * 1024:
+            raise ValueError('A2_ISS_BODY_LIMIT_EXCEEDED')
+        checkpoint()
+        if not part:
+            return bytes(content)
+        content.extend(part)
+
+
+def _a2_candle_codec(response, content):
     # Закрытый consumer profile, а не утверждение обо всех вариантах ISS.
     content_type = response.headers.get('Content-Type')
     if type(content_type) is not str:
@@ -323,7 +469,6 @@ def _a2_candle_codec(response):
                  'utf8': 'utf-8', 'utf-8': 'utf-8'}.get(charset)
         if codec is None:
             raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
-    content = response.content
     if type(content) is not bytes:
         raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
     # BOM проверяем до decode: cp1251 иначе скроет его как обычные символы.
@@ -389,7 +534,7 @@ def _a2_candle_frame(df, rows):
                 raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
 
 
-def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3, *, logging_context=None):
+def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3, *, logging_context=None, retry_jitter=0):
     global header
     global headers_full
     # Определение типа market для корректного запроса
@@ -404,13 +549,17 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
     attempt = 0
     status = body_bytes = None
 
+    retry_after_note = None
+    deadline_error = None
+
     def message(outcome, code='NO_ERROR', rotated=False):
         # Фиксированные aliases: raw ticker, URL, headers/body/exception не печатаем.
         return (f'Свечи {outcome}: {code}; MOEX_ISS/ISS_CANDLES/{market}; REQUEST_INSTRUMENT; '
-                f'i={_a2_number(attempt)}/{_a2_number(max_retries)}; interval={_a2_number(interval)}; '
+                f'i={_a2_number(attempt)}/{_a2_number(max_retries)}; tf={_a2_number(interval)}; '
                 f'{_a2_date(end_date_mx)}..{_a2_date(start_date_mx)}; '
                 f'HTTP={_a2_number(status)}; bytes={_a2_number(body_bytes)}'
-                + ('; HEADER_ROTATED' if rotated else ''))
+                + ('; HEADER_ROTATED' if rotated else '')
+                + ('; ' + retry_after_note if retry_after_note is not None else ''))
 
     def correlation_fields():
         fields = {}
@@ -439,7 +588,9 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
                        requests.exceptions.Timeout, requests.exceptions.HTTPError,
                        requests.exceptions.ConnectionError, requests.exceptions.RequestException,
                        pd.errors.EmptyDataError, pd.errors.ParserError,
-                       UnicodeDecodeError, csv.Error, ValueError):
+                       http_errors.ReadTimeoutError, http_errors.ConnectTimeoutError,
+                       http_errors.ProtocolError, ConnectionResetError, ConnectionAbortedError,
+                       socket.gaierror, MemoryError, OSError, UnicodeDecodeError, csv.Error, ValueError):
             if isinstance(primary, native):
                 exception_type = native.__name__
                 break
@@ -469,15 +620,33 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         _a2_diagnostic(logging_context, level, event, message(outcome, code, rotated), fields,
                        primary if primary is not None else pending_primary)
 
-    if (type(max_retries) is not int or max_retries <= 0 or
-            type(retry_sleep_start) not in (int, float) or retry_sleep_start < 0 or
-            type(retry_sleep_start) is float and not math.isfinite(retry_sleep_start)):
+    if (type(max_retries) is not int or not 1 <= max_retries <= 5 or
+            type(retry_sleep_start) not in (int, float) or not 0 <= retry_sleep_start <= 30 or
+            type(retry_jitter) not in (int, float) or not 0 <= retry_jitter <= 1):
         primary = ValueError('A2_RETRY_ARGUMENTS')
         emit('ERROR', 'a2_query_failed', 'CONFIG_REJECTED', primary,
              'A2_RETRY_ARGUMENTS', 'CONFIG', final=True, invalid=True)
         raise primary
 
+    def remaining():
+        return 180 - max(0, time.perf_counter() - operation_started)
+
+    def checkpoint():
+        nonlocal deadline_error
+        if remaining() <= 0:
+            deadline_error = requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')
+            raise deadline_error
+
+    def deadline(primary=None, code='A2_ISS_DEADLINE_EXCEEDED', category='TIMEOUT', available=None):
+        if (remaining() if available is None else available) <= 0:
+            if primary is None:
+                primary = requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')
+            emit('ERROR', 'a2_query_failed', 'DEADLINE_EXCEEDED', primary, code, category, final=True)
+            raise primary
+
+    deadline()
     emit('INFO', 'a2_query_started', 'QUERY_STARTED')
+    deadline()
     query = f'https://iss.moex.com/iss/engines/stock/markets/{market}/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #универсальный шаблон
 
     # Если global header почему-то не задан или пустой —
@@ -487,65 +656,149 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
 
     primary = None
     while attempt < max_retries:
-        attempt += 1
+        deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
+                 category if primary is not None else 'TIMEOUT')
         status = body_bytes = None
-        emit('DEBUG', 'a2_query_attempt_started', 'REQUEST_STARTED', pending_primary=primary)
+        retry_after_note = None
+        emit('DEBUG', 'a2_query_attempt_started', 'REQUEST_ADMISSION_STARTED', pending_primary=primary)
+        deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
+                 category if primary is not None else 'TIMEOUT')
+        request_headers = {key: value for key, value in header.items()
+                           if type(key) is not str or key.lower() != 'accept-encoding'}
+        request_headers['Accept-Encoding'] = 'identity'
+        available = remaining()
+        deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
+                 category if primary is not None else 'TIMEOUT', available=available)
         primary = None
-        code, category, terminal = 'A2_ISS_REQUEST_ERROR', 'SOURCE', None
+        response = None
+        retryable = False
+        code, category, terminal = 'A2_ISS_REQUEST_ERROR', 'UNKNOWN', None
+        phase = 'request'
+        attempt += 1
         try:
-            response = requests.get(query, headers=header, timeout=30,
-                                    verify=True, allow_redirects=False)
+            response = requests.get(query, headers=request_headers,
+                                    timeout=(min(5, available), min(30, available)),
+                                    verify=True, allow_redirects=False, stream=True)
             status = response.status_code
-            content = response.content
-            body_bytes = len(content) if type(content) is bytes else None
             if 300 <= status <= 399:
                 raise requests.exceptions.TooManyRedirects('A2_ISS_REDIRECT_REJECTED', response=response)
             if status != 200:
                 raise requests.exceptions.HTTPError('A2_ISS_HTTP_STATUS', response=response)
-        except Exception as error:
-            primary = error
-            if isinstance(error, requests.exceptions.SSLError):
-                code, terminal = 'A2_ISS_TLS_FAILED', 'TLS_FAILED'
-            elif isinstance(error, requests.exceptions.TooManyRedirects):
-                code, terminal = 'A2_ISS_REDIRECT_REJECTED', 'REDIRECT_REJECTED'
-            elif isinstance(error, requests.exceptions.Timeout):
-                code, category = 'A2_ISS_TIMEOUT', 'TIMEOUT'
-            elif isinstance(error, requests.exceptions.HTTPError):
-                code = 'A2_ISS_HTTP_STATUS'
-        else:
+            checkpoint()
+            content = _a2_candle_body(response, checkpoint)
+            body_bytes = len(content)
+            phase = 'validation'
+            code, category = 'A2_ISS_RESPONSE_SCHEMA_INVALID', 'SOURCE'
+            codec = _a2_candle_codec(response, content)
+            checkpoint()
+            code = 'A2_ISS_RESPONSE_DECODE_ERROR'
+            text = content.decode(codec, errors='strict')
+            checkpoint()
             code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
+            rows = _a2_candle_records(text)
+            checkpoint()
+            code = 'A2_ISS_PARSE_ERROR'
+            df = pd.read_csv(StringIO(text), sep=';', header=1)
+            checkpoint()
+            code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
+            _a2_candle_frame(df, rows)
+            checkpoint()
+        except BaseException as error:
+            primary = error
+            if error is deadline_error:
+                code, category, terminal = 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', 'DEADLINE_EXCEEDED'
+            elif isinstance(error, requests.exceptions.HTTPError):
+                code, category = 'A2_ISS_HTTP_STATUS', 'QUOTA_429' if status == 429 else 'SOURCE'
+                retryable = status in (408, 429, 500, 502, 503, 504)
+                terminal = None if retryable else 'HTTP_NONRETRYABLE'
+            elif isinstance(error, MemoryError):
+                code, category, retryable, terminal = _a2_request_policy(error)
+            elif phase == 'validation' and isinstance(error, (ValueError, UnicodeDecodeError, csv.Error,
+                                                             pd.errors.ParserError, pd.errors.EmptyDataError)):
+                terminal = 'RESPONSE_REJECTED'
+            elif type(error) is ValueError and error.args == ('A2_ISS_BODY_LIMIT_EXCEEDED',):
+                code, category, terminal = 'A2_ISS_BODY_LIMIT_EXCEEDED', 'CAPACITY', 'BODY_LIMIT_EXCEEDED'
+            elif type(error) is ValueError and error.args in (
+                    ('A2_ISS_CONTENT_ENCODING_UNSUPPORTED',), ('A2_ISS_RESPONSE_SCHEMA_INVALID',)):
+                code, category, terminal = error.args[0], 'SOURCE', 'RESPONSE_REJECTED'
+            else:
+                code, category, retryable, terminal = _a2_request_policy(error)
+        # Закрываем и falsey HTTPError response. Cleanup не заменяет native primary.
+        cleanup_failed = False
+        responses = [response] if response is not None else []
+        attached = getattr(primary, 'response', None)
+        if attached is not None and all(attached is not item for item in responses):
+            responses.append(attached)
+        for closing_response in responses:
             try:
-                codec = _a2_candle_codec(response)
-                code = 'A2_ISS_RESPONSE_DECODE_ERROR'
-                text = content.decode(codec, errors='strict')
-                code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
-                rows = _a2_candle_records(text)
-                code = 'A2_ISS_PARSE_ERROR'
-                df = pd.read_csv(StringIO(text), sep=';', header=1)
-                code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
-                _a2_candle_frame(df, rows)
-            except Exception as error:
-                primary = error
+                closing_response.close()
+            except BaseException as error:
+                cleanup_failed = True
+                if primary is None:
+                    primary, code, category = error, 'A2_ISS_CLOSE_ERROR', 'IO'
+                else:
+                    try:
+                        BaseException.add_note(primary, 'A2_ISS_SECONDARY_CLOSE_ERROR')
+                    except BaseException:
+                        pass
+                terminal, retryable = 'REQUEST_FAILED', False
 
         # Диагностика и health находятся вне request/parser retry-catching блоков.
         if primary is not None:
-            if terminal is not None or attempt == max_retries:
+            if not cleanup_failed or code != 'A2_ISS_CLOSE_ERROR':
+                deadline(primary, code, category)
+            if terminal is not None or not retryable or attempt == max_retries or cleanup_failed:
                 emit('ERROR', 'a2_query_failed', terminal or 'RETRY_EXHAUSTED', primary,
                      code, category, final=True)
+                raise primary
+            server_wait = 0
+            if isinstance(primary, requests.exceptions.HTTPError):
+                try:
+                    server_wait, retry_after_note = _a2_retry_after(response, time.time())
+                except Exception:
+                    # HTTP primary уже существует; metadata fault не начинает retry.
+                    server_wait, retry_after_note = None, 'RETRY_AFTER_UNAVAILABLE'
+            local_wait = retry_sleep_start * (2 ** (attempt - 1))
+            if retry_jitter:
+                local_wait += random.uniform(0, retry_jitter)
+            local_wait = min(30, local_wait)
+            wait = max(local_wait, server_wait or 0)
+            deadline(primary, code, category)
+            if server_wait is None or wait > 30 or wait >= remaining():
+                emit('ERROR', 'a2_query_failed', 'RETRY_NOT_ADMITTED', primary, code, category, final=True)
                 raise primary
             header = get_next_header(header)
             emit('WARNING', 'a2_query_retry', 'RETRY_PENDING', primary,
                  code, category, rotated=True)
-            time.sleep(retry_sleep_start * (2 ** (attempt - 1)))
+            deadline(primary, code, category)
+            if wait >= remaining():
+                emit('ERROR', 'a2_query_failed', 'RETRY_NOT_ADMITTED', primary, code, category, final=True)
+                raise primary
+            time.sleep(wait)
+            deadline(primary, code, category)
             continue
 
-        df_ticker = pd.DataFrame()
-        received = len(df)
-        if received > 0:
-            df['ticker'] = ticker_in
-            df_ticker = pd.concat([df_ticker, df], ignore_index=True)
+        deadline()
+        try:
+            df_ticker = pd.DataFrame()
+            received = len(df)
+            if received > 0:
+                df['ticker'] = ticker_in
+                df_ticker = pd.concat([df_ticker, df], ignore_index=True)
+        except Exception as primary:
+            code, category, _, _ = _a2_request_policy(primary)
+            deadline(primary, code, category)
+            emit('ERROR', 'a2_query_failed', 'REQUEST_FAILED', primary, code, category, final=True)
+            raise
         # Структура проверена целиком; identity/quality/coverage ещё не доказаны.
+        deadline()
+        if remaining() <= 3:
+            primary = requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')
+            emit('ERROR', 'a2_query_failed', 'DEADLINE_EXCEEDED', primary,
+                 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', final=True)
+            raise primary
         time.sleep(3)
+        deadline()
         emit('INFO', 'a2_query_returned',
              'QUERY_RETURNED_UNVALIDATED' if received else 'QUERY_EMPTY_UNVALIDATED', received=received)
         return df_ticker

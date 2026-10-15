@@ -44,14 +44,21 @@ guarantee follows from a local previous-file check.
 
 ## Transport and caller refusal
 
+The transport scheduling/resource paragraphs below describe the original
+A2-01 contribution. The accepted [A2-03 finite policy](a2_iss_retry_policy.md)
+now supplies streaming, timeout tuples, retry eligibility, Retry-After,
+deadline/body limits and argument caps while retaining HTTPS/native failure,
+caller refusal and successful outputs.
+
 `moex_query` requests the existing candle endpoint through HTTPS with
-`verify=True`, `allow_redirects=False` and `timeout=30`. Every 300-399 response
+`verify=True`, `allow_redirects=False`; A2-03 uses `stream=True` and a bounded
+connect/read timeout tuple instead of the original scalar 30. Every 300-399 response
 raises native `TooManyRedirects` with `A2_ISS_REDIRECT_REJECTED`; its Location
 is never requested. Native `SSLError` is raised immediately. Neither case
 rotates headers, sleeps, retries or falls back to HTTP.
 
-Other failed attempts retain the legacy policy in this slice. Five attempts
-are the default; retry sleeps are 3, 6, 12 and 24 seconds, with the existing
+Five attempts remain the default; default retry sleeps are 3, 6, 12 and 24
+seconds, with the existing
 header rotation. A successful request still sleeps three seconds before its
 returned event and DataFrame return. An interrupted/failed success sleep emits
 no returned event. Exhaustion
@@ -65,14 +72,12 @@ The existing positional interfaces are retained. Only keyword-only
 `logging_context=None` is added to `moex_query` and `moex`; context is forwarded
 through all four candle call sites inside A. `main.py` is untouched.
 
-Before any request, `max_retries` must be a positive exact integer, excluding
-bool. `retry_sleep_start` must be a finite, nonnegative exact int/float,
-excluding bool; invalid arguments raise `ValueError('A2_RETRY_ARGUMENTS')`.
-User-supplied `max_retries` has **no general resource cap**. Finite attempts
-under the default do not establish a bounded resource policy. The existing
-non-streaming response has no body cap, and the request timeout is not a total
-download deadline. Decoder/body limits, deadline and resource-cap policy remain
-A2-03.
+The original A2-01 argument check had no general resource cap. A2-03 replaces
+it with attempts 1..5, base 0..30, optional keyword-only jitter 0..1/default 0,
+180-second cooperative budget, 30-second selected-wait cap and 8 MiB identity
+body cap. Invalid arguments still raise `ValueError('A2_RETRY_ARGUMENTS')`
+before network. The body limit and timeout tuple do not prove a hard process
+RSS limit or strict total wall-clock deadline; see the current policy.
 
 ## Closed diagnostics and failure precedence
 
@@ -103,7 +108,9 @@ of the legacy parse, not validated collection status.
 | `a2_query_failed` | ERROR | `RETRY_EXHAUSTED` | Last-attempt code/category; final true, retryable false |
 | `a2_query_failed` | ERROR | `CONFIG_REJECTED` | `A2_RETRY_ARGUMENTS` / CONFIG; attempt 0, retries null with `INVALID_CONFIGURATION`; final true, retryable false |
 
-The other attempt codes/categories are `A2_ISS_TIMEOUT` / TIMEOUT,
+This table preserves the original A2-01 event contribution; A2-03 retains the
+event names but defines actual-call admission semantics and additional closed
+failure outcomes in the current policy. The original attempt codes/categories are `A2_ISS_TIMEOUT` / TIMEOUT,
 `A2_ISS_HTTP_STATUS` / SOURCE, `A2_ISS_REQUEST_ERROR` / SOURCE and
 `A2_ISS_PARSE_ERROR` / SOURCE. For terminal transport failures, retries records
 the actual `i,N`. Here retryable means another legacy attempt is scheduled;
@@ -124,11 +131,12 @@ not fabricate zero-row completeness. `duration_ms` is measured nonnegative
 finite query elapsed time through completion of the mandatory success sleep,
 including earlier retry sleeps when present, before returned-event delivery.
 
-HTTP status, requested range and decoded-body byte length may appear in the
+HTTP status, requested range and body byte length may appear in the
 bounded human message and local fixture evidence. They are **NOT_CONNECTED**
 as typed machine-readable F-LOG fields: the coordinator must own any contract
-change and its integration regression. `len(response.content)` measures
-decoded response bytes, not wire bytes. It proves neither a cap nor a deadline.
+change and its integration regression. A2-01 measured decoded
+`len(response.content)`; A2-03 reads bounded raw identity entity bytes without
+eager content access. Neither measurement represents total wire bytes.
 
 With no logging context, the safe console fallback prints INFO/WARNING/ERROR;
 attempt DEBUG is silent. With context, F-LOG exclusively owns normal console
@@ -155,7 +163,7 @@ runtime/production delivery or complete end-to-end logging integration.
 | #20 Valid empty distinct from missing block/HTML/invalid schema | Unvalidated empty return is labeled diagnostically only | A2-02 |
 | #20 Failed middle page cannot publish partial history | Raised second-window/ticker failure stops local callers/writers | Actual pagination A3; coherent release D1/D4/R1 |
 | #22 Observable failure and nonzero ETL for incomplete mandatory scope | Native final failure, caller propagation and local writer refusal | Common caller/F-LOG/R1 nonzero and upload exclusion |
-| #22 Retryable vs permanent 4xx/schema; Retry-After/jitter/backoff | Immediate TLS/redirect refusal; default legacy backoff retained | Full classifier, Retry-After, jitter, deadline/body/resource cap A2-03 |
+| #22 Retryable vs permanent 4xx/schema; Retry-After/jitter/backoff | Immediate TLS/redirect refusal; default backoff retained | A2-03 finite policy, separately evidenced; strict termination separate |
 | #22 Last correct dataset preserved after retries | No writer and unchanged bytes/hash for the affected local candle dataset | Release/remote preservation D1/D4/R1 |
 | #24 HTTPS, certificate verification and no downgrade | Exact HTTPS/verify/no-redirect request kwargs; redirect destinations never called | Separate authorized live evidence |
 | #24 TLS failure observable rather than empty success | Same native primary, one request, no sleep/fallback; local diagnostics | F-LOG/R1 end-to-end delivery |
@@ -167,7 +175,7 @@ hosted/default domain A coverage remain **NOT_CONNECTED**. Caller/F-LOG handoff
 requests context forwarding plus an integration test: ISS failure, confirmed
 domain ERROR, FAILED/nonzero and upload not invoked. Infrastructure CI does not
 replace explicit A domain evidence. Issues remain open; A2-02/A2-03 are separate
-approved slices, not automatic follow-up implementation.
+approved slices with separate evidence, not automatic follow-up implementation.
 
 Offline regression uses literal candle CSV, native exception identity, fake
 clock/sleep, parser/request doubles, writer spies and previous-file hashes.

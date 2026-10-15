@@ -48,34 +48,50 @@ def test_header_rotation_preserves_fields_and_wraps(monkeypatch):
 
 
 def test_candle_retry_503_then_200_has_literal_rows_and_keys(monkeypatch, tmp_path):
+    from urllib3._collections import HTTPHeaderDict
+
     module = _data_gathering(monkeypatch)
     before = _hashes()
     previous = tmp_path / 'previous.csv'
     previous.write_bytes(b'PREVIOUS_ARTIFACT\n')
     previous_hash = hashlib.sha256(previous.read_bytes()).hexdigest()
     content = (FIXTURES / 'candles.csv').read_text(encoding='utf-8')
-    responses = iter((SimpleNamespace(status_code=503, text='', content=b''),
-                      SimpleNamespace(status_code=200, text=content, content=content.encode('utf-8'),
-                                      headers={'Content-Type': 'text/csv; charset=utf-8'})))
-    calls, sleeps = [], []
-    clock = iter(range(100))
+    class RawBody(io.BytesIO):
+        def read(self, amt=None, decode_content=False):
+            assert type(amt) is int and 0 < amt <= 65536
+            assert decode_content is False
+            return super().read(amt)
 
-    def request(url, headers, timeout, verify, allow_redirects):
-        calls.append((url, dict(headers), timeout, verify, allow_redirects))
+    prepared = []
+    for status, body in ((503, b''), (200, content.encode('utf-8'))):
+        headers = {'Content-Type': 'text/csv; charset=utf-8'}
+        raw = RawBody(body)
+        raw.headers = HTTPHeaderDict(headers)
+        prepared.append(SimpleNamespace(status_code=status, headers=headers,
+                                        raw=raw, close=raw.close))
+    responses = iter(prepared)
+    calls, sleeps = [], []
+
+    def request(url, headers, timeout, verify, allow_redirects, stream):
+        calls.append((url, dict(headers), timeout, verify, allow_redirects, stream))
         return next(responses)
 
     monkeypatch.setattr(module.requests, 'get', request)
     monkeypatch.setattr(module, 'time',
-                        SimpleNamespace(sleep=sleeps.append, perf_counter=lambda: next(clock)))
+                        SimpleNamespace(sleep=sleeps.append, perf_counter=lambda: 0.0,
+                                        time=lambda: 1709380800.0))
     monkeypatch.setattr(module.pd.DataFrame, 'to_csv', _forbidden_writer)
     monkeypatch.setattr(module.pd.DataFrame, 'to_excel', _forbidden_writer)
     result = module.moex_query('FIXTURE_SHARE', 'Акции', '2024-02-29', '2024-03-01',
                                24, max_retries=2)
     url = ('https://iss.moex.com/iss/engines/stock/markets/shares/securities/'
            'FIXTURE_SHARE/candles.csv?from=2024-02-29&till=2024-03-01&interval=24')
-    assert calls == [(url, {'User-Agent': 'AGENT_A'}, 30, True, False),
-                     (url, {'User-Agent': 'AGENT_B'}, 30, True, False)]
+    assert calls == [(url, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'},
+                      (5, 30), True, False, True),
+                     (url, {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'},
+                      (5, 30), True, False, True)]
     assert sleeps == [3, 3]
+    assert all(item.raw.closed for item in prepared)
     assert result.columns.tolist() == ['open', 'close', 'high', 'low', 'value', 'volume',
                                        'begin', 'end', 'ticker']
     assert result.values.tolist() == [
@@ -89,6 +105,7 @@ def test_candle_retry_503_then_200_has_literal_rows_and_keys(monkeypatch, tmp_pa
         ('FIXTURE_SHARE', 24, '2024-03-01 00:00:00'),
     ]
     assert result.index.tolist() == [0, 1]
+    assert result.dtypes.astype(str).tolist() == ['float64'] * 5 + ['int64', 'object', 'object', 'object']
     assert _hashes() == before
     assert previous.read_bytes() == b'PREVIOUS_ARTIFACT\n'
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == previous_hash

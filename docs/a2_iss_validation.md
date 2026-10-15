@@ -93,7 +93,11 @@ required-finite profile: refusal is not a claim that such a source row is fake.
 
 ## Whole-response algorithm and compatibility
 
-Validate MIME/parameters and BOM; strict-decode response.content; parse the
+The accepted [A2-03 finite retry/resource policy](a2_iss_retry_policy.md)
+replaces eager response loading and speculative validation retries. It leaves
+every accepted representation and output check in this profile unchanged.
+
+Validate MIME/parameters and BOM; strict-decode complete bounded bytes; parse the
 complete CSV; validate envelope/raw8/width/numeric/calendar/local collisions.
 Only then run the original pandas read_csv with `sep=';'`, `header=1` on the
 original decoded text. Reconcile exact columns, record count, RangeIndex and
@@ -117,12 +121,15 @@ schema/values/dtypes/order/index/timestamps are retained.
 | Strict decode | Same native UnicodeDecodeError object/args; `A2_ISS_RESPONSE_DECODE_ERROR`; SOURCE |
 | Existing pandas parsing | Same native parser object/args; `A2_ISS_PARSE_ERROR`; SOURCE |
 
-Every invalid response is refused; legacy retry scheduling/header rotation and
-3/6/12/24 backoff remain. Invalid-to-valid recovery is permitted, with only the
-last whole valid response returned. Exhaustion propagates the last attempt's
-primary. TLS and redirect rejection remain immediate A2-01 failures. Full
-permanent/retryable classification, Retry-After, jitter, total deadline/body cap
-and general max_retries resource cap remain A2-03.
+The original A2-02 permitted invalid-to-valid retry recovery. A2-03 deliberately
+makes MIME/decode/envelope/schema/CSV/pandas/frame failures terminal: preserve
+the first current native primary and do not consume a prepared later valid
+response. This changes retry scheduling, not the accepted profile. Default
+eligible-transient sleeps remain 3/6/12/24, with header rotation and the final
+attempt's native primary. TLS/redirect refusal remains immediate. A2-03 owns
+the finite classification, Retry-After, optional jitter, cooperative deadline,
+identity streaming/body cap and retry-argument caps; no hard deadline/RSS
+claim follows.
 
 Existing F-LOG event names/levels, stage/fields={}, correlation/null reasons,
 accepted/confirmed/health gates and primary-versus-logging precedence remain.
@@ -138,12 +145,14 @@ completed success sleep; interrupted sleep never emits returned.
 
 ## Fresh regressions and execution
 
-The new closed A fixtures cover the accepted profile categories, exact dtypes/values,
+The A2-02 closed fixtures cover the accepted profile categories, exact dtypes/values,
 whole-response refusal, invalid-to-valid/exhaustion/backoff, local previous-file
 hashes and zero writers after a later response failure, native primary identity,
 None/context canaries and logging-failure precedence. Existing A2-01 assertions
 remain; MIME/valid-marker adaptations preserve real F-LOG level/no-duplicate
-oracles and move body canaries to a failure/header carrier.
+oracles and move body canaries to a failure/header carrier. A2-03 updates only
+the explicitly superseded invalid-to-valid scheduling and transport-double
+oracles; literal profile/output/canary/previous-hash assertions remain.
 
 First demonstrate substantive RED on the unchanged pinned production pair,
 then candidate A, source-only notebook sync and a clean commit. Use existing
@@ -165,7 +174,7 @@ read back, rather than treating process exit alone as delivery/inventory proof.
 | #20 empty versus missing/HTML/schema | Structural empty distinguished | Scope availability/empty membership A/R1 |
 | #20 failed middle page | Local invalid-response caller stop | A3 pagination; D/R1 release |
 | #22 failure/nonzero/previous | Last primary and affected local no-writer/hash evidence | Common FAILED/nonzero/upload-stop F/R1; coherent release/remote D/R1 |
-| #22 retry classification/budget | Legacy scheduling retained | A2-03 |
+| #22 retry classification/budget | A2-02 profile unchanged; former retry scheduling superseded | A2-03 finite consumer policy and separate evidence |
 | #24 transport | A2-01 regressions retained | Separate live acceptance |
 | #78 diagnostics/canaries | Closed scoped errors/events/fixture evidence | Typed HTTP NOT_CONNECTED; common delivery/bundle F/R1 |
 
