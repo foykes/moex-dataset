@@ -14,7 +14,7 @@
 # ---
 
 # %%
-import datetime, pandas as pd, requests, csv, sys, time, os, json, math
+import datetime, pandas as pd, requests, csv, sys, time, os, json, math, re
 from io import StringIO
 
 
@@ -304,6 +304,91 @@ def _a2_diagnostic(logging_context, level, event, message, fields, primary=None)
         raise primary from None
 
 
+def _a2_candle_codec(response):
+    # Закрытый consumer profile, а не утверждение обо всех вариантах ISS.
+    content_type = response.headers.get('Content-Type')
+    if type(content_type) is not str:
+        raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    parts = [part.strip(' \t') for part in content_type.split(';')]
+    if parts[0].lower() != 'text/csv' or len(parts) > 2:
+        raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    codec = 'cp1251'
+    if len(parts) == 2:
+        parameter = re.fullmatch(r'charset[ \t]*=[ \t]*(?:"([A-Za-z0-9-]+)"|([A-Za-z0-9-]+))',
+                                 parts[1], re.IGNORECASE | re.ASCII)
+        if parameter is None:
+            raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+        charset = (parameter.group(1) or parameter.group(2)).lower()
+        codec = {'cp1251': 'cp1251', 'windows-1251': 'cp1251',
+                 'utf8': 'utf-8', 'utf-8': 'utf-8'}.get(charset)
+        if codec is None:
+            raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    content = response.content
+    if type(content) is not bytes:
+        raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    # BOM проверяем до decode: cp1251 иначе скроет его как обычные символы.
+    bom = b'\xef\xbb\xbf'
+    if bom in content and (codec != 'utf-8' or not content.startswith(bom)
+                           or bom in content[len(bom):]):
+        raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    return codec
+
+
+def _a2_candle_records(text):
+    # Только временное представление; возвращаемый pandas frame не нормализуем.
+    if '\r' in text.replace('\r\n', ''):
+        raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    validation_text = text[1:] if text.startswith('\ufeff') else text
+    records = [row for row in csv.reader(StringIO(validation_text, newline=''),
+               delimiter=';', quotechar='"', doublequote=True, strict=True) if row]
+    columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end']
+    if len(records) < 2 or records[0] != ['candles'] or records[1] != columns:
+        raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    rows = records[2:]
+    seen_begin = set()
+    number = r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
+    timestamp = r'[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}'
+    for row in rows:
+        if len(row) != 8:
+            raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+        for cell in row[:6]:
+            value = cell.strip(' \t')
+            if re.fullmatch(number, value) is None or not math.isfinite(float(value)):
+                raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+        for cell in row[6:]:
+            if re.fullmatch(timestamp, cell) is None:
+                raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+            try:
+                parsed = datetime.datetime.strptime(cell, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID') from None
+            reconstructed = (f'{parsed.year:04d}-{parsed.month:02d}-{parsed.day:02d} '
+                             f'{parsed.hour:02d}:{parsed.minute:02d}:{parsed.second:02d}')
+            if reconstructed != cell:
+                raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+        # Локальная request-bound проекция; полную source identity она не доказывает.
+        if row[6] in seen_begin:
+            raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+        seen_begin.add(row[6])
+    return rows
+
+
+def _a2_candle_frame(df, rows):
+    columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end']
+    if (df.columns.tolist() != columns or len(df) != len(rows)
+            or not df.index.equals(pd.RangeIndex(len(rows)))):
+        raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    for position, column in enumerate(columns[6:], start=6):
+        if df[column].tolist() != [row[position] for row in rows]:
+            raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+    # Empty CSV имеет object dtype; прежний zero-column return сохраняется ниже.
+    if rows:
+        for column in columns[:6]:
+            if (not pd.api.types.is_numeric_dtype(df[column])
+                    or not all(math.isfinite(value) for value in df[column])):
+                raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+
+
 def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3, *, logging_context=None):
     global header
     global headers_full
@@ -353,7 +438,8 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
                        requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout,
                        requests.exceptions.Timeout, requests.exceptions.HTTPError,
                        requests.exceptions.ConnectionError, requests.exceptions.RequestException,
-                       pd.errors.EmptyDataError, pd.errors.ParserError, ValueError):
+                       pd.errors.EmptyDataError, pd.errors.ParserError,
+                       UnicodeDecodeError, csv.Error, ValueError):
             if isinstance(primary, native):
                 exception_type = native.__name__
                 break
@@ -427,10 +513,19 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
             elif isinstance(error, requests.exceptions.HTTPError):
                 code = 'A2_ISS_HTTP_STATUS'
         else:
+            code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
             try:
-                df = pd.read_csv(StringIO(response.text), sep=';', header=1)
+                codec = _a2_candle_codec(response)
+                code = 'A2_ISS_RESPONSE_DECODE_ERROR'
+                text = content.decode(codec, errors='strict')
+                code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
+                rows = _a2_candle_records(text)
+                code = 'A2_ISS_PARSE_ERROR'
+                df = pd.read_csv(StringIO(text), sep=';', header=1)
+                code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
+                _a2_candle_frame(df, rows)
             except Exception as error:
-                primary, code = error, 'A2_ISS_PARSE_ERROR'
+                primary = error
 
         # Диагностика и health находятся вне request/parser retry-catching блоков.
         if primary is not None:
@@ -449,7 +544,7 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         if received > 0:
             df['ticker'] = ticker_in
             df_ticker = pd.concat([df_ticker, df], ignore_index=True)
-        # Сохраняем legacy success sleep и CSV outputs; schema validation — A2-02.
+        # Структура проверена целиком; identity/quality/coverage ещё не доказаны.
         time.sleep(3)
         emit('INFO', 'a2_query_returned',
              'QUERY_RETURNED_UNVALIDATED' if received else 'QUERY_EMPTY_UNVALIDATED', received=received)
