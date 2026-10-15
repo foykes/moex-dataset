@@ -22,6 +22,7 @@ from email.utils import parsedate_to_datetime
 from urllib3 import exceptions as urllib3_errors
 from io import BytesIO
 from types import SimpleNamespace
+from urllib.parse import urljoin, urlsplit
 
 df_overview_full = pd.DataFrame()
 df_years_full = pd.DataFrame()
@@ -126,15 +127,16 @@ def _network_policy(error):
     return 'SOURCE', False, 'PERMANENT_SOURCE_FAILURE'
 
 
-def _close_failed_response(response, error):
-    closed = set()
+def _close_failed_response(response, error, closed=None):
+    if closed is None:
+        closed = {}
     responses = [response]
     responses.extend(current.response for current in _network_errors(error)
                      if isinstance(current, requests.RequestException))
     for current in responses:
         if current is None or id(current) in closed:
             continue
-        closed.add(id(current))  # HTTP-error Response бывает falsey.
+        closed[id(current)] = current  # Держим identity до конца attempt, без reuse id.
         try:
             current.close()
         except BaseException:
@@ -256,25 +258,212 @@ def _logging_barrier(logging_context):
         raise RuntimeError('LOGGING_INCOMPLETE') from error
 
 
-def _request_page(url, deadline, logging_context, state, *, text=False):
+def _canonical_url(value, base=None):
+    # Проверяем raw reference до urlsplit/urljoin: они могут убрать controls
+    # или нормализовать dot segments раньше проверки допуска.
+    if (type(value) is not str or not value or '\\' in value
+            or any(ord(char) <= 32 or ord(char) >= 127 for char in value)):
+        raise ValueError('URL_RAW_INVALID')
+    if re.search(r'%(?![0-9a-fA-F]{2})', value):
+        raise ValueError('URL_ESCAPE_INVALID')
+    parts = None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        pass
+    if parts is None:
+        raise ValueError('URL_AUTHORITY_INVALID')
+    if parts.scheme and (parts.scheme != 'https' or not parts.netloc):
+        raise ValueError('URL_SCHEME_NOT_ALLOWED')
+    if parts.netloc and not re.fullmatch(r'www\.dohod\.ru(?::443)?', parts.netloc, re.I):
+        raise ValueError('URL_HOST_NOT_ALLOWED')
+    if parts.query:
+        raise ValueError('URL_QUERY_NOT_ALLOWED')
+
+    def unreserved(match):
+        char = chr(int(match.group()[1:], 16))
+        if not re.fullmatch(r'[A-Za-z0-9._~-]', char):
+            raise ValueError('URL_ESCAPE_NOT_ALLOWED')
+        return char
+
+    path = re.sub(r'%[0-9a-fA-F]{2}', unreserved, parts.path)
+    if any(segment in ('.', '..') for segment in path.split('/')):
+        raise ValueError('URL_DOT_SEGMENT')
+    reference = parts._replace(path=path, query='', fragment='').geturl()
+    target = urlsplit(urljoin(base, reference) if base is not None else reference)
+    if target.scheme != 'https':
+        raise ValueError('URL_SCHEME_NOT_ALLOWED')
+    if not re.fullmatch(r'www\.dohod\.ru(?::443)?', target.netloc, re.I):
+        raise ValueError('URL_HOST_NOT_ALLOWED')
+    overview_path = '/ik/analytics/dividend'
+    if target.path not in (overview_path, overview_path + '/'):
+        if not re.fullmatch(overview_path + r'/[A-Za-z0-9._~-]+', target.path):
+            reason = ('URL_DETAIL_PATH_NOT_ALLOWED' if target.path.startswith(overview_path + '/')
+                      else 'URL_PATH_NOT_ALLOWED')
+            raise ValueError(reason)
+        if '.pdf' in target.path.rsplit('/', 1)[-1].lower():
+            raise ValueError('URL_PDF_NOT_ALLOWED')
+    return 'https://www.dohod.ru' + target.path
+
+
+def _url_kind(url):
+    return 'overview' if url in (
+        'https://www.dohod.ru/ik/analytics/dividend',
+        'https://www.dohod.ru/ik/analytics/dividend/') else 'detail'
+
+
+def _redirect_url(response, current, original, page_kind, visited, transitions, state):
+    # response.headers уже объединяет повторные поля и теряет cardinality.
+    locations = None
+    try:
+        locations = response.raw.headers.getlist('Location')
+    except Exception:
+        pass
+    reason = None
+    if type(locations) not in (list, tuple):
+        reason = 'REDIRECT_LOCATION_UNAVAILABLE'
+    elif len(locations) == 0:
+        state['reason'] = 'HTTP_STATUS'
+        raise requests.HTTPError('DOHOD_HTTP_STATUS_INVALID', response=response)
+    elif len(locations) > 1:
+        reason = 'REDIRECT_LOCATION_DUPLICATE'
+    elif type(locations[0]) is not str or not locations[0]:
+        reason = 'REDIRECT_LOCATION_INVALID'
+    target = None
+    if reason is None:
+        try:
+            target = _canonical_url(locations[0], current)
+        except ValueError:
+            reason = 'REDIRECT_LOCATION_INVALID'
+    if reason is None:
+        if _url_kind(target) != page_kind:
+            reason = 'REDIRECT_ROLE_CHANGED'
+        elif page_kind == 'detail' and target != original:
+            reason = 'REDIRECT_DETAIL_IDENTITY_CHANGED'
+        elif target in visited:
+            reason = 'REDIRECT_LOOP'
+        elif transitions >= 30:
+            reason = 'REDIRECT_LIMIT'
+    if reason is not None:
+        state['reason'] = reason
+        # Вне except: raw Location/header exception не попадает даже в context.
+        raise ValueError(reason)
+    return target
+
+
+def _request_page(url, deadline, logging_context, state, *, page_kind, text=False):
+    state['endpoint'] = None
+    try:
+        original = _canonical_url(url)
+    except ValueError as error:
+        state['reason'] = error.args[0]
+        raise
+    state['endpoint'] = original
+    if page_kind not in ('overview', 'detail') or _url_kind(original) != page_kind:
+        state['reason'] = 'URL_ROLE_NOT_ALLOWED'
+        raise ValueError('URL_ROLE_NOT_ALLOWED')
     last_error = None
     for attempt in range(1, 4):
-        remaining = _check_budget(deadline, last_error, state)
-        state.update(attempt=attempt, phase='OPEN', category='SOURCE', reason='')
-        response = None
+        _check_budget(deadline, last_error, state)
+        state.update(attempt=attempt, phase='', category='SOURCE', reason='')
+        response, session, retry_error = None, None, None
+        session_closed = False
+        closed = {}
         try:
-            response = requests.get(url, headers=headers, stream=True,
-                                    timeout=(min(10, remaining), min(10, remaining)))
-            if not 200 <= response.status_code < 300:
-                response.raise_for_status()
-                raise requests.HTTPError('DOHOD_HTTP_STATUS_INVALID', response=response)
+            session = requests.Session()
+            current, visited, transitions = original, {original}, 0
+            while True:
+                state.update(endpoint=current, phase='', category='SOURCE')
+                prepared = session.prepare_request(requests.Request('GET', current, headers=headers))
+                prepared_url = None
+                try:
+                    prepared_url = _canonical_url(prepared.url)
+                except ValueError:
+                    pass
+                if prepared_url != current or prepared.url != current:
+                    state['reason'] = 'PREPARED_URL_CHANGED'
+                    raise ValueError('PREPARED_URL_CHANGED')
+                settings = session.merge_environment_settings(prepared.url, {}, True, None, None)
+                adapter = session.get_adapter(prepared.url)
+                remaining = _check_budget(deadline, last_error, state)
+                state['phase'] = 'OPEN'
+                try:
+                    # Session.send даже с allow_redirects=False читает 3xx body
+                    # ради _next. Публичный adapter.send этого не делает.
+                    response = adapter.send(prepared, timeout=(min(10, remaining), min(10, remaining)),
+                                            **settings)
+                except BaseException as error:
+                    retry_error = error
+                    raise
+                _check_budget(deadline, state=state)
+                state['phase'] = ''
+                redirect = response.status_code in (301, 302, 303, 307, 308)
+                if redirect:
+                    state['phase'] = 'OPEN'
+                    target = _redirect_url(response, current, original, page_kind,
+                                           visited, transitions, state)
+                cookies_ok = True
+                try:
+                    requests.cookies.extract_cookies_to_jar(session.cookies, prepared, response.raw)
+                except Exception:
+                    cookies_ok = False
+                if not cookies_ok:
+                    state['reason'] = 'COOKIE_PROCESSING_FAILED'
+                    raise ValueError('COOKIE_PROCESSING_FAILED')
+                _check_budget(deadline, state=state)
+                if redirect:
+                    state.update(phase='CLOSE', category='IO')
+                    closed[id(response)] = response
+                    response.close()
+                    _check_budget(deadline, state=state)
+                    state.update(phase='', category='SOURCE')
+                    _dohod_event(logging_context, 'INFO', 'dohod_redirect_followed',
+                        'Разрешён переход HTTP доход.ру', state=state, outcome='RECEIVED')
+                    _check_budget(deadline, state=state)
+                    visited.add(target)
+                    transitions += 1
+                    current = target
+                    continue
+                state['phase'] = 'OPEN'
+                try:
+                    if not 200 <= response.status_code < 300:
+                        response.raise_for_status()
+                        raise requests.HTTPError('DOHOD_HTTP_STATUS_INVALID', response=response)
+                    _check_budget(deadline, state=state)
+                    state['phase'] = 'READ'
+                    raw = response.content
+                    _check_budget(deadline, state=state)
+                except BaseException as error:
+                    retry_error = error
+                    raise
+                break
+            # CLOSE, cookies, preparation, cached decoding и diagnostics
+            # находятся вне retry-классификации сетевого OPEN/READ.
+            state.update(phase='CLOSE', category='IO')
+            closed[id(response)] = response
+            response.close()
+            session_closed = True
+            session.close()
             _check_budget(deadline, state=state)
-            state['phase'] = 'READ'
-            raw = response.content
+            state.update(phase='DECODE', category='SOURCE')
+            result = response.text if text else raw
             _check_budget(deadline, state=state)
+            state['phase'] = ''
+            _dohod_event(logging_context, 'INFO', 'dohod_request_received',
+                'Получено тело HTTP-ответа доход.ру; качество и полнота не проверены',
+                state=state, outcome='RECEIVED')
+            _check_budget(deadline, state=state)
+            return result, current
         except BaseException as error:
-            _close_failed_response(response, error)
-            if not isinstance(error, Exception) or state['reason'] == 'BUDGET_EXHAUSTED':
+            _close_failed_response(response, error, closed)
+            if session is not None and not session_closed:
+                session_closed = True
+                try:
+                    session.close()
+                except BaseException:
+                    pass
+            if (error is not retry_error or not isinstance(error, Exception)
+                    or state['reason'] == 'BUDGET_EXHAUSTED'):
                 raise
             last_error = error
             category, retryable, reason = _network_policy(error)
@@ -300,23 +489,10 @@ def _request_page(url, deadline, logging_context, state, *, text=False):
             _retry_wait(delay)
             _check_budget(deadline, error, state)
             continue
-        # CLOSE, cached text decoding и parser/barrier не повторяют HTTP.
-        state.update(phase='CLOSE', category='IO')
-        response.close()
-        _check_budget(deadline, state=state)
-        state.update(phase='DECODE', category='SOURCE')
-        result = response.text if text else raw
-        _check_budget(deadline, state=state)
-        state['phase'] = ''
-        _dohod_event(logging_context, 'INFO', 'dohod_request_received',
-            'Получено тело HTTP-ответа доход.ру; качество и полнота не проверены',
-            state=state, outcome='RECEIVED')
-        _check_budget(deadline, state=state)
-        return result
 
 
 def _operation_state(url):
-    return {'started': _network_clock(), 'endpoint': url, 'attempt': 0,
+    return {'started': _network_clock(), 'endpoint': None, 'attempt': 0,
             'category': 'SOURCE', 'reason': '', 'phase': ''}
 
 
@@ -342,7 +518,7 @@ def _prepare_main(url, source_deadline, logging_context):
 
 
 def _main_frame(url, deadline, logging_context, state):
-    html = _request_page(url, deadline, logging_context, state)
+    html, _ = _request_page(url, deadline, logging_context, state, page_kind='overview')
     df_list = _read_dohod_html(html)
     _check_budget(deadline, state=state)
     df_mainpage = df_list[-1]
@@ -407,24 +583,30 @@ def _page_frames(url, source_deadline, logging_context, state):
     ### Сбор всех ссылок на страницы
     _check_budget(source_deadline, state=state)
     deadline = min(source_deadline, state['started'] + 35)
-    page_text = _request_page(url, deadline, logging_context, state, text=True)
+    page_text, overview_base = _request_page(url, deadline, logging_context, state,
+                                          page_kind='overview', text=True)
     soup = BeautifulSoup(page_text, 'lxml')
     _check_budget(deadline, state=state)
 
-    data = []
-
-    for link in soup.find_all('a', href=True):
-        data.append(str(link.get('href')))
-
-
-    data = list(set(data))
-
     url_list = []
-
-    for i in data:
-        if "/ik/analytics/dividend/" in i and ".pdf" not in i:
-            url = "https://www.dohod.ru" + i
-            url_list.append(url)
+    seen, warned = set(), set()
+    for link in soup.find_all('a', href=True):
+        href = link.get('href')
+        if not href:
+            continue
+        try:
+            target = _canonical_url(href, overview_base)
+        except ValueError as error:
+            reason = error.args[0]
+            if reason != 'URL_PATH_NOT_ALLOWED' and reason not in warned:
+                warned.add(reason)
+                _dohod_event(logging_context, 'WARNING', 'dohod_url_rejected',
+                    'Ссылка доход.ру отклонена: ' + reason, state=state, outcome='REJECTED')
+            _check_budget(deadline, state=state)
+            continue
+        if _url_kind(target) == 'detail' and target not in seen:
+            seen.add(target)
+            url_list.append(target)
     
 
     print("Количество страниц для обхода: {}".format(len(url_list)))
@@ -440,7 +622,7 @@ def _page_frames(url, source_deadline, logging_context, state):
         state.update(_operation_state(url))
         _check_budget(source_deadline, state=state)
         deadline = min(source_deadline, state['started'] + 35)
-        html = _request_page(url, deadline, logging_context, state)
+        html, _ = _request_page(url, deadline, logging_context, state, page_kind='detail')
         try:
             df_list = _read_dohod_html(html)
         except:
