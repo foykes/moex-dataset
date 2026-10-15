@@ -2,6 +2,7 @@
 
 import ast
 import copy
+import hashlib
 import json
 from pathlib import Path
 import types
@@ -21,6 +22,15 @@ def pytest_configure(config):
 @pytest.fixture
 def native_results():
     return NATIVE_RESULTS
+
+
+@pytest.fixture
+def tmp_path(request, tmp_path_factory):
+    # pytest's default numbered=True path also creates a best-effort `current`
+    # symlink. The closed consumer permits no aliases in its owned scratch.
+    # Node IDs are unique within this fixed suite; an existing leaf must fail.
+    name = 'case-' + hashlib.sha256(request.node.nodeid.encode('utf-8')).hexdigest()
+    return tmp_path_factory.mktemp(name, numbered=False)
 
 
 def load_definitions(path, name):

@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import json
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,56 @@ LEGACY_FUNCTION_SHA256 = {
     'new_scratch': '81314668764cbe767d0642e831722dec97e6e0dcf9b91f5981db9ac0303c9740',
     'finalize_output': 'c7675fc3b40abec6e6d260959b3659c2251dbe8f663f796056e36e4d22607906',
 }
+
+
+def test_tmp_path_factory_uses_exact_node_digest_without_numbering(
+        request, tmp_path_factory, monkeypatch):
+    calls = []
+    sentinel = tmp_path_factory.getbasetemp() / 'policy-spy-only'
+
+    def mktemp(basename, numbered=True):
+        calls.append((basename, numbered))
+        return sentinel
+
+    monkeypatch.setattr(tmp_path_factory, 'mktemp', mktemp)
+    actual = request.getfixturevalue('tmp_path')
+    expected = 'case-' + hashlib.sha256(request.node.nodeid.encode('utf-8')).hexdigest()
+    assert actual == sentinel
+    assert calls == [(expected, False)]
+
+
+@pytest.mark.parametrize('suffix', ['plain', 'parameter[1]', 'parameter/2', 'unicode-данные'])
+def test_actual_tmp_path_is_unique_alias_free_leaf(tmp_path, tmp_path_factory, request, suffix):
+    expected = 'case-' + hashlib.sha256(request.node.nodeid.encode('utf-8')).hexdigest()
+    assert tmp_path.name == expected
+    assert tmp_path.parent == tmp_path_factory.getbasetemp()
+    assert stat.S_ISDIR(tmp_path.lstat().st_mode)
+    assert not tmp_path.is_symlink()
+    assert not getattr(tmp_path.lstat(), 'st_file_attributes', 0) & 1024
+    # Inspect the actual parent, including siblings created by preceding tests.
+    # No alias is made acceptable or removed by this fixture policy.
+    for leaf in tmp_path.parent.iterdir():
+        info = leaf.lstat()
+        assert stat.S_ISDIR(info.st_mode)
+        assert not stat.S_ISLNK(info.st_mode)
+        assert not getattr(info, 'st_file_attributes', 0) & 1024
+        assert leaf.name.startswith('case-') and len(leaf.name) == 69
+
+
+@pytest.mark.parametrize('mode,attributes', [(stat.S_IFLNK | 0o700, 0),
+                                            (stat.S_IFDIR | 0o700, 1024)])
+def test_existing_alias_checks_still_refuse_mocked_link_or_reparse(
+        helper, tmp_path, monkeypatch, mode, attributes):
+    original = helper.Path.lstat
+
+    def lstat(path, *arguments, **keywords):
+        if path == tmp_path:
+            return SimpleNamespace(st_mode=mode, st_file_attributes=attributes)
+        return original(path, *arguments, **keywords)
+
+    monkeypatch.setattr(helper.Path, 'lstat', lstat)
+    with pytest.raises(helper.PolicyError, match='^linked-path-component$'):
+        helper.real_components(tmp_path, directory=True)
 
 
 @pytest.mark.parametrize('name,expected', LEGACY_FUNCTION_SHA256.items())
