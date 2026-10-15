@@ -605,3 +605,61 @@ results stay NOT AVAILABLE. Readiness is READY_FOR_INDEPENDENT_CODE_REVIEW only
 after all required gates pass; no merge, issue closure, production or next slice
 is authorized. Rollback is a separately reviewed revert of this helper-only PR,
 preserving outputs, foreign/orphan temps, environments, worktrees and evidence.
+
+## LNX-03 Stage A — direct owner handoff and local implementation
+
+On 2026-10-15 the owner directly granted H and Stage A implementation for
+`LINUX_FIRST_FEASIBILITY / PLAN_V1.1`, with local offline setup/checks and a
+local commit. This append records that grant without altering historical
+reservations. LNX/coordinator transfers the closed application consumer only;
+F3/coordinator transfers the separate Linux runner/guard only. Existing
+LNX-02 authority, modes and schemas, Windows lanes and Linux locks stay intact.
+
+Approved base: `e411a154b47446997fd4697c5cb4d7cc604519bf`.
+Approved tree: `307e4b768427d3269318285b0745ba3b77a7558c`.
+Branch/worktree: `codex/lnx-03-d2-bootstrap` / `.worktrees/lnx-03-d2-bootstrap`.
+The reviewed drift from `dab1ad3b6328ccdce1da7d636c36720f755d227a` consists of
+six C3 paths outside this allowlist. Further compatible drift must be recorded;
+shared-interface conflicts stop work without automatic rebase.
+
+The exact 12-path write allowlist is:
+
+```text
+.github/lnx02/verify_env.py
+.github/workflows/d2-linux-offline.yml
+tools/offline_linux.py
+tools/offline_guard_linux.py
+tests/linux_bootstrap/conftest.py
+tests/linux_bootstrap/native_worker.py
+tests/linux_bootstrap/test_environment_contract.py
+tests/linux_bootstrap/test_admission.py
+tests/linux_bootstrap/test_spawn_contract.py
+docs/d2_linux_ci.md
+docs/testing.md
+docs/coordination.md
+```
+
+The [Stage A contract](d2_linux_ci.md) defines the separate LNX-03 admission,
+network SETUP and supervised-namespace grants, exact source/run/role tickets,
+owned disposable environments, immutable offline execution and sanitized
+result export. It does not expand legacy LNX-02 grants into a launcher. Real
+F-LOG transport, FD ownership, native process lifecycle and kernel network
+isolation remain pending until an authorized hosted run. Local Windows checks
+must never be labeled Linux runtime PASS. The shared helper's legacy
+source-bound regressions are required before merge; real LNX-02 verify on the
+exact post-merge main is a separate grant/acceptance gate before Stage B.
+
+First push, repository grant activation, hosted SETUP, supervised namespace and
+GitHub Actions network execution are NOT AUTHORIZED by this local grant. The
+executor stops after a clean local commit and an actual
+`FIRST_PUSH_GRANT_REQUEST`, including workflow blob/source identities and
+side-effect Windows workflow gates. No automatic grant/run-number updates,
+reruns, PR merge, issue closure or deployment are allowed.
+
+Windows D2 `codex/mds-d2-01`, its uncommitted changes, immutable environment,
+221-test ledger, original red-before evidence and BLOCKED handoffs remain
+untouched. Stage B is NOT AUTHORIZED and requires fresh review/H plus the owner
+platform-entrypoint decision. `run_logging.py`, `dataset_io.py`, production
+settings, datasets, MOEX/Google/FTP/staging writes, D4/D5/D6 and complete
+#47/#78/#66 integration are outside Stage A. Rollback is a separately reviewed
+thematic revert preserving LNX-02, foreign worktrees and all existing evidence.
