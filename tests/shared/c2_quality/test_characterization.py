@@ -27,6 +27,7 @@ import mds_offline_guard as guard
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / 'tests/fixtures/c2_quality'
+ARCHIVE = FIXTURES / 'baseline_v1'
 BASELINE = {
     'sha': 'b423a7817e9a508fc167cdd47704d0b788252a8c',
     'python_blob': '7e63237528dbf43d2fe9dd3fba7ac277f477dc35',
@@ -52,6 +53,29 @@ def _fixture_json(filename):
 
 def _source_cases():
     return _fixture_json('source_cases.json')
+
+
+def _blob(path):
+    raw = path.read_bytes().replace(b'\r\n', b'\n')
+    return hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
+
+
+def _assert_pair(source_root, identities):
+    for filename, field in [('dividends.py', 'python_blob'), ('dividends.ipynb', 'notebook_blob')]:
+        assert _blob(source_root / filename) == identities[field], 'C2_03_SOURCE_DRIFT'
+
+
+def _current_cases():
+    manifest = _fixture_json('source_cases_v2.json')
+    historical = {case['case_id']: case for case in _source_cases()['cases']}
+    assert {case['case_id'] for case in manifest['historical_cases']} == set(historical)
+    cases = []
+    for mapping in manifest['historical_cases']:
+        case = copy.deepcopy(historical[mapping['case_id']])
+        case['expected_failure_stage'] = mapping['expected_failure_stage']
+        case['semantic_failure'] = mapping['semantic_failure']
+        cases.append(case)
+    return cases + manifest['additional_cases']
 
 
 def _assert_profile():
@@ -128,9 +152,16 @@ def _exception(error):
     elif error.args and type(error.args[0]) is str:
         candidate = error.args[0].split(':', 1)[0]
         if candidate in ('DIVIDEND_SOURCE_SCHEMA_INVALID', 'DIVIDEND_EMPTY_RELEASE_BLOCKED',
-                         'DIVIDEND_SCOPE_EMPTY_UNVERIFIED'):
+                         'DIVIDEND_SCOPE_EMPTY_UNVERIFIED', 'DIVIDEND_SOURCE_SEMANTIC_INVALID'):
             code = candidate
-    return {'type': type(error).__module__ + '.' + type(error).__qualname__, 'safe_code': code}
+    result = {'type': type(error).__module__ + '.' + type(error).__qualname__, 'safe_code': code}
+    if code == 'DIVIDEND_SOURCE_SEMANTIC_INVALID':
+        match = re.fullmatch(r'DIVIDEND_SOURCE_SEMANTIC_INVALID: rule=(DATE_TYPE|DATE_SHAPE|DATE_CALENDAR|'
+            r'VALUE_TYPE|VALUE_NONFINITE|CURRENCY_TYPE|CURRENCY_BLANK|CURRENCY_CONTROL); '
+            r'field=(dt|value|currency); row=([0-9]+)', error.args[0])
+        assert match is not None, 'C2_03_UNSAFE_SEMANTIC_DIAGNOSTIC'
+        result['semantic'] = {'rule': match[1], 'field': match[2], 'row_ordinal': int(match[3])}
+    return result
 
 
 def _failed(stages, stage, error):
@@ -299,19 +330,23 @@ def _xlsx_readback(path, rows):
         workbook.close()
 
 
-def _fresh_dividends():
-    specification = importlib.util.spec_from_file_location('c2_03_fresh_dividends', ROOT / 'dividends.py')
+def _fresh_dividends(*, current=False):
+    # Explicit, disjoint roots. Never fall back from current failures to historical source.
+    source_root = ROOT if current else ARCHIVE
+    identities = _fixture_json('export_oracles_v2.json')['source'] if current else BASELINE
+    _assert_pair(source_root, identities)
+    specification = importlib.util.spec_from_file_location('c2_03_fresh_dividends', source_root / 'dividends.py')
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     assert module.divs_all == [], 'C2_03_FRESH_IMPORT_REQUIRED'
     return module
 
 
-def characterize(case, monkeypatch, tmp_path):
+def characterize(case, monkeypatch, tmp_path, *, current=False):
     """Return JSON-safe observations; callers must supply an issued fixture root."""
     _assert_profile()
     _validate_source_literals(case)
-    module = _fresh_dividends()
+    module = _fresh_dividends(current=current)
     directory = tmp_path / 'datasets/dividends'
     directory.mkdir(parents=True)
     module.current_path = str(tmp_path)
@@ -326,6 +361,8 @@ def characterize(case, monkeypatch, tmp_path):
     detail_raw = case['raw_json_utf8'].encode('utf-8') if case['raw_json_utf8'] is not None else None
     stages = {name: {'status': 'NOT_REACHED'} for name in
               ('decode', 'parse', 'loader', 'accumulator', 'frame', 'xlsx', 'csv', 'main')}
+    if current:
+        stages['semantic'] = {'status': 'NOT_REACHED'}
     captured = {'decoded_rows': None, 'prepared_rows': None, 'frame_values': None}
     requests, reads, writer_calls = [], [], []
     active_url = None
@@ -335,6 +372,18 @@ def characterize(case, monkeypatch, tmp_path):
     original_request = module._request_json
     original_excel = pd.DataFrame.to_excel
     original_csv = pd.DataFrame.to_csv
+    original_semantic = module._validate_dividend_rows if current else None
+
+    def semantic(rows):
+        try:
+            result = original_semantic(rows)
+        except Exception as error:
+            _failed(stages, 'semantic', error)
+            for stage in ('accumulator', 'frame', 'xlsx', 'csv'):
+                stages[stage] = {'status': 'NOT_REACHED', 'reason': 'RESPONSE_SEMANTIC_REJECTED'}
+            raise
+        stages['semantic'] = {'status': 'RETURNED'}
+        return result
 
     def opened(url, *, timeout=None):
         nonlocal active_url
@@ -432,6 +481,8 @@ def characterize(case, monkeypatch, tmp_path):
         patches.setattr(module, '_decode_json', decode)
         patches.setattr(module, '_request_json', request)
         patches.setattr(module, '_parse_dividend_rows', parse)
+        if current:
+            patches.setattr(module, '_validate_dividend_rows', semantic)
         patches.setattr(module, '_div_loader', loader)
         patches.setattr(pd, 'read_excel', read_excel)
         patches.setattr(pd.DataFrame, 'to_excel', to_excel)
@@ -476,6 +527,13 @@ def characterize(case, monkeypatch, tmp_path):
                 reason = 'STAGE_NOT_REACHED'
             delta['comparisons'][name] = _comparison(reference, rows[ordinal][column] if reason is None else None,
                                                     reason=reason)
+        if current:
+            prepared = captured['prepared_rows']
+            reason = item['comparison_reason'] if reference is None else None
+            if reason is None and (prepared is None or ordinal >= len(prepared)):
+                reason = 'STAGE_NOT_REACHED'
+            delta['comparisons']['prepared'] = _comparison(reference,
+                prepared[ordinal][3] if reason is None else None, reason=reason)
         reason = item['comparison_reason'] if reference is None else ('STAGE_NOT_REACHED' if csv_fields is None else None)
         delta['comparisons']['csv'] = _comparison(reference, literal=csv_fields[ordinal + 1][3] if reason is None else None,
                                                 reason=reason)
@@ -488,6 +546,9 @@ def characterize(case, monkeypatch, tmp_path):
         reason = item['comparison_reason'] if reference is None else ('STAGE_NOT_REACHED' if readback_values is None else None)
         delta['comparisons']['xlsx_readback'] = _comparison(reference,
             readback_values[ordinal + 1][3] if reason is None else None, reason=reason)
+        if current and stages['semantic']['status'] == 'RAISED':
+            for stage in ('accumulator', 'frame', 'csv', 'xlsx_xml', 'xlsx_readback'):
+                delta['comparisons'][stage] = _comparison(reference, reason='STAGE_NOT_REACHED')
         result['deltas'].append(delta)
     # Reject nonstandard NaN/Infinity in the evidence itself.
     json.dumps(result, allow_nan=False)
@@ -501,11 +562,9 @@ def test_fixture_and_source_identity():
     assert source['columns'] == ['registryclosedate', 'value', 'currencyid']
     ids = [case['case_id'] for case in source['cases']]
     assert len(ids) == len(set(ids)) == 41
-    for filename, field in [('dividends.py', 'python_blob'), ('dividends.ipynb', 'notebook_blob')]:
-        # Windows checkout CRLF is normalized by Git for these tracked text files.
-        raw = (ROOT / filename).read_bytes().replace(b'\r\n', b'\n')
-        blob = hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
-        assert blob == BASELINE[field], 'C2_03_SOURCE_DRIFT'
+    _assert_pair(ARCHIVE, BASELINE)
+    assert _blob(FIXTURES / 'source_cases.json') == '524943fa9f886aff9fdb751a5e21c9aad33738d3'
+    assert _blob(FIXTURES / 'export_oracles.json') == '4f285c1184a8224db3df164d838c35935517cc0b'
     oracles = _fixture_json('export_oracles.json')
     assert oracles['fixture_version'] == 1 and oracles['baseline'] == BASELINE
     assert oracles['runtime_profile'] == PROFILE
@@ -572,3 +631,71 @@ def test_public_loader_returns_none_and_preserves_decoded_row(monkeypatch):
     assert calls == [search_url, detail_url]
     expected = [[case['isin'], case['ticker'], '2024-07-11', 17.35, 'RUB']]
     assert _rows(module.divs_all) == _rows(expected)
+
+
+def test_current_fixture_and_source_identity():
+    _assert_profile()
+    manifest = _fixture_json('source_cases_v2.json')
+    oracles = _fixture_json('export_oracles_v2.json')
+    assert manifest['fixture_version'] == oracles['fixture_version'] == 2
+    assert manifest['policy'] == 'C2_03B_RESPONSE_LOCAL_V1'
+    assert manifest['runtime_profile'] == oracles['runtime_profile'] == PROFILE
+    assert manifest['historical_fixture_blob'] == _blob(FIXTURES / 'source_cases.json')
+    assert manifest['historical_oracle_blob'] == _blob(FIXTURES / 'export_oracles.json')
+    cases = _current_cases()
+    ids = [case['case_id'] for case in cases]
+    assert len(manifest['historical_cases']) == 41
+    assert len(manifest['additional_cases']) == 8
+    assert len(ids) == len(set(ids)) == 49
+    assert set(oracles['cases']) == set(ids), 'C2_03_CURRENT_ORACLE_INVENTORY_MISMATCH'
+    assert sum(case['semantic_failure'] is not None for case in cases) == 32
+    # This is the integration parent; candidate SHA is external evidence, not a self-reference.
+    assert oracles['source']['base_sha'] == 'c98664b7da20375cf0bfed8125a94d64008d0d63'
+    _assert_pair(ROOT, oracles['source'])
+    assert oracles['source']['python_blob'] != BASELINE['python_blob']
+    assert oracles['source']['notebook_blob'] != BASELINE['notebook_blob']
+
+
+@pytest.mark.parametrize('case', _current_cases(), ids=lambda case: case['case_id'])
+def test_current_export_characterization(case, monkeypatch, tmp_path):
+    actual = characterize(case, monkeypatch, tmp_path, current=True)
+    expected = _fixture_json('export_oracles_v2.json')['cases'][case['case_id']]
+    assert actual == expected
+    failure_stage = case['expected_failure_stage']
+    assert actual['stages']['main']['status'] == ('RAISED' if failure_stage else 'RETURNED')
+    if case['semantic_failure'] is not None:
+        assert actual['stages']['semantic']['exception']['semantic'] == case['semantic_failure']
+        assert actual['prepared_rows'] is not None
+        assert actual['accumulator_rows'] == []
+        assert actual['writer_calls'] == []
+        assert actual['artifact_presence'] == {'xlsx': False, 'csv': False}
+        for stage in ('accumulator', 'frame', 'xlsx', 'csv'):
+            assert actual['stages'][stage]['status'] == 'NOT_REACHED'
+        for delta in actual['deltas']:
+            for stage in ('accumulator', 'frame', 'csv', 'xlsx_xml', 'xlsx_readback'):
+                assert delta['comparisons'][stage]['delta'] is None
+                assert delta['comparisons'][stage]['reason'] == 'STAGE_NOT_REACHED'
+    elif actual['stages']['parse']['status'] == 'RETURNED':
+        prepared = [[_typed(case['isin']), _typed(case['ticker']), *row]
+                    for row in actual['decoded_rows']]
+        assert actual['prepared_rows'] == actual['accumulator_rows'] == prepared
+    else:
+        assert actual['stages']['semantic']['status'] == 'NOT_REACHED'
+        assert actual['prepared_rows'] is None and actual['accumulator_rows'] == []
+
+
+@pytest.mark.parametrize('case_id,stage,reference,observed', [
+    ('long_decimal', 'csv', Fraction(10000000000000001, 10**17), Fraction(1, 10)),
+    ('underflow_positive', 'decoded', Fraction(1, 10**400), Fraction(0)),
+    ('large_integer', 'xlsx_readback', Fraction(9007199254740993), Fraction(9007199254740992)),
+])
+def test_current_guard_retains_finite_precision_findings(case_id, stage, reference, observed,
+                                                        monkeypatch, tmp_path):
+    case = next(case for case in _current_cases() if case['case_id'] == case_id)
+    actual = characterize(case, monkeypatch, tmp_path, current=True)
+    assert actual['stages']['semantic'] == {'status': 'RETURNED'}
+    assert actual['stages']['main'] == {'status': 'RETURNED'}
+    comparison = actual['deltas'][0]['comparisons'][stage]
+    assert comparison['reason'] is None
+    assert comparison['delta'] == _fraction(observed - reference)
+    assert comparison['delta']['numerator'] != '0'

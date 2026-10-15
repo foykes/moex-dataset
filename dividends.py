@@ -16,8 +16,8 @@
 # %%
 import pandas as pd, sys
 import urllib.request, urllib.parse, urllib.error, json
-import re, time, socket, ssl, errno
-from datetime import timezone
+import re, time, socket, ssl, errno, math
+from datetime import date, timezone
 from email.utils import parsedate_to_datetime
 
 current_path = sys.path[0]
@@ -301,6 +301,40 @@ def _parse_dividend_rows(data, isin, ticker):
     return prepared_rows
 
 
+def _validate_dividend_rows(rows):
+    # Локальный профиль не подтверждает source semantics, precision или полноту.
+    for ordinal, row in enumerate(rows):
+        dt, value, currency = row[2:]
+        rule, field = None, 'dt'
+        if type(dt) is not str:
+            rule = 'DATE_TYPE'
+        elif re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', dt) is None:
+            rule = 'DATE_SHAPE'
+        else:
+            try:
+                date(int(dt[:4]), int(dt[5:7]), int(dt[8:]))
+            except ValueError:
+                rule = 'DATE_CALENDAR'
+        if rule is None:
+            field = 'value'
+            if type(value) not in (int, float):
+                rule = 'VALUE_TYPE'
+            elif type(value) is float and not math.isfinite(value):
+                rule = 'VALUE_NONFINITE'
+        if rule is None:
+            field = 'currency'
+            if type(currency) is not str:
+                rule = 'CURRENCY_TYPE'
+            elif not currency.strip():
+                rule = 'CURRENCY_BLANK'
+            elif re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', currency):
+                rule = 'CURRENCY_CONTROL'
+        if rule is not None:
+            # Только закрытые метки и ordinal; исходные значения не выводятся.
+            raise ValueError('DIVIDEND_SOURCE_SEMANTIC_INVALID: rule={}; field={}; row={}'.format(
+                rule, field, ordinal)) from None
+
+
 def _dividend_event(logging_context, level, event, message, ticker=None,
                     *, counts=None, outcome=None, duration_ms=None, error=None, file=None, retries=None):
     if logging_context is None:
@@ -334,7 +368,7 @@ def _dividend_failure(logging_context, error, ticker, endpoint, code,
         record = run_logging.make_error(logging_context, error, 'dividends', code=code)
         record['category'] = 'QUALITY' if code in (
             'DIVIDEND_ISIN_INVALID', 'DIVIDEND_SCOPE_EMPTY_UNVERIFIED',
-            'DIVIDEND_EMPTY_RELEASE_BLOCKED') else 'SOURCE'
+            'DIVIDEND_EMPTY_RELEASE_BLOCKED', 'DIVIDEND_SOURCE_SEMANTIC_INVALID') else 'SOURCE'
         if code == 'LOGGING_INCOMPLETE':
             record['category'] = 'IO'
         elif code == 'DIVIDEND_BUDGET_EXHAUSTED':
@@ -416,11 +450,15 @@ def _div_loader(isin, ticker, source_deadline, *, logging_context=None):
         failure_code = 'DIVIDEND_SOURCE_SCHEMA_INVALID'
         rows = _parse_dividend_rows(data, isin, ticker)
         _check_budget(operation_deadline)
+        failure_code = 'DIVIDEND_SOURCE_SEMANTIC_INVALID'
+        _validate_dividend_rows(rows)
+        _check_budget(operation_deadline)
         counts = {'rows_received': len(rows), 'rows_accepted': len(rows),
                   'rows_quarantined': None, 'pages': 1, 'instruments': 1,
                   'null_reasons': {'rows_quarantined': 'NOT_EVALUATED'}}
         _dividend_event(logging_context, 'INFO', 'dividend_loader_returned',
-            'Структурно проверено событий: {}; качество и полнота не проверены'.format(len(rows)), secid,
+            ('Локально проверено событий: {}; source_semantics=NOT_VERIFIED; '
+             'precision=NOT_VERIFIED; полнота не проверена').format(len(rows)), secid,
             counts=counts, outcome='RETURNED' if rows else 'VALID_EMPTY',
             duration_ms=(time.perf_counter() - started) * 1000)
         if logging_context is not None:
@@ -438,7 +476,8 @@ def _div_loader(isin, ticker, source_deadline, *, logging_context=None):
             code = error.args[0].split(':', 1)[0]
             if code in ('DIVIDEND_ISIN_INVALID', 'DIVIDEND_SEARCH_SCHEMA_INVALID',
                         'DIVIDEND_IDENTITY_NOT_FOUND', 'DIVIDEND_IDENTITY_AMBIGUOUS',
-                        'DIVIDEND_SECID_INVALID', 'LOGGING_INCOMPLETE', 'DIVIDEND_BUDGET_EXHAUSTED'):
+                        'DIVIDEND_SECID_INVALID', 'LOGGING_INCOMPLETE', 'DIVIDEND_BUDGET_EXHAUSTED',
+                        'DIVIDEND_SOURCE_SEMANTIC_INVALID'):
                 failure_code = code
         _dividend_failure(logging_context, error, instrument, query, failure_code,
                           request_state=request_state)
