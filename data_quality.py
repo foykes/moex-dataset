@@ -3,7 +3,7 @@
 
 from collections import Counter
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 import re
@@ -84,8 +84,8 @@ def _fingerprint(payload, schema):
             'schema_version': schema}
 
 
-def _check(identifier, status, reason, evidence_ref=None):
-    return {'check_id': identifier, 'status': status, 'reason': reason,
+def _check(identifier, status, reason=None, evidence_ref=None):
+    return {'check_id': identifier, 'status': status, 'reason': None if status == 'PASS' else reason,
             'evidence_ref': evidence_ref}
 
 
@@ -94,6 +94,29 @@ def _status(statuses):
         return 'FAIL'
     if 'NOT_VERIFIED' in statuses:
         return 'NOT_VERIFIED'
+    return 'PASS'
+
+
+def _nonblank_string(value):
+    return type(value) is str and bool(value.strip())
+
+
+def _as_of_status(value):
+    # Проверяем только существующий UTC context, не календарь торгов или часы запуска.
+    if not _nonblank_string(value) or 'T' not in value:
+        return 'NOT_VERIFIED'
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return 'NOT_VERIFIED'
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return 'NOT_VERIFIED'
+    if parsed.utcoffset() != timedelta(0):
+        return 'FAIL'
+    # fromisoformat может округлить дробь offset меньше микросекунды до нуля.
+    offset = re.search(r'[+-]([0-9:.,]+)\Z', value.split('T', 1)[1])
+    if offset and any(character in '123456789' for character in offset.group(1)):
+        return 'FAIL'
     return 'PASS'
 
 
@@ -176,13 +199,35 @@ def _lineage(frame_rows, columns, spec, metadata, evidence, records, inventory, 
     mismatches = list(problems)
     unknown = []
     schema = metadata.get('schema_version')
-    if any(type(metadata.get(field)) is not str or not metadata[field]
-           for field in ('snapshot_id', 'dataset_id', 'schema_version')):
+    if any(not _nonblank_string(metadata.get(field))
+           for field in ('run_id', 'snapshot_id', 'dataset_id', 'schema_version')):
         unknown.append('IMMUTABLE_CONTEXT_NOT_AVAILABLE')
+    versions = [spec.get('contract_version'), metadata.get('contract_version')]
+    if not all(type(version) is int for version in versions):
+        unknown.append('CONTRACT_VERSION_NOT_AVAILABLE')
+    elif versions[0] != versions[1]:
+        mismatches.append('CONTRACT_VERSION_MISMATCH')
+    elif versions[0] != 1:
+        unknown.append('CONTRACT_VERSION_NOT_SUPPORTED')
+    source = metadata.get('source')
+    if not _nonblank_string(source):
+        unknown.append('APPROVED_SOURCE_NOT_AVAILABLE')
+    elif source != 'MOEX_ISS_RAW':
+        mismatches.append('UNAPPROVED_SOURCE')
+    cutoff_status = _as_of_status(metadata.get('as_of'))
+    if cutoff_status == 'NOT_VERIFIED':
+        unknown.append('UTC_AS_OF_NOT_AVAILABLE')
+    elif cutoff_status == 'FAIL':
+        mismatches.append('AS_OF_NOT_UTC')
     for field in ('dataset_id', 'schema_version'):
         if not _same(spec.get(field), metadata.get(field)):
             mismatches.append('SPEC_CONTEXT_MISMATCH')
-    if columns != [column.get('name') for column in spec.get('columns', [])]:
+    declared_columns = [column.get('name') for column in spec.get('columns', [])]
+    column_mapping_valid = (columns == declared_columns
+                            and all(_nonblank_string(name) for name in columns)
+                            and len(set(columns)) == len(columns)
+                            and all(name in columns for name in (*RAW_COLUMNS, 'ticker')))
+    if not column_mapping_valid:
         mismatches.append('FRAME_SCHEMA_MISMATCH')
     if any(not _same(record.get('interval'), spec.get('interval')) for record in records.values()):
         mismatches.append('SOURCE_INTERVAL_MISMATCH')
@@ -247,10 +292,11 @@ def _lineage(frame_rows, columns, spec, metadata, evidence, records, inventory, 
                 or not _same(entry.get('begin'), row.get('raw_key', {}).get('begin'))):
             mismatches.append('BINDING_RAW_CONTENT_MISMATCH')
         if type(ordinal) is int and 0 <= ordinal < len(frame_rows) and record is not None:
-            frame_row = dict(zip(columns, frame_rows[ordinal]))
-            if (not _same([frame_row.get(column) for column in RAW_COLUMNS], row.get('values'))
-                    or not _same(frame_row.get('ticker'), record.get('identity', {}).get('display_ticker'))):
-                mismatches.append('CANDIDATE_RAW_CONTENT_MISMATCH')
+            if column_mapping_valid:
+                frame_row = dict(zip(columns, frame_rows[ordinal]))
+                if (not _same([frame_row[column] for column in RAW_COLUMNS], row.get('values'))
+                        or not _same(frame_row['ticker'], record.get('identity', {}).get('display_ticker'))):
+                    mismatches.append('CANDIDATE_RAW_CONTENT_MISMATCH')
         else:
             mismatches.append('BINDING_ORDINAL_INVALID')
         encoded.append([ordinal, entry.get('identity_record_id'), entry.get('begin'),
@@ -276,10 +322,9 @@ def _lineage(frame_rows, columns, spec, metadata, evidence, records, inventory, 
         checks.append(_check('IDENTITY_BINDING_MISMATCH', 'FAIL', 'KNOWN_LINEAGE_CONTRADICTION'))
     if unknown:
         checks.append(_check('IMMUTABLE_LINEAGE_NOT_VERIFIED', 'NOT_VERIFIED',
-                             'INDEPENDENT_AUTHORITY_OR_NORMALIZATION_UNAVAILABLE'))
+                             'REQUIRED_CONTEXT_AUTHORITY_OR_NORMALIZATION_UNAVAILABLE'))
     if not checks:
-        checks.append(_check('IDENTITY_BINDING', 'PASS', 'ORIGINAL_CANDIDATE_BINDINGS_VERIFIED',
-                             authority.get('evidence_ref')))
+        checks.append(_check('IDENTITY_BINDING', 'PASS', evidence_ref=authority.get('evidence_ref')))
     return _status([check['status'] for check in checks]), checks, selected
 
 

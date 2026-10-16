@@ -77,6 +77,12 @@ E19 A/A/B becoming A/B/B fails `IDENTITY_BINDING_MISMATCH` even with unchanged
 public values/counts, valid raw locators and internally consistent new hashes.
 Sorting never rewrites the input bindings or the expected selection.
 
+Candidate field names must be unique and include every raw8 field and `ticker`
+exactly once. A producer-declared schema and matching fingerprints do not make
+duplicate names or missing required raw fields valid: those mappings fail before
+values are assembled by field name. Additional unambiguous columns remain
+unchanged.
+
 Independent selection proves provenance, not candle uniqueness. Selecting one
 retained raw locator twice cannot create two valid bars: duplicate candidate
 natural keys block the affected effective group even when its raw corpus has
@@ -93,6 +99,30 @@ policy. Missing/unsupported normalization or independent authority yields
 `NOT_VERIFIED`; contradictory known lineage or foreign snapshot yields `FAIL`.
 All scoped raw variants are assessed, so an unselected conflicting variant can
 make a selected row ineligible.
+
+### Required context preconditions
+
+The internal subset also checks the following existing F0 preconditions. No
+consumer-generated context or new fields in `producer_selection`/`row_bindings`
+are introduced. A supplied string is retained unchanged; checking that it is
+nonblank does not trim or replace its value.
+
+| Context | Supported input | Missing/unsupported evidence | Known contradiction |
+| --- | --- | --- | --- |
+| Metadata `run_id`; existing snapshot/dataset/schema binding IDs | Nonblank strings; existing spec/authority equality rules still apply. | Absent, null, empty/blank or unsupported type is NOT_VERIFIED when consistently unknown. | Different known binding/spec identities remain FAIL. There is no invented independent run-ID comparator. |
+| Spec and metadata `contract_version` | Strict Python integer `1`; booleans are not integers for this check. | Missing/null/unsupported type, or matching unsupported integer versions, is NOT_VERIFIED. | Different explicit integer versions are FAIL. |
+| Metadata `source` | Exact literal `MOEX_ISS_RAW`. The existing F0 spec has no source field. | Missing/null/blank or unsupported type is NOT_VERIFIED. | A different explicit nonblank string is FAIL. The approved label does not authenticate provider bytes. |
+| Metadata `as_of` | ISO 8601 date/time with a `T` separator and explicit UTC zero offset; `Z`, `+00:00` and fractional seconds are supported without rewriting. | Missing/null/blank, unsupported type/representation, malformed calendar/time or a timezone-naive value is NOT_VERIFIED. | A parseable aware nonzero UTC offset is FAIL; no implicit timezone conversion. |
+
+These are context checks only: no comparison with the current clock, market
+session, candle end, acquisition time or publication time is added. The UTC
+check also examines the literal offset: parser truncation of a nonzero offset
+below microsecond precision cannot establish UTC. Fractional time and exactly
+zero offset representations remain unchanged. The existing producer-selection
+structure does not independently carry `run_id` or `as_of`;
+its fingerprints cannot establish those missing correlations. Required context
+uncertainty blocks local eligibility, and `FULL_DATASET_VALIDATION` remains
+NOT_VERIFIED even when the supported context preconditions pass.
 
 ## Checks, selection and separate status axes
 
@@ -152,6 +182,8 @@ not silently include all unselected raw occurrences. Missing durable quarantine
 or validation artifacts leave `quarantine_ref`/`evidence_ref` null. Detailed
 in-memory findings are not falsely presented as saved artifacts. Raw failure,
 local eligibility, acquisition coverage and source authenticity are independent.
+Each F0-shaped quality check has `reason=null` on PASS and a nonblank reason on
+FAIL/NOT_VERIFIED; this does not manufacture an evidence artifact reference.
 
 ## Fixtures, regression oracles and diagnostics
 
@@ -260,6 +292,13 @@ reproduction; missing-module collection alone is not a substantive regression
 proof. Runtime results, exact commands/counts/exits, guard reports and exact-HEAD
 CI belong in the completed handoff. Until recorded, they are NOT VERIFIED.
 No live MOEX, production writer or publication run is needed for these checks.
+
+The PR #108 review repairs retain separate RED/GREEN evidence: malformed captured
+candidate schemas (duplicate names or missing raw fields), F0 check reason
+nullability, and required-context uncertainty/contradiction cases. Their RED
+reference is the independently reviewed implementation; revised clean-HEAD
+commands, counts, exits and evidence roots belong in the updated handoff. Earlier
+successful runs do not validate the repaired commit.
 
 The following original issue acceptance criteria are copied without shortening.
 In-slice entries describe the intended local contribution, not full completion.

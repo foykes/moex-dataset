@@ -164,6 +164,206 @@ def _changed_row(cases, changes):
     return row
 
 
+def _capture_declared_frame(case, columns, rows):
+    """Freeze a deliberately malformed schema independently of the assessor."""
+    metadata, evidence = case['metadata'], case['retained_evidence']
+    schema = 'B2_REVIEW_CAPTURED_FRAME_SCHEMA'
+    metadata['schema_version'] = case['spec']['schema_version'] = schema
+    metadata['snapshot_id'] = 'B2_REVIEW_CAPTURE_' + hashlib.sha256(
+        repr((columns, rows)).encode('utf-8')).hexdigest()[:24]
+    evidence['frame_payload'] = [schema, copy.deepcopy(columns), copy.deepcopy(rows)]
+    old_columns = {column['name']: column for column in case['spec']['columns']}
+    case['spec']['columns'] = [copy.deepcopy(old_columns[name]) for name in columns]
+    sources = {}
+    for source in evidence['retained_sources']:
+        for row in source['rows']:
+            row['raw_row_fingerprint'] = _logical(
+                [_key_array(row['raw_key']), row['columns'], row['values']], schema)
+            sources[(source['identity_record_id'], source['provenance_ref'], row['raw_row_ordinal'])] = row
+    bindings = metadata['row_bindings']
+    bindings.update(snapshot_id=metadata['snapshot_id'], schema_version=schema,
+                    row_count=len(rows), frame_fingerprint=_logical(evidence['frame_payload'], schema))
+    encoded = []
+    for entry in bindings['entries']:
+        source = entry['source_row_ref']
+        row = sources[(entry['identity_record_id'], source['provenance_ref'], source['raw_row_ordinal'])]
+        source['raw_row_fingerprint'] = copy.deepcopy(row['raw_row_fingerprint'])
+        encoded.append([entry['ordinal'], entry['identity_record_id'], entry['begin'],
+            source['provenance_ref'], source['raw_row_ordinal'], _key_array(source['raw_key']),
+            source['raw_row_fingerprint']['value']])
+    bindings['binding_fingerprint'] = _logical([metadata['snapshot_id'], metadata['dataset_id'],
+        schema, bindings['frame_fingerprint']['value'], encoded], schema)
+    selection = copy.deepcopy(bindings)
+    selection.pop('row_count')
+    selection['evidence_ref'] = selection.pop('binding_evidence_ref')
+    evidence['producer_selection'] = selection
+    return case
+
+
+@pytest.mark.parametrize('schema_case', ['duplicate_close', 'missing_volume'])
+def test_captured_schema_cannot_hide_ambiguous_or_missing_raw_field_mapping(candidate, cases, schema_case):
+    case = _one_identity(cases)
+    payload = case['retained_evidence']['frame_payload']
+    columns, rows = copy.deepcopy(payload[1]), copy.deepcopy(payload[2])
+    if schema_case == 'duplicate_close':
+        position = columns.index('close')
+        columns.insert(position, 'close')
+        rows[0].insert(position, 999)
+        assert rows[0][position] != rows[0][position + 1]
+        assert rows[0][position + 1] == case['retained_evidence']['retained_sources'][0]['rows'][0]['values'][1]
+    else:
+        position = columns.index('volume')
+        columns.pop(position)
+        rows[0].pop(position)
+    case = _capture_declared_frame(case, columns, rows)
+    before = copy.deepcopy(case)
+    assert case['metadata']['row_bindings']['frame_fingerprint'] == case['retained_evidence']['producer_selection']['frame_fingerprint']
+    report = _assess(candidate, case)
+    assert report['raw_assessment']['status'] == 'PASS'
+    assert _check(report, 'IDENTITY_BINDING_MISMATCH')['status'] == 'FAIL'
+    assert report['quality_result']['status'] == 'FAIL'
+    assert report['quality_result']['accepted_rows'] is None
+    assert report['eligibility']['status'] == 'FAIL'
+    assert all(group['candidate_ordinals'] == [] for group in report['eligibility']['groups'])
+    assert case == before
+
+
+@pytest.mark.parametrize('outcome', ['positive', 'negative', 'unknown'])
+def test_every_emitted_quality_check_uses_f0_reason_nullability(candidate, cases, outcome):
+    case = copy.deepcopy(cases['e19'])
+    if outcome == 'negative':
+        case['metadata'] = copy.deepcopy(cases['e19_negative_metadata'])
+    elif outcome == 'unknown':
+        case['retained_evidence'].pop('producer_selection')
+    report = _assess(candidate, case)
+    checks = report['quality_result']['checks']
+    assert checks and any(check['status'] == 'PASS' for check in checks)
+    assert any(check['status'] == 'NOT_VERIFIED' for check in checks)
+    assert any(check['status'] == 'FAIL' for check in checks) == (outcome == 'negative')
+    for check in checks:
+        assert set(check) == {'check_id', 'status', 'reason', 'evidence_ref'}
+        if check['status'] == 'PASS':
+            assert check['reason'] is None
+        else:
+            assert check['status'] in {'FAIL', 'NOT_VERIFIED'}
+            assert type(check['reason']) is str and check['reason'].strip()
+
+
+def _assert_unadmitted_context(candidate, case, expected):
+    before = copy.deepcopy(case)
+    report = _assess(candidate, case)
+    assert report['raw_assessment']['status'] == 'PASS'
+    assert report['coverage_assessment']['status'] == 'COMPLETE'
+    assert report['eligibility']['status'] == expected
+    assert all(group['candidate_ordinals'] == [] for group in report['eligibility']['groups'])
+    assert report['quality_result']['status'] == expected
+    assert report['quality_result']['accepted_rows'] is None
+    assert case == before
+
+
+@pytest.mark.parametrize('field', ['run_id', 'as_of', 'contract_version', 'source'])
+def test_missing_required_metadata_context_is_not_filled_from_source_rows(candidate, cases, field):
+    case = _one_identity(cases)
+    case['metadata'].pop(field)
+    _assert_unadmitted_context(candidate, case, 'NOT_VERIFIED')
+
+
+@pytest.mark.parametrize('field,value', [
+    ('run_id', None), ('run_id', ''), ('run_id', '   '), ('run_id', 7),
+    ('source', None), ('source', ''), ('source', '   '), ('source', 7),
+    ('contract_version', None), ('contract_version', '1'), ('contract_version', True),
+    ('as_of', None), ('as_of', ''), ('as_of', 7),
+    ('as_of', '2026-10-04T09:00:00'),
+    ('as_of', '2026-02-30T09:00:00Z'),
+    ('as_of', '2026-10-04 09:00:00Z'),
+    ('as_of', '2026-10-04\u202809:00:00Z'),
+])
+def test_unsupported_required_metadata_context_has_no_local_eligibility(candidate, cases, field, value):
+    case = _one_identity(cases)
+    case['metadata'][field] = value
+    _assert_unadmitted_context(candidate, case, 'NOT_VERIFIED')
+
+
+@pytest.mark.parametrize('version', [None, '1', True])
+def test_spec_contract_version_is_strict_integer_context(candidate, cases, version):
+    case = _one_identity(cases)
+    case['spec']['contract_version'] = version
+    _assert_unadmitted_context(candidate, case, 'NOT_VERIFIED')
+
+
+def test_missing_spec_contract_version_is_not_inferred_from_metadata(candidate, cases):
+    case = _one_identity(cases)
+    case['spec'].pop('contract_version')
+    _assert_unadmitted_context(candidate, case, 'NOT_VERIFIED')
+
+
+@pytest.mark.parametrize('spec_version,metadata_version', [(1, 2), (2, 1)])
+def test_known_contract_version_disagreement_is_a_failure(candidate, cases, spec_version, metadata_version):
+    case = _one_identity(cases)
+    case['spec']['contract_version'] = spec_version
+    case['metadata']['contract_version'] = metadata_version
+    _assert_unadmitted_context(candidate, case, 'FAIL')
+
+
+def test_matching_unsupported_contract_version_does_not_claim_version_two_support(candidate, cases):
+    case = _one_identity(cases)
+    case['spec']['contract_version'] = case['metadata']['contract_version'] = 2
+    _assert_unadmitted_context(candidate, case, 'NOT_VERIFIED')
+
+
+def test_explicit_other_source_is_a_known_approved_source_contradiction(candidate, cases):
+    case = _one_identity(cases)
+    case['metadata']['source'] = 'B2_UNAPPROVED_SOURCE'
+    _assert_unadmitted_context(candidate, case, 'FAIL')
+
+
+def test_explicit_non_utc_cutoff_is_a_failure_without_timezone_repair(candidate, cases):
+    case = _one_identity(cases)
+    case['metadata']['as_of'] = '2026-10-04T09:00:00+03:00'
+    _assert_unadmitted_context(candidate, case, 'FAIL')
+
+
+@pytest.mark.parametrize('offset', ['+00:00:00.0000001', '-00:00:00.0000001',
+                                  '+000000.0000001', '-000000.0000001'])
+def test_explicit_nonzero_submicrosecond_utc_offset_cannot_round_to_approved_zero(candidate, cases, offset):
+    case = _one_identity(cases)
+    case['metadata']['as_of'] = '2026-10-04T09:00:00' + offset
+    _assert_unadmitted_context(candidate, case, 'FAIL')
+
+
+@pytest.mark.parametrize('field', ['dataset_id', 'schema_version'])
+def test_different_known_spec_identity_fails_against_valid_metadata_and_authority(candidate, cases, field):
+    case = _one_identity(cases)
+    case['spec'][field] = 'B2_DIFFERENT_KNOWN_SPEC_' + field.upper()
+    _assert_unadmitted_context(candidate, case, 'FAIL')
+
+
+@pytest.mark.parametrize('as_of', ['2026-10-04T09:00:00Z', '2026-10-04T09:00:00+00:00',
+                                  '2026-10-04T09:00:00.125Z', '2026-10-04T09:00:00.125+00:00',
+                                  '2026-10-04T09:00:00.1234567Z',
+                                  '2026-10-04T09:00:00+00:00:00.0000000'])
+def test_valid_approved_source_and_utc_context_is_preserved(candidate, cases, as_of):
+    case = _one_identity(cases)
+    case['metadata']['as_of'] = as_of
+    case['metadata']['snapshot_id'] = 'B2_UTC_CONTEXT_' + hashlib.sha256(as_of.encode('utf-8')).hexdigest()[:24]
+    source = case['retained_evidence']['retained_sources'][0]
+    case = _bind_fresh_case(case, [[source['identity_record_id'], source['provenance_ref'], 0]],
+                            allocate_snapshot=False)
+    before = copy.deepcopy(case)
+    report = _assess(candidate, case)
+    assert case['metadata']['source'] == 'MOEX_ISS_RAW'
+    assert type(case['metadata']['contract_version']) is int and case['metadata']['contract_version'] == 1
+    assert type(case['spec']['contract_version']) is int and case['spec']['contract_version'] == 1
+    assert report['raw_assessment']['status'] == 'PASS'
+    assert report['eligibility']['status'] == 'PASS'
+    assert report['quality_result']['accepted_rows'] == 1
+    assert report['quality_result']['as_of'] == as_of
+    assert report['quality_result']['run_id'] == before['metadata']['run_id']
+    assert report['quality_result']['status'] == 'NOT_VERIFIED'
+    assert report['raw_assessment']['source_verification'] == 'NOT_VERIFIED'
+    assert case == before
+
+
 def test_e19_fixed_authority_and_candidate_have_distinct_populations(candidate, cases):
     case = copy.deepcopy(cases['e19'])
     report = _assess(candidate, case)
@@ -212,7 +412,7 @@ def test_missing_immutable_lineage_is_not_verified(candidate, cases, missing):
 
 
 @pytest.mark.parametrize('field', ['snapshot_id', 'dataset_id', 'schema_version'])
-@pytest.mark.parametrize('missing', [None, ''])
+@pytest.mark.parametrize('missing', [None, '', '   '])
 def test_matching_missing_context_is_unverified_even_with_consistent_frozen_digests(candidate, cases, field, missing):
     case = _one_identity(cases)
     case['metadata'][field] = missing
