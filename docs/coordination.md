@@ -725,3 +725,27 @@ side effects require a separate owner CI grant. Old LNX-03 grants are revoked;
 the expired night budget must not be reused or extended. Local portable evidence
 does not replace Linux native acceptance. No merge, Stage B, issue closure,
 production, staging or remote publication is authorized.
+
+## LNX-03 Stage A — PR #104 R3 constructor coverage grant
+
+The owner accepted the R2 preflight BLOCKED report as a native coverage gap and
+authorized a minimal real-constructor regression within the same twelve paths.
+R2 HEAD 5281b05301dbe190da676602d6b179a1e1e8a2ef and all historical evidence remain
+preserved. Fresh main 59f2f57c8972fd4dd40f1843a24503aa906f6300 has 26 disjoint
+changes with no closed-input overlap; immutable base remains
+c98664b7da20375cf0bfed8125a94d64008d0d63. No main integration/rebase is required.
+
+The real missing-cwd Popen oracle is the final test in the fixed native runner.
+Independent fork/reap/FD/F-LOG proof does not fabricate an application worker
+owner, exit or final. Its INCOMPLETE marker remains and further admission refuses.
+The original thirteen native scenarios and twenty-one existing native tests are
+preserved; actual collection determines the new counts. No result schema expands.
+
+The fresh grant permits one source commit and normal branch push plus one Linux
+discovery/authorized-attempt-2 cycle, and at most one additional minimal local
+repair/exact-SHA cycle. Conditional supervised namespace use still requires an
+attested rootless permission denial and privilege drop. Revoke all three LNX-03
+grants in finally with actual readback. Existing Windows/notebook/syntax triggers
+are authorized; cancelled/skipped jobs are not PASS. Old revoked grants and night
+counters are not reused. Stage B, main merge/push, issue closure, production and
+remote publication remain unauthorized; the separate main recovery HOLD is kept.

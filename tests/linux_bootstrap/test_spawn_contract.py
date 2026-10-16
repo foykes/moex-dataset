@@ -1,7 +1,9 @@
 """Native oracles: refusing Windows is not Linux runtime acceptance."""
 
 import errno
+import hashlib
 import importlib
+import json
 import os
 from pathlib import Path
 import re
@@ -462,6 +464,338 @@ def test_native_partial_launch_preserves_real_outcomes_and_owned_fds(
             else:
                 # A failed subject may have closed/reused the integer. Never
                 # close another owner's replacement while cleaning this test.
+                current = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
+                if current == foreign_identity:
+                    os.close(foreign)
+        if verified and all(process.returncode is not None for process in processes):
+            assert root.resolve().parent == parent
+            shutil.rmtree(root)
+
+
+def test_native_real_constructor_error_retains_unknown_until_fixture_exit(
+        native_guard, repo, monkeypatch, request):
+    """A real failed constructor is not a missing-object no-birth proof.
+
+    This must be the final collected test. The supervisor's conservative marker
+    stays installed, and a subsequent API call must refuse. The independent
+    observers establish the failed constructor's actual internal child reap;
+    they never supply that PID or exit to the supervisor's worker ledger.
+    """
+    import run_logging
+
+    assert request.session.items[-1] is request.node
+    assert native_guard._unsettled_transports == []
+    subprocess_source = Path(subprocess.__file__).read_bytes().replace(b'\r\n', b'\n')
+    assert hashlib.sha256(subprocess_source).hexdigest() == (
+        '7fa4af83422024a19e64a80937f6c8094244c3397372a495b348dfbe44a5dd72')
+    assert type(subprocess.Popen) is type and subprocess.Popen.__module__ == 'subprocess'
+    assert subprocess._fork_exec.__module__ == '_posixsubprocess'
+    assert os.waitpid.__module__ == 'posix' and os.close.__module__ == 'posix'
+    configured = os.environ.get('LNX03_NATIVE_ROOT')
+    assert configured
+    parent = Path(configured)
+    assert parent.is_absolute() and parent.resolve() == parent and parent.is_dir()
+    root = parent / ('constructor-' + uuid.uuid4().hex)
+    root.mkdir(mode=0o700)
+    missing_cwd = root / 'missing-ftp-cwd'
+    assert not missing_cwd.exists()
+    state = dict(armed=False, active_role=None, active_owner=None,
+                 constructor_active=False, entered=False, raised=False,
+                 google_identity=None, ftp_fork_pid=None, error_errno=None,
+                 trace=[], births={}, owners={}, forks=[], waits=[],
+                 outcomes=[], reports=[], closes=[], close_errors=[])
+    processes = []
+    foreign = None
+    foreign_identity = None
+    verified = False
+    real_launch = native_guard._launch
+    real_popen = subprocess.Popen
+    real_fork_exec = subprocess._fork_exec
+    real_waitpid = os.waitpid
+    real_close = os.close
+    real_identity = native_guard._process_identity
+    real_outcome = run_logging.record_worker_outcome
+    real_finalize = run_logging.finalize_logging
+
+    def role_from_ticket(path):
+        role = Path(path).stem
+        assert role in {'tracker', 'google', 'ftp'}
+        assert Path(path).is_relative_to(root)
+        return role
+
+    def observe_launch(actual_repo, ticket, descriptors, *, owner):
+        assert actual_repo == repo
+        role = role_from_ticket(ticket)
+        previous = state['active_role'], state['active_owner']
+        state['active_role'], state['active_owner'] = role, owner
+        if state['armed']:
+            state['owners'][role] = owner
+        try:
+            return real_launch(actual_repo, ticket, descriptors, owner=owner)
+        finally:
+            state['active_role'], state['active_owner'] = previous
+
+    def observe_identity(pid):
+        identity = real_identity(pid)
+        if state['armed'] and state['active_role'] == 'google':
+            process = state['births']['google']
+            assert process.pid == pid and state['active_owner']['process'] is process
+            assert type(state['active_owner']['pidfd']) is int
+            assert identity['parent_pid'] == os.getpid()
+            assert identity['session'] == pid
+            state['google_identity'] = dict(identity)
+            state['trace'].append('GOOGLE_IDENTITY_CONFIRMED')
+        return identity
+
+    def observe_fork_exec(*arguments, **options):
+        role = state['active_role']
+        if state['armed'] and role == 'ftp':
+            assert state['constructor_active'] and state['entered']
+            assert not options and len(arguments) == 22
+            assert tuple(arguments[0]) == state['ftp_command']
+            assert tuple(arguments[1]) == (os.fsencode(state['ftp_command'][0]),)
+            assert arguments[2] is True and arguments[15] is True
+            assert Path(arguments[4]) == missing_cwd and arguments[21] is None
+            assert set(arguments[3]) == set(state['ftp_pass_fds']) | {arguments[13]}
+        pid = real_fork_exec(*arguments, **options)
+        if state['armed']:
+            assert role in {'tracker', 'google', 'ftp'} and type(pid) is int and pid > 1
+            state['forks'].append((role, pid))
+            if role == 'ftp':
+                assert state['ftp_fork_pid'] is None
+                state['ftp_fork_pid'] = pid
+                state['trace'].append('FTP_FORK_EXEC_RETURNED')
+        return pid
+
+    def observe_waitpid(pid, options):
+        result = real_waitpid(pid, options)
+        if (state['armed'] and state['constructor_active']
+                and pid == state['ftp_fork_pid']):
+            assert options == 0 and result[0] == pid
+            state['waits'].append(result)
+            state['trace'].append('FTP_WAITPID_RETURNED')
+        return result
+
+    def observe_close(descriptor):
+        try:
+            result = real_close(descriptor)
+        except OSError as error:
+            if state['armed']:
+                state['close_errors'].append((descriptor, error.errno))
+            raise
+        if state['armed']:
+            state['closes'].append(descriptor)
+        return result
+
+    def observe_popen(command, *arguments, **options):
+        assert not arguments
+        role = role_from_ticket(command[-1])
+        expected = (str(Path(sys.executable).absolute()), '-I', '-S', '-B', '-X', 'utf8',
+                    str(repo / 'tests/linux_bootstrap/native_worker.py'), '--ticket', str(command[-1]))
+        assert tuple(command) == expected
+        assert set(options) == {'executable', 'cwd', 'env', 'stdin', 'stdout', 'stderr',
+                                'close_fds', 'pass_fds', 'start_new_session'}
+        assert options['executable'] == expected[0] and options['cwd'] == repo
+        assert all(options[key] == subprocess.DEVNULL for key in ('stdin', 'stdout', 'stderr'))
+        assert options['close_fds'] is True and options['start_new_session'] is True
+        assert type(options['pass_fds']) is tuple
+        if state['armed'] and role == 'ftp':
+            google = state['births']['google']
+            assert state['google_identity'] is not None
+            assert state['owners']['google']['identity'] == state['google_identity']
+            assert state['owners']['google']['process'] is google
+            assert not missing_cwd.exists() and missing_cwd.parent == root
+            state['entered'] = True
+            state['constructor_active'] = True
+            state['ftp_command'] = expected
+            state['ftp_pass_fds'] = options['pass_fds']
+            state['trace'].append('FTP_REAL_CONSTRUCTOR_ENTERED')
+            altered = dict(options, cwd=missing_cwd)
+            assert {key: value for key, value in altered.items() if key != 'cwd'} == {
+                key: value for key, value in options.items() if key != 'cwd'}
+            try:
+                process = real_popen(command, **altered)
+            except OSError as error:
+                assert type(error) is FileNotFoundError and error.errno == errno.ENOENT
+                assert Path(error.filename) == missing_cwd
+                assert state['ftp_fork_pid'] is not None and len(state['waits']) == 1
+                state['raised'] = True
+                state['error_errno'] = error.errno
+                state['trace'].append('FTP_REAL_CONSTRUCTOR_RAISED')
+                raise
+            finally:
+                state['constructor_active'] = False
+        else:
+            process = real_popen(command, **options)
+        processes.append(process)
+        if state['armed']:
+            state['births'][role] = process
+            if role == 'google':
+                state['trace'].append('GOOGLE_POPEN_RETURNED')
+        return process
+
+    def observe_outcome(session, role, **options):
+        result = real_outcome(session, role, **options)
+        if state['armed']:
+            state['outcomes'].append((role, dict(session['_outcomes'][role])))
+        return result
+
+    def observe_finalize(session, **options):
+        report = real_finalize(session, **options)
+        if state['armed']:
+            # No session, Queue or bootstrap reference escapes this callback.
+            state['reports'].append(report)
+        return report
+
+    monkeypatch.setattr(native_guard, '_launch', observe_launch)
+    monkeypatch.setattr(native_guard, '_process_identity', observe_identity)
+    monkeypatch.setattr(subprocess, 'Popen', observe_popen)
+    monkeypatch.setattr(subprocess, '_fork_exec', observe_fork_exec)
+    monkeypatch.setattr(os, 'waitpid', observe_waitpid)
+    monkeypatch.setattr(os, 'close', observe_close)
+    monkeypatch.setattr(run_logging, 'record_worker_outcome', observe_outcome)
+    monkeypatch.setattr(run_logging, 'finalize_logging', observe_finalize)
+    try:
+        warm = native_guard.run_native_case('success', repo, root)
+        assert warm['status'] == 'PASS' and warm['application_exit'] == 0
+        for process in processes:
+            _native_assert_reaped(process)
+        assert native_guard._unsettled_transports == []
+        foreign = os.open(root / 'unrelated-fd', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        info = os.fstat(foreign)
+        foreign_identity = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
+        before_fds = _native_fd_inventory()
+        assert before_fds[foreign] == foreign_identity
+        state['armed'] = True
+        record = native_guard.run_native_case('success', repo, root)
+        assert state['entered'] and state['raised'] and state['error_errno'] == errno.ENOENT
+        assert state['trace'] == [
+            'GOOGLE_POPEN_RETURNED', 'GOOGLE_IDENTITY_CONFIRMED',
+            'FTP_REAL_CONSTRUCTOR_ENTERED', 'FTP_FORK_EXEC_RETURNED',
+            'FTP_WAITPID_RETURNED', 'FTP_REAL_CONSTRUCTOR_RAISED',
+        ]
+        assert set(state['births']) == {'tracker', 'google'}
+        assert [role for role, pid in state['forks']] == ['tracker', 'google', 'ftp']
+        for role in ('tracker', 'google'):
+            assert dict(state['forks'])[role] == state['births'][role].pid
+        failed_pid = state['ftp_fork_pid']
+        assert type(failed_pid) is int and failed_pid not in {
+            process.pid for process in processes}
+        assert len(state['waits']) == 1
+        waited_pid, wait_status = state['waits'][0]
+        assert waited_pid == failed_pid and os.WIFEXITED(wait_status)
+        failed_exit = os.waitstatus_to_exitcode(wait_status)
+        assert failed_exit != 0
+        with pytest.raises(ChildProcessError):
+            os.waitid(os.P_PID, failed_pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        for process in processes:
+            _native_assert_reaped(process)
+
+        assert set(record) == CASE_FIELDS
+        assert record['status'] == 'INCOMPLETE' and record['application_exit'] == 1
+        assert record['failure_code'] == 'LNX03_NATIVE_CLEANUP_INCOMPLETE'
+        assert record['two_workers_registered'] is True and record['all_workers_settled'] is False
+        assert len(record['worker_records']) == 1
+        google = state['births']['google']
+        worker = record['worker_records'][0]
+        assert worker['role'] == 'google' and worker['pid'] == google.pid
+        assert worker['exitcode'] == google.returncode and worker['reaped'] is True
+        assert state['owners']['google']['process'] is google
+        ftp_owner = state['owners']['ftp']
+        assert ftp_owner['birth_attempted'] is True
+        assert all(ftp_owner[key] is None for key in ('process', 'pidfd', 'identity', 'witness'))
+        assert len(native_guard._unsettled_transports) == 1
+        retained = native_guard._unsettled_transports[0]
+        assert set(retained) == {'unknown_births'} and len(retained['unknown_births']) == 1
+        assert retained['unknown_births'][0] is ftp_owner
+        assert len(state['reports']) == 1
+        report = state['reports'][0]
+        assert report['execution_outcome'] == 'FAILED' and report['exit_status'] == 1
+        assert report['delivery_outcome'] == 'INCOMPLETE' and report['storage_sealed'] is False
+        assert set(report['worker_outcomes']) == {'google'}
+        outcome = report['worker_outcomes']['google']
+        assert outcome['started'] is True and outcome['exit_status'] == google.returncode
+        assert state['outcomes'] and all(role == 'google' and value == outcome
+                                         for role, value in state['outcomes'])
+        finals = {row['worker_id']: row['final_report']
+                  for row in report['expected_producers'] if row['worker_id'] != 'parent'}
+        assert set(finals) == {'google', 'ftp'} and finals['ftp'] is None
+        assert record['logging'] == {
+            'delivery_outcome': report['delivery_outcome'], 'storage_sealed': report['storage_sealed'],
+            'exit_status': report['exit_status'],
+            'worker_final_count': sum(value is not None for value in finals.values()),
+        }
+        tracker = state['births']['tracker']
+        assert record['auxiliary']['pid'] == tracker.pid
+        assert record['auxiliary']['settled'] is True and record['auxiliary']['reaped'] is True
+        assert record['auxiliary']['exitcode'] == tracker.returncode == 0
+        assert not any(thread.is_alive() and thread.name in {'FLOG-writer', 'QueueFeederThread'}
+                       for thread in native_guard.threading.enumerate())
+        assert _native_fd_inventory() == before_fds
+        assert state['closes'] and state['close_errors'] == []
+        before_refusal = (len(processes), len(state['forks']), len(state['outcomes']),
+                          len(state['reports']), len(state['closes']), tuple(root.iterdir()))
+        with pytest.raises(native_guard.NativeAdmissionError) as refusal:
+            native_guard.run_native_case('success', repo, root)
+        assert refusal.value.args == ('LNX03_NATIVE_FOREIGN_TRACKER',)
+        assert before_refusal == (len(processes), len(state['forks']), len(state['outcomes']),
+                                  len(state['reports']), len(state['closes']), tuple(root.iterdir()))
+        assert native_guard._unsettled_transports == [retained]
+        assert retained['unknown_births'][0] is ftp_owner
+        assert _native_fd_inventory() == before_fds
+        assert state['close_errors'] == []
+        witness = dict(schema='lnx03-constructor-oracle-v1', status='PASS',
+            source_sha=os.environ['LNX03_SOURCE_SHA'], constructor_entered=True,
+            google_identity_before_constructor=True, fork_pid=failed_pid,
+            waitpid_pid=waited_pid, wait_status=wait_status, internal_exit=failed_exit,
+            internal_reaped=True, error_errno=state['error_errno'],
+            google_pid=google.pid, google_exit=google.returncode, google_reaped=True,
+            tracker_pid=tracker.pid, tracker_exit=tracker.returncode, tracker_reaped=True,
+            simulated_status=record['status'], simulated_application_exit=record['application_exit'],
+            logging_started=True, logging_google_exit=outcome['exit_status'],
+            logging_delivery=report['delivery_outcome'], logging_sealed=report['storage_sealed'],
+            worker_final_count=record['logging']['worker_final_count'],
+            ftp_outcome_omitted=True, ftp_final_absent=True, fd_inventory_equal=True,
+            close_error_count=len(state['close_errors']),
+            unknown_retained=True, later_refused=True, no_later_birth=True)
+        assert re.fullmatch('[0-9a-f]{40}', witness['source_sha'])
+        # This is a local primitive witness, not an additional exported case.
+        # Native proof is bound to this exact test source and its pytest result.
+        assert json.loads(json.dumps(witness, sort_keys=True,
+                          separators=(',', ':'), allow_nan=False)) == witness
+        verified = True
+    finally:
+        # This safety net owns only returned real Popen objects. It must not
+        # consume/retry the failed constructor child's independently seen reap.
+        deadline = time.monotonic() + 5
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=min(1, max(0, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=max(0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    pass
+        if foreign is not None and foreign_identity is not None:
+            try:
+                info = os.fstat(foreign)
+            except OSError as error:
+                if error.errno != errno.EBADF:
+                    raise
+            else:
                 current = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
                 if current == foreign_identity:
                     os.close(foreign)

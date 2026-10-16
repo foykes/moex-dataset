@@ -296,3 +296,31 @@ The R2 correction is local-only until a fresh owner exact-SHA grant covers push,
 Linux native CI and Windows mandatory side effects. Previous revoked grants and
 the expired night budget provide no authority. New-SHA hosted evidence remains
 NOT VERIFIED until that execution and independent review.
+
+## PR #104 R3 real-constructor oracle
+
+The additional final native test calls the real pinned CPython `Popen` with only
+FTP's `cwd` changed to a fixed absent leaf in its disposable fixture. Google
+must already have a returned Popen and verified process identity. Delegating
+observers witness the actual internal fork PID, consuming `waitpid` and ENOENT
+boundary; WNOWAIT/ECHILD confirms that reap without inventing a returned worker.
+FD identity balance, actual close errors, peer/tracker exits and real F-LOG
+outcomes are checked before independent fixture cleanup.
+
+The supervisor still reports INCOMPLETE, omits an unknown FTP outcome/final and
+retains its uncertainty marker. The test enforces the final collected position
+in the fixed runner, proves subsequent admission refuses without another birth,
+and leaves that marker through runner exit. It never clears uncertainty to let
+another native case pass. Test PASS describes this negative oracle only.
+
+The original thirteen case catalogue and result schema remain unchanged. The
+new primitive witness is asserted locally inside the native test, not separately
+exported; acceptance binds its full execution to exact source, actual collection
+and zero failed/skipped/deselected tests. Old pre-constructor refusals and portable
+doubles remain separate checks. Windows local PASS is not Linux-native evidence.
+
+The owner's R3 grant permits one new source commit and hosted discovery/attempt-2
+cycle, plus at most one minimal repair and fresh exact-SHA cycle for one local
+failure cause. Each cycle has its own grants and mandatory revocation/readback.
+Automatic Windows/notebook/syntax side effects are authorized. No old night
+budget, workflow, lock, F-LOG API or production interface is changed or reused.
