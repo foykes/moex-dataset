@@ -605,3 +605,147 @@ results stay NOT AVAILABLE. Readiness is READY_FOR_INDEPENDENT_CODE_REVIEW only
 after all required gates pass; no merge, issue closure, production or next slice
 is authorized. Rollback is a separately reviewed revert of this helper-only PR,
 preserving outputs, foreign/orphan temps, environments, worktrees and evidence.
+
+## LNX-03 Stage A — direct owner handoff and local implementation
+
+On 2026-10-15 the owner directly granted H and Stage A implementation for
+`LINUX_FIRST_FEASIBILITY / PLAN_V1.1`, with local offline setup/checks and a
+local commit. This append records that grant without altering historical
+reservations. LNX/coordinator transfers the closed application consumer only;
+F3/coordinator transfers the separate Linux runner/guard only. Existing
+LNX-02 authority, modes and schemas, Windows lanes and Linux locks stay intact.
+
+Approved base: `e411a154b47446997fd4697c5cb4d7cc604519bf`.
+Approved tree: `307e4b768427d3269318285b0745ba3b77a7558c`.
+Branch/worktree: `codex/lnx-03-d2-bootstrap` / `.worktrees/lnx-03-d2-bootstrap`.
+The reviewed drift from `dab1ad3b6328ccdce1da7d636c36720f755d227a` consists of
+six C3 paths outside this allowlist. Further compatible drift must be recorded;
+shared-interface conflicts stop work without automatic rebase.
+
+The exact 12-path write allowlist is:
+
+```text
+.github/lnx02/verify_env.py
+.github/workflows/d2-linux-offline.yml
+tools/offline_linux.py
+tools/offline_guard_linux.py
+tests/linux_bootstrap/conftest.py
+tests/linux_bootstrap/native_worker.py
+tests/linux_bootstrap/test_environment_contract.py
+tests/linux_bootstrap/test_admission.py
+tests/linux_bootstrap/test_spawn_contract.py
+docs/d2_linux_ci.md
+docs/testing.md
+docs/coordination.md
+```
+
+The [Stage A contract](d2_linux_ci.md) defines the separate LNX-03 admission,
+network SETUP and supervised-namespace grants, exact source/run/role tickets,
+owned disposable environments, immutable offline execution and sanitized
+result export. It does not expand legacy LNX-02 grants into a launcher. Real
+F-LOG transport, FD ownership, native process lifecycle and kernel network
+isolation remain pending until an authorized hosted run. Local Windows checks
+must never be labeled Linux runtime PASS. The shared helper's legacy
+source-bound regressions are required before merge; real LNX-02 verify on the
+exact post-merge main is a separate grant/acceptance gate before Stage B.
+
+First push, repository grant activation, hosted SETUP, supervised namespace and
+GitHub Actions network execution are NOT AUTHORIZED by this local grant. The
+executor stops after a clean local commit and an actual
+`FIRST_PUSH_GRANT_REQUEST`, including workflow blob/source identities and
+side-effect Windows workflow gates. No automatic grant/run-number updates,
+reruns, PR merge, issue closure or deployment are allowed.
+
+Windows D2 `codex/mds-d2-01`, its uncommitted changes, immutable environment,
+221-test ledger, original red-before evidence and BLOCKED handoffs remain
+untouched. Stage B is NOT AUTHORIZED and requires fresh review/H plus the owner
+platform-entrypoint decision. `run_logging.py`, `dataset_io.py`, production
+settings, datasets, MOEX/Google/FTP/staging writes, D4/D5/D6 and complete
+#47/#78/#66 integration are outside Stage A. Rollback is a separately reviewed
+thematic revert preserving LNX-02, foreign worktrees and all existing evidence.
+## LNX-03 Stage A — bounded owner night grant amendment
+
+On 2026-10-15 the owner superseded the local-only FIRST_PUSH_GRANT_REQUEST STOP
+with a bounded night execution grant, ending 2026-10-16 09:00 MSK. The same
+12-path H remains valid; this append does not rewrite historical reservations
+or grants. Windows D2 and all original evidence remain frozen and preserved.
+
+Original candidate 15a7b6974b521e62d414a956f7f751108a24742a and original base
+e411a154b47446997fd4697c5cb4d7cc604519bf remain in ancestry. The authorized
+compatible main merge used c98664b7da20375cf0bfed8125a94d64008d0d63 and produced
+integration checkpoint 70a6dbd502be500eb908ee1905ac383d53088d3b. Its five B1
+paths do not overlap the Stage A/dependency set. Every subsequent tested source
+requires new exact-HEAD checks and grants; no old evidence becomes new-SHA PASS.
+
+The narrow LNX-03 amendment admits only a clean exact SHA with immutable
+approved-base ancestry, A/M-only candidate diff inside 12 paths and initial
+observed-main drift disjoint from the closed 22 dependencies documented in
+[the contract](d2_linux_ci.md). Legacy source/grant/schema rules are unchanged.
+Disjoint later main movement cannot replace the approved base or invalidate
+actual completed exact-SHA evidence. Incompatible interface drift still blocks.
+
+First publication of each source is an ungranted attempt-one identity discovery
+and must refuse before checkout/SETUP. The authorized external controller uses
+actual Actions API identity, not a predicted number, to write and read back the
+15-key LNX-03 grants containing run_id and exact attempt two for that same run.
+Only this granted rerun is admitted. CI retains contents: read and cannot write
+grants. Variables write authority must be verified externally; missing authority
+blocks hosted work. Revoke all three grants in finally and verify readback;
+revocation failure requires a separate security BLOCKED handoff.
+
+Authorized hosted work is the existing LNX-03 ubuntu-24.04 workflow, fixed
+public hash-locked wheel SETUP and conditional source-attested supervised netns
+after independently proven rootless permission denial. Existing Windows F1/F2/
+F-LOG/F3 and notebook side effects are permitted without modifying F3 authority.
+No new workflow, arbitrary download, privileged launcher or dependency change
+is allowed. Both discovery and rerun count toward six Linux executions; limits
+also remain four repairs, three integrations, one draft PR and two additional
+Windows checks. Failure evidence and independent assertions must be preserved.
+
+Only after required hosted gates, exact-HEAD checks and self-review may one
+draft Stage A PR use Refs #39, #41, #47, #67, #78, without closing keywords.
+Stage B, automatic PR merge, issue closure, production/staging, MOEX/Google/FTP
+writes, deployments and cron remain unauthorized. Rollback is separately
+controlled and preserves foreign worktrees, environments and every evidence set.
+
+## LNX-03 Stage A — PR #104 CODE_CHANGES R2
+
+The owner's independent review requests two local P1 corrections: truthful
+F-LOG outcomes after a partial fixture launch and complete ownership of bootstrap
+and witness pipe FDs. This is a correction inside the existing twelve-path H;
+`run_logging.py`, legacy grants/locks, Windows tools and Windows D2 remain
+unchanged. Preserve the accepted 95a563752f9bee186fc27e1ef2711c67879e23f3 evidence
+and integrated base c98664b7da20375cf0bfed8125a94d64008d0d63. Observed main
+945c424ecbf7bdd4459de50711929e21e6a3aeb4 has only disjoint A2 drift; no automatic
+main integration or rebase is authorized or performed.
+
+Local minimal correction, fault regressions and self-review are authorized.
+New exact-SHA push/PR update, hosted Linux native execution and Windows mandatory
+side effects require a separate owner CI grant. Old LNX-03 grants are revoked;
+the expired night budget must not be reused or extended. Local portable evidence
+does not replace Linux native acceptance. No merge, Stage B, issue closure,
+production, staging or remote publication is authorized.
+
+## LNX-03 Stage A — PR #104 R3 constructor coverage grant
+
+The owner accepted the R2 preflight BLOCKED report as a native coverage gap and
+authorized a minimal real-constructor regression within the same twelve paths.
+R2 HEAD 5281b05301dbe190da676602d6b179a1e1e8a2ef and all historical evidence remain
+preserved. Fresh main 59f2f57c8972fd4dd40f1843a24503aa906f6300 has 26 disjoint
+changes with no closed-input overlap; immutable base remains
+c98664b7da20375cf0bfed8125a94d64008d0d63. No main integration/rebase is required.
+
+The real missing-cwd Popen oracle is the final test in the fixed native runner.
+Independent fork/reap/FD/F-LOG proof does not fabricate an application worker
+owner, exit or final. Its INCOMPLETE marker remains and further admission refuses.
+The original thirteen native scenarios and twenty-one existing native tests are
+preserved; actual collection determines the new counts. No result schema expands.
+
+The fresh grant permits one source commit and normal branch push plus one Linux
+discovery/authorized-attempt-2 cycle, and at most one additional minimal local
+repair/exact-SHA cycle. Conditional supervised namespace use still requires an
+attested rootless permission denial and privilege drop. Revoke all three LNX-03
+grants in finally with actual readback. Existing Windows/notebook/syntax triggers
+are authorized; cancelled/skipped jobs are not PASS. Old revoked grants and night
+counters are not reused. Stage B, main merge/push, issue closure, production and
+remote publication remain unauthorized; the separate main recovery HOLD is kept.
