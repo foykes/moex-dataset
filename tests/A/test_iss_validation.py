@@ -29,7 +29,7 @@ DTYPES = ['float64'] * 5 + ['int64', 'object', 'object', 'object']
 SCHEMA_CODE = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
 DECODE_CODE = 'A2_ISS_RESPONSE_DECODE_ERROR'
 HTTPS_QUERY = ('https://iss.moex.com/iss/engines/stock/markets/shares/securities/'
-               'FIXTURE_SHARE/candles.csv?from=2024-02-29&till=2024-03-01&interval=24')
+               'FIXTURE_SHARE/candles.csv?from=2024-02-29&till=2024-03-01&interval=24&start=0')
 
 
 def response(body=BODY, content_type='text/csv', status=200):
@@ -81,7 +81,7 @@ def changed_row(column, value):
 
 
 def assert_refusal(gathering, monkeypatch, body, content_type='text/csv'):
-    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type), response('candles\n' + HEADER)])
     with pytest.raises((ValueError, csv.Error)) as captured:
         query(gathering, max_retries=1)
     if type(captured.value) is ValueError:
@@ -112,7 +112,7 @@ def assert_refusal(gathering, monkeypatch, body, content_type='text/csv'):
 ])
 def test_accepted_profile_preserves_literal_values_dtypes_and_index(
         gathering, monkeypatch, body, content_type, event_log):
-    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type), response('candles\n' + HEADER)])
     result = query(gathering, logging_context=event_log.context)
     assert result.columns.tolist() == OUTPUT_COLUMNS
     assert result.values.tolist() == ROWS
@@ -122,16 +122,17 @@ def test_accepted_profile_preserves_literal_values_dtypes_and_index(
         ('FIXTURE_SHARE', 24, '2024-02-29 00:00:00'),
         ('FIXTURE_SHARE', 24, '2024-03-01 00:00:00'),
     ]
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
-    assert sleeps == [3]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
+                     (HTTPS_QUERY.replace('start=0', 'start=2'), {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
+    assert sleeps == [3, 3]
     returned = event_log.events[-1]
     assert (returned['event'], returned['outcome']) == (
         'a2_query_returned', 'QUERY_RETURNED_UNVALIDATED')
     assert returned['counts'] == {
         'rows_received': 2, 'rows_accepted': None, 'rows_quarantined': None,
-        'pages': None, 'instruments': None,
+        'pages': 2, 'instruments': None,
         'null_reasons': {'rows_accepted': 'NOT_ASSESSED', 'rows_quarantined': 'NOT_ASSESSED',
-                         'pages': 'NOT_PAGINATION_EVIDENCE', 'instruments': 'NOT_ASSESSED'},
+                         'instruments': 'NOT_ASSESSED'},
     }
 
 
@@ -150,7 +151,7 @@ def test_accepted_profile_preserves_literal_values_dtypes_and_index(
 ])
 def test_numeric_inference_and_quality_boundaries_preserve_raw_values(
         gathering, monkeypatch, column, token, expected, dtypes):
-    calls, sleeps = transport(gathering, monkeypatch, [response(changed_row(column, token))])
+    calls, sleeps = transport(gathering, monkeypatch, [response(changed_row(column, token)), response('candles\n' + HEADER)])
     result = query(gathering)
     literal = [list(row) for row in ROWS]
     literal[0][RAW_COLUMNS.index(column)] = expected
@@ -160,7 +161,7 @@ def test_numeric_inference_and_quality_boundaries_preserve_raw_values(
     assert result.index.tolist() == [0, 1]
     if token == '-0.0':
         assert math.copysign(1.0, result.iloc[0]['open']) == -1.0
-    assert len(calls) == 1 and sleeps == [3]
+    assert len(calls) == 2 and sleeps == [3, 3]
 
 
 @pytest.mark.parametrize('body,content_type', [
@@ -280,7 +281,7 @@ def test_rejects_response_local_duplicate_begin(gathering, monkeypatch, tail):
 ])
 def test_explicit_structural_empty_keeps_legacy_shape_and_unvalidated_outcome(
         gathering, monkeypatch, event_log, body, content_type):
-    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type), response('candles\n' + HEADER)])
     result = query(gathering, logging_context=event_log.context)
     assert result.empty and result.columns.tolist() == [] and result.index.tolist() == []
     assert len(calls) == 1 and sleeps == [3]
@@ -290,23 +291,24 @@ def test_explicit_structural_empty_keeps_legacy_shape_and_unvalidated_outcome(
     assert returned['counts']['rows_received'] == 0
     assert returned['counts']['rows_accepted'] is None
     assert returned['counts']['rows_quarantined'] is None
-    assert returned['counts']['pages'] is None and returned['counts']['instruments'] is None
+    assert returned['counts']['pages'] == 1 and returned['counts']['instruments'] is None
     assert returned['counts']['null_reasons'] == {
         'rows_accepted': 'NOT_ASSESSED', 'rows_quarantined': 'NOT_ASSESSED',
-        'pages': 'NOT_PAGINATION_EVIDENCE', 'instruments': 'NOT_ASSESSED',
+        'instruments': 'NOT_ASSESSED',
     }
 
 
 def test_bond_route_keeps_request_bound_identity_without_payload_identity_claim(
         gathering, monkeypatch):
-    calls, sleeps = transport(gathering, monkeypatch, [response()])
+    calls, sleeps = transport(gathering, monkeypatch, [response(), response('candles\n' + HEADER)])
     result = gathering.moex_query('FIXTURE_BOND', 'Облигации', '2024-02-29', '2024-03-01', 24)
     assert result.values.tolist() == [row[:-1] + ['FIXTURE_BOND'] for row in ROWS]
     assert result.columns.tolist() == OUTPUT_COLUMNS and result.index.tolist() == [0, 1]
     assert result.dtypes.astype(str).tolist() == DTYPES
     assert calls == [(HTTPS_QUERY.replace('/shares/', '/bonds/').replace('FIXTURE_SHARE', 'FIXTURE_BOND'),
-                     {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
-    assert sleeps == [3]
+                     {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
+                     (HTTPS_QUERY.replace('/shares/', '/bonds/').replace('FIXTURE_SHARE', 'FIXTURE_BOND').replace('start=0', 'start=2'), {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
+    assert sleeps == [3, 3]
 
 
 @pytest.mark.parametrize('body,content_type', [
@@ -319,7 +321,7 @@ def test_bond_route_keeps_request_bound_identity_without_payload_identity_claim(
 ])
 def test_decode_failure_keeps_native_primary_and_safe_closed_record(
         gathering, monkeypatch, event_log, body, content_type):
-    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type), response('candles\n' + HEADER)])
     original = gathering._a2_diagnostic
     observed = []
 
@@ -338,14 +340,14 @@ def test_decode_failure_keeps_native_primary_and_safe_closed_record(
     assert (final['event'], final['outcome'], final['error']['code'], final['error']['category']) == (
         'a2_query_failed', 'RESPONSE_REJECTED', DECODE_CODE, 'SOURCE')
     assert final['error']['final'] is True and final['error']['retryable'] is False
-    assert final['retries'] == {'attempt': 1, 'limit': 1}
+    assert final['retries'] == {'attempt': 1, 'limit': 1000}
     assert final['fields'] == {}
 
 
 def test_schema_failure_is_terminal_without_header_rotation_or_backoff(
         gathering, monkeypatch, event_log):
     invalid = changed_row('open', 'INVALID_NUMBER')
-    calls, sleeps = transport(gathering, monkeypatch, [response(invalid)] * 5 + [response()])
+    calls, sleeps = transport(gathering, monkeypatch, [*[response(invalid)] * 5 + [response()], response('candles\n' + HEADER)])
     with pytest.raises(ValueError) as captured:
         query(gathering, logging_context=event_log.context)
     assert captured.value.args == (SCHEMA_CODE,)
@@ -356,7 +358,7 @@ def test_schema_failure_is_terminal_without_header_rotation_or_backoff(
     assert retries == []
     final = event_log.events[-1]
     assert (final['event'], final['outcome']) == ('a2_query_failed', 'RESPONSE_REJECTED')
-    assert final['retries'] == {'attempt': 1, 'limit': 5}
+    assert final['retries'] == {'attempt': 1, 'limit': 5000}
     assert final['error']['code'] == SCHEMA_CODE
     assert final['error']['category'] == 'SOURCE' and final['fields'] == {}
     assert final['error']['final'] is True and final['error']['retryable'] is False
@@ -364,7 +366,7 @@ def test_schema_failure_is_terminal_without_header_rotation_or_backoff(
 
 
 def test_schema_refusal_does_not_consume_success_for_an_independent_query(gathering, monkeypatch):
-    calls, sleeps = transport(gathering, monkeypatch, [response(changed_row('open', 'BAD')), response()])
+    calls, sleeps = transport(gathering, monkeypatch, [response(changed_row('open', 'BAD')), response(), response('candles\n' + HEADER)])
     with pytest.raises(ValueError) as captured:
         query(gathering, max_retries=2)
     assert captured.value.args == (SCHEMA_CODE,)
@@ -374,8 +376,9 @@ def test_schema_refusal_does_not_consume_success_for_an_independent_query(gather
     assert result.values.tolist() == ROWS and result.columns.tolist() == OUTPUT_COLUMNS
     assert result.dtypes.astype(str).tolist() == DTYPES and result.index.tolist() == [0, 1]
     assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
-                     (HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
-    assert sleeps == [3]
+                     (HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
+                     (HTTPS_QUERY.replace('start=0', 'start=2'), {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
+    assert sleeps == [3, 3]
 
 
 @pytest.mark.parametrize('with_context', [False, True], ids=['none', 'context'])
@@ -394,7 +397,7 @@ def test_response_validation_console_and_logger_canaries_remain_safe(
         body = body.encode('utf-8').replace(b'candles\n', b'candles\n\x98', 1)
     elif kind == 'csv':
         body = 'candles\n' + HEADER + '"' + markers[3] + raw_url + '\n'
-    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(body, content_type), response('candles\n' + HEADER)])
     monkeypatch.setattr(gathering, 'header', {'User-Agent': markers[2]})
     event_log.context['_secrets'] += markers
     event_log.context.update(snapshot_id=markers[1], dataset_id=markers[1], file=markers[1])
@@ -447,7 +450,7 @@ def test_response_primary_precedes_failed_diagnostics_without_another_request(
     if kind == 'decode':
         body = body.encode('utf-8').replace(b'candles\n', b'candles\n\x98', 1)
     calls, sleeps = transport(gathering, monkeypatch,
-                             [response(body, 'text/csv; charset=utf-8')] * 2)
+                             [*[response(body, 'text/csv; charset=utf-8')] * 2, response('candles\n' + HEADER)])
     # Representation failures no longer reach the retry-warning path.
     target = 'a2_query_failed'
     original_diagnostic = gathering._a2_diagnostic
@@ -521,7 +524,7 @@ def test_later_invalid_response_prevents_partial_return_and_local_writers(
 
         monkeypatch.setattr(gathering.pd, 'read_csv', read)
     invalid = changed_row('open', 'INVALID_LATER_NUMBER')
-    calls, sleeps = transport(gathering, monkeypatch, [response()] + [response(invalid)] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [*[response(), response('candles\n' + HEADER)] + [response(invalid)] * 5, response('candles\n' + HEADER)])
     context = event_log.context if with_context else None
     with pytest.raises(ValueError) as captured:
         if operation == 'annual':
@@ -533,7 +536,7 @@ def test_later_invalid_response_prevents_partial_return_and_local_writers(
             gathering.data_update([{'interval': 24, 'years': 10, 'filename': 'fixture_v1_previous',
                                     'word': 'часа'}], root, catalogue, snapshot, logging_context=context)
     assert captured.value.args == (SCHEMA_CODE,)
-    assert len(calls) == 2 and sleeps == [3] and writers == []
+    assert len(calls) == 3 and sleeps == [3, 3] and writers == []
     assert all((path.read_bytes(), hashlib.sha256(path.read_bytes()).hexdigest()) == value
                for path, value in previous.items())
     if operation == 'annual':
@@ -550,7 +553,7 @@ def test_later_invalid_response_prevents_partial_return_and_local_writers(
 @pytest.mark.parametrize('year', ['0001', '0999'], ids=['year-0001', 'year-0999'])
 def test_calendar_grammar_does_not_add_a_platform_year_limit(gathering, monkeypatch, year):
     begin = year + '-01-01 00:00:00'
-    calls, sleeps = transport(gathering, monkeypatch, [response(changed_row('begin', begin))])
+    calls, sleeps = transport(gathering, monkeypatch, [response(changed_row('begin', begin)), response('candles\n' + HEADER)])
     result = query(gathering)
     literal = [list(row) for row in ROWS]
     literal[0][6] = begin
@@ -558,4 +561,4 @@ def test_calendar_grammar_does_not_add_a_platform_year_limit(gathering, monkeypa
     assert result.columns.tolist() == OUTPUT_COLUMNS
     assert result.dtypes.astype(str).tolist() == DTYPES
     assert result.index.tolist() == [0, 1]
-    assert len(calls) == 1 and sleeps == [3]
+    assert len(calls) == 2 and sleeps == [3, 3]

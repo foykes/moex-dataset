@@ -21,6 +21,7 @@ CANDLE_CSV = (
     '100.0;101.0;102.0;99.0;202000.0;2000;2024-02-29 00:00:00;2024-02-29 23:59:59\n'
     '101.0;103.0;104.0;100.0;309000.0;3000;2024-03-01 00:00:00;2024-03-01 23:59:59\n'
 )
+EMPTY_CSV = 'candles\nopen;close;high;low;value;volume;begin;end\n'
 CANDLE_COLUMNS = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end', 'ticker']
 CANDLE_ROWS = [
     [100.0, 101.0, 102.0, 99.0, 202000.0, 2000,
@@ -123,7 +124,7 @@ def query(gathering, **kwargs):
 def test_red_permanent_404_does_not_consume_prepared_success(gathering, monkeypatch):
     rejected = response(404, 'A2_REJECTED_BODY')
     unused = response()
-    state = transport(gathering, monkeypatch, [rejected, unused])
+    state = transport(gathering, monkeypatch, [rejected, unused, response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering)
     assert caught.value.response is rejected
@@ -134,7 +135,7 @@ def test_red_permanent_404_does_not_consume_prepared_success(gathering, monkeypa
 
 def test_red_invalid_schema_does_not_consume_prepared_success(gathering, monkeypatch):
     unused = response()
-    state = transport(gathering, monkeypatch, [response(body='not_candles\n'), unused])
+    state = transport(gathering, monkeypatch, [response(body='not_candles\n'), unused, response(body=EMPTY_CSV)])
     with pytest.raises(ValueError) as caught:
         query(gathering)
     assert caught.value.args == ('A2_ISS_RESPONSE_SCHEMA_INVALID',)
@@ -143,7 +144,7 @@ def test_red_invalid_schema_does_not_consume_prepared_success(gathering, monkeyp
 
 
 def test_red_million_attempts_rejected_before_network(gathering, monkeypatch):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
     with pytest.raises(ValueError) as caught:
         query(gathering, max_retries=1000000)
     assert caught.value.args == ('A2_RETRY_ARGUMENTS',)
@@ -153,7 +154,7 @@ def test_red_million_attempts_rejected_before_network(gathering, monkeypatch):
 def test_red_retry_after_31_preserves_http_primary_without_retry(gathering, monkeypatch):
     rejected = response(503, headers=[('Retry-After', '31')])
     unused = response()
-    state = transport(gathering, monkeypatch, [rejected, unused])
+    state = transport(gathering, monkeypatch, [rejected, unused, response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering)
     assert caught.value.response is rejected
@@ -164,7 +165,7 @@ def test_red_retry_after_31_preserves_http_primary_without_retry(gathering, monk
 def test_red_body_cap_plus_one_is_never_accepted(gathering, monkeypatch):
     encoded = CANDLE_CSV.encode('utf-8')
     rejected = response(body=encoded + b'\n' * (BODY_CAP + 1 - len(encoded)))
-    state = transport(gathering, monkeypatch, [rejected])
+    state = transport(gathering, monkeypatch, [rejected, response(body=EMPTY_CSV)])
     with pytest.raises(ValueError) as caught:
         query(gathering)
     assert caught.value.args == ('A2_ISS_BODY_LIMIT_EXCEEDED',)
@@ -172,7 +173,7 @@ def test_red_body_cap_plus_one_is_never_accepted(gathering, monkeypatch):
 
 
 def test_red_successful_200_overrun_never_reports_returned(gathering, monkeypatch, event_log):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
     state.after_get = lambda: setattr(state, 'elapsed', 181.0)
     with pytest.raises(requests.exceptions.Timeout) as caught:
         query(gathering, logging_context=event_log.context)
@@ -198,7 +199,7 @@ def assert_terminal(event_log, code, category, outcome, attempt, limit=5):
     assert (terminal['event'], terminal['level'], terminal['outcome']) == (
         'a2_query_failed', 'ERROR', outcome)
     assert terminal['stage'] == 'data_gathering' and terminal['fields'] == {}
-    assert terminal['retries'] == {'attempt': attempt, 'limit': limit}
+    assert terminal['retries'] == {'attempt': attempt, 'limit': 1000 * limit}
     error = terminal['error']
     assert (error['code'], error['category'], error['attempt'],
             error['final'], error['retryable']) == (code, category, attempt, True, False)
@@ -225,9 +226,9 @@ def clock_after_diagnostic(gathering, monkeypatch, state, event_name, elapsed):
 def test_closed_retryable_status_set_preserves_literal_result(
         gathering, monkeypatch, event_log, status):
     rejected, accepted = response(status), response()
-    state = transport(gathering, monkeypatch, [rejected, accepted])
+    state = transport(gathering, monkeypatch, [rejected, accepted, response(body=EMPTY_CSV)])
     assert_frame(query(gathering, logging_context=event_log.context))
-    assert len(state.calls) == 2 and state.sleeps == [3, 3]
+    assert len(state.calls) == 3 and state.sleeps == [3, 3, 3]
     assert rejected.raw.reads == []
     assert rejected.raw.close_calls == 1 and accepted.raw.close_calls == 1
     retry = [item for item in event_log.events if item['event'] == 'a2_query_retry']
@@ -242,7 +243,7 @@ def test_other_status_is_terminal_without_body_or_prepared_success(
         gathering, monkeypatch, event_log, status):
     rejected = response(status, read_error=AssertionError('rejected body was read'))
     unused = response()
-    state = transport(gathering, monkeypatch, [rejected, unused])
+    state = transport(gathering, monkeypatch, [rejected, unused, response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value.response is rejected and caught.value.args == ('A2_ISS_HTTP_STATUS',)
@@ -263,10 +264,10 @@ def test_other_status_is_terminal_without_body_or_prepared_success(
 def test_only_typed_transient_request_failure_can_retry(gathering, monkeypatch, factory):
     primary = factory()
     original_args = primary.args
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     assert_frame(query(gathering))
     assert primary.args == original_args
-    assert len(state.calls) == 2 and state.sleeps == [3, 3]
+    assert len(state.calls) == 3 and state.sleeps == [3, 3, 3]
 
 
 @pytest.mark.parametrize('factory', [
@@ -280,7 +281,7 @@ def test_unknown_permanent_and_configuration_errors_do_not_speculate(
         gathering, monkeypatch, factory):
     primary = factory()
     original_args = primary.args
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     with pytest.raises(type(primary)) as caught:
         query(gathering)
     assert caught.value is primary and primary.args == original_args
@@ -292,7 +293,7 @@ def test_tls_or_config_wrapper_dominates_nested_timeout(gathering, monkeypatch, 
     nested = requests.exceptions.Timeout('A2_NESTED_TIMEOUT')
     primary = (requests.exceptions.SSLError(nested) if kind == 'tls'
                else requests.exceptions.ProxyError(nested))
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     with pytest.raises(type(primary)) as caught:
         query(gathering)
     assert caught.value is primary and primary.args == (nested,)
@@ -302,7 +303,7 @@ def test_tls_or_config_wrapper_dominates_nested_timeout(gathering, monkeypatch, 
 def test_historical_context_does_not_make_unknown_error_retryable(gathering, monkeypatch):
     primary = requests.exceptions.ConnectionError('A2_UNKNOWN_CURRENT')
     primary.__context__ = requests.exceptions.Timeout('A2_HISTORICAL_TIMEOUT')
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.ConnectionError) as caught:
         query(gathering)
     assert caught.value is primary
@@ -319,7 +320,7 @@ def test_historical_context_does_not_make_unknown_error_retryable(gathering, mon
 ])
 def test_closed_policy_arguments_refuse_before_get(gathering, monkeypatch, event_log,
                                                  parameter, value):
-    state = transport(gathering, monkeypatch, [])
+    state = transport(gathering, monkeypatch, [response(body=EMPTY_CSV)])
     with pytest.raises(ValueError) as caught:
         query(gathering, logging_context=event_log.context, **{parameter: value})
     assert caught.value.args == ('A2_RETRY_ARGUMENTS',)
@@ -334,15 +335,15 @@ def test_closed_policy_arguments_refuse_before_get(gathering, monkeypatch, event
 @pytest.mark.parametrize('count', [1, 2, 3, 4, 5])
 @pytest.mark.parametrize('base', [0, 30])
 def test_policy_argument_endpoints_keep_success_semantics(gathering, monkeypatch, count, base):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
     assert_frame(query(gathering, max_retries=count, retry_sleep_start=base))
-    assert len(state.calls) == 1 and state.sleeps == [3]
+    assert len(state.calls) == 2 and state.sleeps == [3, 3]
 
 
 @pytest.mark.parametrize('jitter', [0.0, 1.0])
 @pytest.mark.parametrize('selected', [0.0, 1.0])
 def test_opt_in_jitter_has_independent_min_max_oracle(gathering, monkeypatch, jitter, selected):
-    state = transport(gathering, monkeypatch, [response(503), response()])
+    state = transport(gathering, monkeypatch, [response(503), response(), response(body=EMPTY_CSV)])
     rng_calls = []
 
     def uniform(low, high):
@@ -351,13 +352,13 @@ def test_opt_in_jitter_has_independent_min_max_oracle(gathering, monkeypatch, ji
 
     monkeypatch.setattr(gathering.random, 'uniform', uniform)
     assert_frame(query(gathering, retry_jitter=jitter))
-    assert state.sleeps == [3 + jitter * selected, 3]
+    assert state.sleeps == [3 + jitter * selected, 3, 3]
     assert rng_calls == ([] if jitter == 0 else [(0, jitter)])
 
 
 def test_exponential_jitter_wait_is_capped_and_final_attempt_has_no_wait(gathering, monkeypatch):
     responses = [response(503) for _ in range(5)]
-    state = transport(gathering, monkeypatch, responses)
+    state = transport(gathering, monkeypatch, [*responses, response(body=EMPTY_CSV)])
     monkeypatch.setattr(gathering.random, 'uniform', lambda low, high: high)
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, retry_sleep_start=30, retry_jitter=1)
@@ -368,7 +369,7 @@ def test_exponential_jitter_wait_is_capped_and_final_attempt_has_no_wait(gatheri
 
 def test_zero_jitter_preserves_literal_default_exhaustion_waits(gathering, monkeypatch):
     failures = [requests.exceptions.ReadTimeout('A2_LAST_' + str(i)) for i in range(5)]
-    state = transport(gathering, monkeypatch, failures)
+    state = transport(gathering, monkeypatch, [*failures, response(body=EMPTY_CSV)])
 
     def forbidden_uniform(*args):
         pytest.fail('Default zero jitter must not consult RNG')
@@ -391,9 +392,9 @@ def test_zero_jitter_preserves_literal_default_exhaustion_waits(gathering, monke
 def test_retry_after_absent_invalid_and_valid_delay_oracles(gathering, monkeypatch, header, wait):
     headers = [] if header is None else [('Retry-After', header)]
     rejected = response(503, headers=headers)
-    state = transport(gathering, monkeypatch, [rejected, response()])
+    state = transport(gathering, monkeypatch, [rejected, response(), response(body=EMPTY_CSV)])
     assert_frame(query(gathering))
-    assert len(state.calls) == 2 and state.sleeps == [wait, 3]
+    assert len(state.calls) == 3 and state.sleeps == [wait, 3, 3]
     assert rejected.raw.reads == [] and rejected.raw.close_calls == 1
 
 
@@ -413,7 +414,7 @@ def test_retry_after_absent_invalid_and_valid_delay_oracles(gathering, monkeypat
 def test_retry_after_closed_refusal_preserves_current_http_object(
         gathering, monkeypatch, event_log, headers):
     rejected = response(503, headers=headers)
-    state = transport(gathering, monkeypatch, [rejected, response()])
+    state = transport(gathering, monkeypatch, [rejected, response(), response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value.response is rejected and caught.value.args == ('A2_ISS_HTTP_STATUS',)
@@ -425,9 +426,9 @@ def test_retry_after_closed_refusal_preserves_current_http_object(
 
 @pytest.mark.parametrize('value,expected_wait', [('0' * 128, 3), ('x' * 128, 3), ('\t 7 \t', 7)])
 def test_retry_after_length_and_ows_boundary(gathering, monkeypatch, value, expected_wait):
-    state = transport(gathering, monkeypatch, [response(503, headers=[('Retry-After', value)]), response()])
+    state = transport(gathering, monkeypatch, [response(503, headers=[('Retry-After', value)]), response(), response(body=EMPTY_CSV)])
     assert_frame(query(gathering))
-    assert len(state.calls) == 2 and state.sleeps == [expected_wait, 3]
+    assert len(state.calls) == 3 and state.sleeps == [expected_wait, 3, 3]
 
 
 @pytest.mark.parametrize('header', [
@@ -438,7 +439,7 @@ def test_retry_after_length_and_ows_boundary(gathering, monkeypatch, value, expe
 ])
 def test_comma_date_malformed_or_non_http_grammar_is_ambiguous(gathering, monkeypatch, header):
     rejected = response(503, headers=[('Retry-After', header)])
-    state = transport(gathering, monkeypatch, [rejected, response()])
+    state = transport(gathering, monkeypatch, [rejected, response(), response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering)
     assert caught.value.response is rejected
@@ -456,10 +457,10 @@ def test_rfc850_two_digit_year_uses_exact_fifty_year_boundary(
     weekday = represented.replace(year=year).strftime('%A')
     header = weekday + represented.strftime(', %d-%b-%y %H:%M:%S GMT')
     rejected = response(503, headers=[('Retry-After', header)])
-    state = transport(gathering, monkeypatch, [rejected, response()])
+    state = transport(gathering, monkeypatch, [rejected, response(), response(body=EMPTY_CSV)])
     if should_retry:
         assert_frame(query(gathering))
-        assert len(state.calls) == 2 and state.sleeps == [3, 3]
+        assert len(state.calls) == 3 and state.sleeps == [3, 3, 3]
     else:
         with pytest.raises(requests.exceptions.HTTPError) as caught:
             query(gathering)
@@ -471,7 +472,7 @@ def test_rfc850_two_digit_year_uses_exact_fifty_year_boundary(
 def test_missing_raw_header_provenance_is_fail_closed(gathering, monkeypatch, header_kind):
     rejected = response(503 if header_kind == 'retry-after' else 200)
     rejected.raw.headers = None
-    state = transport(gathering, monkeypatch, [rejected, response()])
+    state = transport(gathering, monkeypatch, [rejected, response(), response(body=EMPTY_CSV)])
     exception_type = requests.exceptions.HTTPError if header_kind == 'retry-after' else ValueError
     with pytest.raises(exception_type) as caught:
         query(gathering)
@@ -488,9 +489,9 @@ def test_missing_raw_header_provenance_is_fail_closed(gathering, monkeypatch, he
 def test_content_encoding_absent_or_exact_single_identity_is_accepted(
         gathering, monkeypatch, headers):
     accepted = response(headers=headers)
-    state = transport(gathering, monkeypatch, [accepted])
+    state = transport(gathering, monkeypatch, [accepted, response(body=EMPTY_CSV)])
     assert_frame(query(gathering))
-    assert len(state.calls) == 1 and state.sleeps == [3]
+    assert len(state.calls) == 2 and state.sleeps == [3, 3]
     assert accepted.raw.close_calls == 1
     assert all(1 <= amount <= 65536 and decode is False for amount, decode in accepted.raw.reads)
 
@@ -506,7 +507,7 @@ def test_content_encoding_absent_or_exact_single_identity_is_accepted(
 def test_unknown_multiple_conflicting_or_substring_encoding_is_rejected_before_read(
         gathering, monkeypatch, event_log, headers):
     rejected = response(headers=headers, read_error=AssertionError('coding body must not be read'))
-    state = transport(gathering, monkeypatch, [rejected, response()])
+    state = transport(gathering, monkeypatch, [rejected, response(), response(body=EMPTY_CSV)])
     with pytest.raises(ValueError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value.args == ('A2_ISS_CONTENT_ENCODING_UNSUPPORTED',)
@@ -516,7 +517,7 @@ def test_unknown_multiple_conflicting_or_substring_encoding_is_rejected_before_r
 
 
 def test_identity_accept_header_is_request_local_across_rotation(gathering, monkeypatch):
-    state = transport(gathering, monkeypatch, [response(503), response()])
+    state = transport(gathering, monkeypatch, [response(503), response(), response(body=EMPTY_CSV)])
     original = {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'gzip'}
     rotated = {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'br'}
     monkeypatch.setattr(gathering, 'header', original)
@@ -526,6 +527,7 @@ def test_identity_accept_header_is_request_local_across_rotation(gathering, monk
     assert rotated == {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'br'}
     assert [call['headers'] for call in state.calls] == [
         {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'},
+        {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'},
         {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'}]
     assert all(call['verify'] is True and call['allow_redirects'] is False
                and call['stream'] is True and call['timeout'] == (5, 30)
@@ -538,10 +540,10 @@ def test_body_cap_boundary_is_complete_response_or_whole_failure(
     prefix = CANDLE_CSV.encode('utf-8')
     body = prefix + b'\n' * (BODY_CAP + offset - len(prefix))
     item = response(body=body)
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     if offset <= 0:
         assert_frame(query(gathering))
-        assert state.sleeps == [3]
+        assert state.sleeps == [3, 3]
     else:
         def pandas_forbidden(*args, **kwargs):
             pytest.fail('Overflow prefix must never reach pandas')
@@ -550,7 +552,7 @@ def test_body_cap_boundary_is_complete_response_or_whole_failure(
             query(gathering)
         assert caught.value.args == ('A2_ISS_BODY_LIMIT_EXCEEDED',)
         assert state.sleeps == []
-    assert len(state.calls) == 1 and item.raw.close_calls == 1
+    assert len(state.calls) == (2 if offset <= 0 else 1) and item.raw.close_calls == 1
     assert all(1 <= amount <= 65536 and decode is False for amount, decode in item.raw.reads)
     assert item.raw.buffer.tell() <= BODY_CAP + 1
 
@@ -560,7 +562,7 @@ def test_missing_malformed_or_false_small_content_length_never_disables_counter(
         gathering, monkeypatch, declared):
     headers = [] if declared is None else [('Content-Length', declared)]
     item = response(body=b'x' * (BODY_CAP + 1), headers=headers)
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     with pytest.raises(ValueError) as caught:
         query(gathering)
     assert caught.value.args == ('A2_ISS_BODY_LIMIT_EXCEEDED',)
@@ -570,7 +572,7 @@ def test_missing_malformed_or_false_small_content_length_never_disables_counter(
 
 def test_declared_oversize_may_refuse_before_body(gathering, monkeypatch):
     item = response(headers=[('Content-Length', str(BODY_CAP + 1))])
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     try:
         result = query(gathering)
     except ValueError as caught:
@@ -580,8 +582,8 @@ def test_declared_oversize_may_refuse_before_body(gathering, monkeypatch):
         # Early refusal from an untrusted declaration is permitted, not required;
         # choosing the actual complete byte counter also satisfies the policy.
         assert_frame(result)
-        assert state.sleeps == [3]
-    assert len(state.calls) == 1 and item.raw.close_calls == 1
+        assert state.sleeps == [3, 3]
+    assert len(state.calls) == (2 if state.sleeps else 1) and item.raw.close_calls == 1
 
 
 def test_no_eager_content_text_or_json_on_stream_response(gathering, monkeypatch):
@@ -602,9 +604,9 @@ def test_no_eager_content_text_or_json_on_stream_response(gathering, monkeypatch
     item.headers['Content-Type'] = 'text/csv; charset=utf-8'
     item.raw = RawBody(CANDLE_CSV.encode('utf-8'), [('Content-Type', item.headers['Content-Type'])])
     item._content_consumed = False
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     assert_frame(query(gathering))
-    assert len(state.calls) == 1 and state.sleeps == [3] and item.raw.close_calls == 1
+    assert len(state.calls) == 2 and state.sleeps == [3, 3] and item.raw.close_calls == 1
 
 
 @pytest.mark.parametrize('last', ['http', 'read'])
@@ -615,7 +617,7 @@ def test_raw_read_native_primary_and_later_http_have_current_attempt_precedence(
     reading = response(read_error=native)
     rejected = response(503)
     sequence = [reading, rejected] if last == 'http' else [rejected, reading]
-    state = transport(gathering, monkeypatch, sequence)
+    state = transport(gathering, monkeypatch, [*sequence, response(body=EMPTY_CSV)])
     expected = requests.exceptions.HTTPError if last == 'http' else ReadTimeoutError
     with pytest.raises(expected) as caught:
         query(gathering, max_retries=2)
@@ -630,7 +632,7 @@ def test_raw_read_native_primary_and_later_http_have_current_attempt_precedence(
 def test_close_only_failure_is_native_terminal_io_without_retry(gathering, monkeypatch, event_log):
     primary = OSError('A2_CLOSE_CANARY')
     item = response(close_error=primary)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     with pytest.raises(OSError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value is primary and primary.args == ('A2_CLOSE_CANARY',)
@@ -642,7 +644,7 @@ def test_falsey_http_response_is_closed_and_close_failure_cannot_replace_http(
         gathering, monkeypatch, event_log):
     item = response(503, close_error=OSError('A2_SECONDARY_CLOSE_CANARY'))
     assert not item
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value.response is item and caught.value.args == ('A2_ISS_HTTP_STATUS',)
@@ -653,7 +655,7 @@ def test_falsey_http_response_is_closed_and_close_failure_cannot_replace_http(
 def test_exception_attached_response_is_closed_without_primary_rewrite(gathering, monkeypatch):
     item = response(503)
     primary = requests.exceptions.SSLError('A2_TLS_ATTACHED', response=item)
-    state = transport(gathering, monkeypatch, [primary])
+    state = transport(gathering, monkeypatch, [primary, response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.SSLError) as caught:
         query(gathering)
     assert caught.value is primary and primary.args == ('A2_TLS_ATTACHED',)
@@ -663,7 +665,7 @@ def test_exception_attached_response_is_closed_without_primary_rewrite(gathering
 def test_memory_error_is_not_retryable_or_rewritten(gathering, monkeypatch, event_log):
     primary = MemoryError('A2_MEMORY_CANARY')
     item = response(read_error=primary)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     with pytest.raises(MemoryError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value is primary and primary.args == ('A2_MEMORY_CANARY',)
@@ -673,7 +675,7 @@ def test_memory_error_is_not_retryable_or_rewritten(gathering, monkeypatch, even
 
 def test_deadline_before_started_has_zero_attempt_and_exact_native_timeout(
         gathering, monkeypatch, event_log):
-    state = transport(gathering, monkeypatch, [])
+    state = transport(gathering, monkeypatch, [response(body=EMPTY_CSV)])
     ticks = [0.0]
 
     def expired_after_entry():
@@ -694,11 +696,11 @@ def test_deadline_before_started_has_zero_attempt_and_exact_native_timeout(
 @pytest.mark.parametrize('expiry_event,expected_events', [
     ('a2_query_started', ['a2_query_started', 'a2_query_failed']),
     ('a2_query_attempt_started',
-     ['a2_query_started', 'a2_query_attempt_started', 'a2_query_failed']),
+     ['a2_query_started', 'a3_page_started', 'a2_query_attempt_started', 'a2_query_failed']),
 ])
 def test_deadline_after_successful_diagnostics_never_admits_first_get(
         gathering, monkeypatch, event_log, expiry_event, expected_events):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
     clock_after_diagnostic(gathering, monkeypatch, state, expiry_event, 180.0)
     with pytest.raises(requests.exceptions.Timeout) as caught:
         query(gathering, logging_context=event_log.context)
@@ -712,7 +714,7 @@ def test_deadline_after_successful_diagnostics_never_admits_first_get(
 @pytest.mark.parametrize('failure_event', ['a2_query_started', 'a2_query_attempt_started'])
 def test_logging_failure_without_primary_during_expiry_remains_logging_incomplete(
         gathering, monkeypatch, event_log, failure_event):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
     original = event_log.logger.emit_event
 
     def emit(context, level, event, message, fields):
@@ -734,7 +736,7 @@ def test_logging_failure_without_primary_during_expiry_remains_logging_incomplet
 def test_deadline_after_failed_http_preserves_current_native_http_error(
         gathering, monkeypatch, event_log):
     item = response(503)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     state.after_get = lambda: setattr(state, 'elapsed', 180.0)
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
@@ -747,7 +749,7 @@ def test_deadline_after_failed_http_preserves_current_native_http_error(
 def test_retry_after_budget_infeasible_preserves_http_without_wait_or_warning(
         gathering, monkeypatch, event_log):
     item = response(429, headers=[('Retry-After', '7')])
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     state.after_get = lambda: setattr(state, 'elapsed', 174.0)
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
@@ -760,7 +762,7 @@ def test_retry_after_budget_infeasible_preserves_http_without_wait_or_warning(
 def test_expiry_in_retry_warning_keeps_plan_record_but_never_waits_or_gets(
         gathering, monkeypatch, event_log):
     item = response(503)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     clock_after_diagnostic(gathering, monkeypatch, state, 'a2_query_retry', 180.0)
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
@@ -772,7 +774,7 @@ def test_expiry_in_retry_warning_keeps_plan_record_but_never_waits_or_gets(
 
 def test_expiry_during_completed_retry_wait_has_no_second_get(gathering, monkeypatch, event_log):
     item = response(503)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     state.after_sleep = lambda: setattr(state, 'elapsed', 181.0)
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
@@ -784,7 +786,7 @@ def test_expiry_during_completed_retry_wait_has_no_second_get(gathering, monkeyp
 def test_admission_expiry_after_prior_failure_preserves_same_primary_object(
         gathering, monkeypatch, event_log):
     primary = requests.exceptions.Timeout('A2_LAST_PRIMARY_CANARY')
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     original = gathering._a2_diagnostic
     admissions = []
 
@@ -807,7 +809,7 @@ def test_admission_expiry_after_prior_failure_preserves_same_primary_object(
 def test_new_successful_get_expiry_never_resurrects_previous_http_failure(
         gathering, monkeypatch, event_log):
     rejected, accepted = response(503), response()
-    state = transport(gathering, monkeypatch, [rejected, accepted])
+    state = transport(gathering, monkeypatch, [rejected, accepted, response(body=EMPTY_CSV)])
 
     def advance_second_get():
         if len(state.calls) == 2:
@@ -827,7 +829,7 @@ def test_new_successful_get_expiry_never_resurrects_previous_http_failure(
 def test_expiry_after_each_successful_processing_phase_discards_frame(
         gathering, monkeypatch, event_log, phase):
     item = response()
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     if phase == 'read':
         item.raw.after_read = lambda: setattr(state, 'elapsed', 180.0)
     else:
@@ -853,7 +855,7 @@ def test_expiry_after_each_successful_processing_phase_discards_frame(
 def test_insufficient_success_sleep_budget_never_shortens_or_starts_sleep(
         gathering, monkeypatch, event_log, remaining):
     item = response()
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     item.raw.after_close = lambda: setattr(state, 'elapsed', 180.0 - remaining)
     with pytest.raises(requests.exceptions.Timeout) as caught:
         query(gathering, logging_context=event_log.context)
@@ -865,7 +867,7 @@ def test_insufficient_success_sleep_budget_never_shortens_or_starts_sleep(
 @pytest.mark.parametrize('elapsed', [180.0, 181.0])
 def test_complete_success_sleep_overrun_never_emits_returned(gathering, monkeypatch, event_log, elapsed):
     item = response()
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     state.after_sleep = lambda: setattr(state, 'elapsed', elapsed)
     with pytest.raises(requests.exceptions.Timeout) as caught:
         query(gathering, logging_context=event_log.context)
@@ -877,7 +879,7 @@ def test_complete_success_sleep_overrun_never_emits_returned(gathering, monkeypa
 @pytest.mark.parametrize('primary', [RuntimeError('A2_SLEEP_CANARY'), KeyboardInterrupt('A2_SLEEP_CANARY')])
 def test_success_sleep_native_interruption_precedes_simultaneous_expiry(
         gathering, monkeypatch, event_log, primary):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
 
     def interrupt():
         state.elapsed = 180.0
@@ -896,7 +898,7 @@ def test_native_read_primary_survives_cleanup_and_deadline_together(
     primary = ReadTimeoutError(None, '/A2_PATH_CANARY', 'A2_READ_CANARY')
     original_args = primary.args
     item = response(read_error=primary, close_error=OSError('A2_CLOSE_CANARY'))
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     item.raw.after_close = lambda: setattr(state, 'elapsed', 180.0)
     with pytest.raises(ReadTimeoutError) as caught:
         query(gathering, logging_context=event_log.context)
@@ -908,7 +910,7 @@ def test_native_read_primary_survives_cleanup_and_deadline_together(
 def test_cleanup_only_primary_survives_same_operation_deadline(gathering, monkeypatch, event_log):
     primary = OSError('A2_CLOSE_PRIMARY_CANARY')
     item = response(close_error=primary)
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     item.raw.after_close = lambda: setattr(state, 'elapsed', 180.0)
     with pytest.raises(OSError) as caught:
         query(gathering, logging_context=event_log.context)
@@ -920,7 +922,7 @@ def test_cleanup_only_primary_survives_same_operation_deadline(gathering, monkey
 def test_created_deadline_timeout_survives_following_close_failure(
         gathering, monkeypatch, event_log):
     item = response(close_error=OSError('A2_SECONDARY_CLOSE_CANARY'))
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     state.after_get = lambda: setattr(state, 'elapsed', 180.0)
     with pytest.raises(requests.exceptions.Timeout) as caught:
         query(gathering, logging_context=event_log.context)
@@ -933,7 +935,7 @@ def test_created_deadline_timeout_survives_following_close_failure(
 def test_logging_failure_and_expiry_preserve_required_precedence(
         gathering, monkeypatch, event_log, capsys, with_primary):
     primary = requests.exceptions.ReadTimeout('A2_LOGGING_PRIMARY_CANARY')
-    state = transport(gathering, monkeypatch, [primary if with_primary else response()])
+    state = transport(gathering, monkeypatch, [primary if with_primary else response(), response(body=EMPTY_CSV)])
     original = event_log.logger.emit_event
     failure_event = 'a2_query_retry' if with_primary else 'a2_query_returned'
 
@@ -952,8 +954,8 @@ def test_logging_failure_and_expiry_preserve_required_precedence(
         assert state.sleeps == []
     else:
         assert caught.value.args == ('LOGGING_INCOMPLETE',) and caught.value.__cause__ is None
-        assert state.sleeps == [3]
-    assert len(state.calls) == 1
+        assert state.sleeps == [3, 3]
+    assert len(state.calls) == (1 if with_primary else 2)
     assert not any(item['event'] in ('a2_query_returned', 'a2_query_failed') for item in event_log.events)
     output = capsys.readouterr()
     assert all(marker not in output.out + output.err for marker in (
@@ -963,7 +965,7 @@ def test_logging_failure_and_expiry_preserve_required_precedence(
 
 def test_timeout_tuple_is_clipped_to_admitted_positive_remaining_budget(
         gathering, monkeypatch, event_log):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
     clock_after_diagnostic(gathering, monkeypatch, state, 'a2_query_attempt_started', 178.0)
     with pytest.raises(requests.exceptions.Timeout):
         query(gathering, logging_context=event_log.context)
@@ -974,14 +976,14 @@ def test_timeout_tuple_is_clipped_to_admitted_positive_remaining_budget(
 def test_returned_duration_includes_cleanup_and_full_success_sleep(
         gathering, monkeypatch, event_log):
     item = response()
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     state.after_get = lambda: setattr(state, 'elapsed', state.elapsed + 0.25)
     item.raw.after_close = lambda: setattr(state, 'elapsed', state.elapsed + 0.5)
     assert_frame(query(gathering, logging_context=event_log.context))
-    assert len(state.calls) == 1 and state.sleeps == [3]
+    assert len(state.calls) == 2 and state.sleeps == [3, 3]
     returned = event_log.events[-1]
-    assert returned['event'] == 'a2_query_returned' and returned['duration_ms'] == 3750.0
-    assert returned['retries'] == {'attempt': 1, 'limit': 5}
+    assert returned['event'] == 'a2_query_returned' and returned['duration_ms'] == 7000.0
+    assert returned['retries'] == {'attempt': 2, 'limit': 5000}
     assert all(item['outcome'] == 'REQUEST_ADMISSION_STARTED' and item['retries']['attempt'] == 0
                for item in event_log.events if item['event'] == 'a2_query_attempt_started')
 
@@ -991,7 +993,7 @@ def test_deep_typed_wrapper_does_not_search_beyond_closed_depth(gathering, monke
     for _ in range(10):
         primary = requests.exceptions.ConnectionError(primary)
     original_args = primary.args
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.ConnectionError) as caught:
         query(gathering)
     assert caught.value is primary and primary.args == original_args
@@ -1001,7 +1003,7 @@ def test_deep_typed_wrapper_does_not_search_beyond_closed_depth(gathering, monke
 def test_cyclic_transport_wrapper_terminates_without_text_classification(gathering, monkeypatch):
     primary = requests.exceptions.ConnectionError('A2_CYCLE')
     primary.args = (primary,)
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.ConnectionError) as caught:
         query(gathering)
     assert caught.value is primary and primary.args[0] is primary
@@ -1013,7 +1015,7 @@ def test_raw_truncated_response_keeps_native_protocol_failure_and_no_prefix_retu
     primary = ProtocolError('A2_TRUNCATED_CANARY', IncompleteRead(b'A2_PREFIX', 20))
     original_args = primary.args
     item = response(read_error=primary)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     with pytest.raises(ProtocolError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value is primary and primary.args == original_args
@@ -1025,7 +1027,7 @@ def test_raw_truncated_response_keeps_native_protocol_failure_and_no_prefix_retu
 def test_raw_interruption_still_closes_response_and_keeps_native_primary(
         gathering, monkeypatch, primary):
     item = response(read_error=primary)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     with pytest.raises(type(primary)) as caught:
         query(gathering)
     assert caught.value is primary and primary.args == ('A2_READ_INTERRUPTED',)
@@ -1035,7 +1037,7 @@ def test_raw_interruption_still_closes_response_and_keeps_native_primary(
 def test_native_pandas_error_is_terminal_without_schema_recovery(gathering, monkeypatch, event_log):
     primary = gathering.pd.errors.ParserError('A2_PANDAS_PRIMARY_CANARY')
     first, unused = response(), response()
-    state = transport(gathering, monkeypatch, [first, unused])
+    state = transport(gathering, monkeypatch, [first, unused, response(body=EMPTY_CSV)])
 
     def parse(*args, **kwargs):
         raise primary
@@ -1052,7 +1054,7 @@ def test_native_pandas_error_is_terminal_without_schema_recovery(gathering, monk
 def test_strict_decode_failure_preserves_native_object_without_next_response(
         gathering, monkeypatch, event_log):
     first, unused = response(body=b'\xff'), response()
-    state = transport(gathering, monkeypatch, [first, unused])
+    state = transport(gathering, monkeypatch, [first, unused, response(body=EMPTY_CSV)])
     with pytest.raises(UnicodeDecodeError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value.encoding == 'utf-8' and caught.value.object == b'\xff'
@@ -1087,7 +1089,7 @@ def test_retry_resource_canaries_remain_absent_from_console_and_logger(
         items = [response(close_error=primary)]
     else:
         items = [response(503, markers[-2]), response()]
-    state = transport(gathering, monkeypatch, items)
+    state = transport(gathering, monkeypatch, [*items, response(body=EMPTY_CSV)])
     monkeypatch.setattr(gathering, 'header', {'User-Agent': markers[4]})
     monkeypatch.setattr(gathering, 'get_next_header', lambda previous: {'User-Agent': markers[5]})
     context = event_log.context if with_context else None
@@ -1101,7 +1103,7 @@ def test_retry_resource_canaries_remain_absent_from_console_and_logger(
     monkeypatch.setattr(event_log.logger, 'emit_event', emit)
     if kind in ('retry-after', 'header-rotation'):
         assert_frame(query(gathering, logging_context=context))
-        assert len(state.calls) == 2 and state.sleeps == [3, 3]
+        assert len(state.calls) == 3 and state.sleeps == [3, 3, 3]
     else:
         expected_type = ValueError if kind == 'coding' else type(primary)
         with pytest.raises(expected_type) as caught:
@@ -1124,7 +1126,7 @@ def test_retry_resource_canaries_remain_absent_from_console_and_logger(
 
 def test_final_admission_sample_crossing_deadline_does_not_call_get(
         gathering, monkeypatch, event_log):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
     admission = SimpleNamespace(active=False, samples=0)
     original = gathering._a2_diagnostic
 
@@ -1151,7 +1153,7 @@ def test_final_admission_sample_crossing_deadline_does_not_call_get(
 
 def test_header_preparation_overhead_is_checked_before_first_get(
         gathering, monkeypatch, event_log):
-    state = transport(gathering, monkeypatch, [response()])
+    state = transport(gathering, monkeypatch, [response(), response(body=EMPTY_CSV)])
 
     class ExpensiveHeader(dict):
         def items(self):
@@ -1178,7 +1180,7 @@ def test_raw_encoding_header_memory_error_remains_native_memory_failure(
 
     item = response()
     item.raw.headers = FailingHeaders(item.raw.headers)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     with pytest.raises(MemoryError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value is primary and primary.args == ('A2_HEADER_MEMORY_CANARY',)
@@ -1199,7 +1201,7 @@ def test_retry_after_header_memory_error_cannot_replace_current_http_primary(
 
     item = response(503)
     item.raw.headers = FailingHeaders(item.raw.headers)
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value.response is item and caught.value.args == ('A2_ISS_HTTP_STATUS',)
@@ -1218,7 +1220,7 @@ def test_obtained_response_and_distinct_exception_response_are_both_closed(
     attached = response(503)
     primary = requests.exceptions.ReadTimeout('A2_DISTINCT_RESPONSE_CANARY', response=attached)
     obtained = response(read_error=primary)
-    state = transport(gathering, monkeypatch, [obtained])
+    state = transport(gathering, monkeypatch, [obtained, response(body=EMPTY_CSV)])
     with pytest.raises(requests.exceptions.ReadTimeout) as caught:
         query(gathering, max_retries=1, logging_context=event_log.context)
     assert caught.value is primary and primary.args == ('A2_DISTINCT_RESPONSE_CANARY',)
@@ -1244,10 +1246,9 @@ def test_http_date_parsing_is_independent_of_callers_lc_time(
             return native_datetime.strptime(text, date_format)
 
     monkeypatch.setattr(gathering.datetime, 'datetime', NonEnglishClock)
-    state = transport(gathering, monkeypatch, [
-        response(503, headers=[('Retry-After', header)]), response()])
+    state = transport(gathering, monkeypatch, [response(503, headers=[('Retry-After', header)]), response(), response(body=EMPTY_CSV)])
     assert_frame(query(gathering))
-    assert len(state.calls) == 2 and state.sleeps == [7, 3]
+    assert len(state.calls) == 3 and state.sleeps == [7, 3, 3]
 
 
 @pytest.mark.parametrize('header,retry', [
@@ -1260,10 +1261,10 @@ def test_http_date_weekday_must_match_calendar_before_server_delay_is_used(
     # Wrong weekday invalidates the date. Comma-bearing values are ambiguous;
     # non-comma asctime is ordinary-invalid and uses the local backoff.
     item = response(503, headers=[('Retry-After', header)])
-    state = transport(gathering, monkeypatch, [item, response()])
+    state = transport(gathering, monkeypatch, [item, response(), response(body=EMPTY_CSV)])
     if retry:
         assert_frame(query(gathering))
-        assert len(state.calls) == 2 and state.sleeps == [3, 3]
+        assert len(state.calls) == 3 and state.sleeps == [3, 3, 3]
     else:
         with pytest.raises(requests.exceptions.HTTPError) as caught:
             query(gathering)
@@ -1294,7 +1295,7 @@ def test_rejected_status_never_uses_eager_or_raw_body(
     item.status_code = status
     item.raw = RawBody(b'A2_REJECTED_BODY_CANARY', read_error=AssertionError('body trap'))
     item._content_consumed = False
-    state = transport(gathering, monkeypatch, [item])
+    state = transport(gathering, monkeypatch, [item, response(body=EMPTY_CSV)])
     with pytest.raises(exception_type) as caught:
         query(gathering, max_retries=1, logging_context=event_log.context)
     assert caught.value.response is item
@@ -1317,7 +1318,7 @@ def test_permanent_request_factory_has_exact_closed_terminal_category(
         gathering, monkeypatch, event_log, factory, category):
     primary = factory()
     original_args = primary.args
-    state = transport(gathering, monkeypatch, [primary, response()])
+    state = transport(gathering, monkeypatch, [primary, response(), response(body=EMPTY_CSV)])
     with pytest.raises(type(primary)) as caught:
         query(gathering, logging_context=event_log.context)
     assert caught.value is primary and primary.args == original_args
@@ -1328,7 +1329,7 @@ def test_permanent_request_factory_has_exact_closed_terminal_category(
 @pytest.mark.parametrize('failure', ['throw', 'unconfirmed', 'unhealthy'])
 def test_new_zero_attempt_deadline_timeout_survives_failed_terminal_delivery(
         gathering, monkeypatch, event_log, capsys, failure):
-    state = transport(gathering, monkeypatch, [])
+    state = transport(gathering, monkeypatch, [response(body=EMPTY_CSV)])
     entry = [0.0]
     gathering.time.perf_counter = lambda: entry.pop() if entry else 180.0
     originals = []
