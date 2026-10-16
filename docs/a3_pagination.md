@@ -112,6 +112,11 @@ versions survive cross-page overlap. The existing A2 duplicate branch constructs
 its original `A2_ISS_RESPONSE_SCHEMA_INVALID` ValueError, then attempts a diagnostic
 hook for the first/current record; it does not widen the source profile.
 
+Ordering refusals retain the first violating adjacent raw pair within a page, or
+the prior page's last/current page's first raw pair across pages. A single prior
+raw boundary row is retained and cleared in `finally`; no new CSV parser is used.
+Capture faults preserve the same original ordering exception and fixed args.
+
 Metadata includes format/reason/state, exactness/omissions, request ID and frozen
 request values, endpoint/engine, board/source uncertainty, columns and caps, byte
 sizes, capture UTC, and per-record page ordinal/start/attempt/data-record ordinal,
@@ -171,6 +176,11 @@ its own object/args without fabricating a terminal logging sequence. Real-writer
 level, redaction/canary and native-primary regressions
 remain covered.
 
+If the owned checkpoint expires after terminal-empty during final assembly, the
+terminal event retains `A2_ISS_DEADLINE_EXCEEDED / TIMEOUT / DEADLINE_EXCEEDED`.
+Recognition uses the checkpoint's original exception object, not exception text;
+no second checkpoint replaces it. Native assembly failures retain precedence.
+
 ## Regression and AC mapping
 
 | AC / risk | Offline evidence | Remaining acceptance |
@@ -179,8 +189,8 @@ remain covered.
 | #6 refusal | Repeated/overlapping/reversed pages; malformed/failed terminal; retry exhaustion; page/byte/time exhaustion after data | Source availability is not proven |
 | #6 numeric compatibility | Exact large integer and mixed numeric literal oracles; signed zero; unsafe promotion refusal | No decimal lexical precision claim |
 | #21 request bounds | `from=till`, shares/bonds × 24/60/10/1; all parameters fixed on pages and retries | Annual/leap/window ordering remains A3-02 |
-| Evidence / native errors | Both raw conflict versions; local A2 duplicate; preliminary capture faults with/without prefix; secondary metadata/cap/attribute faults; same native primary | Private local evidence only |
-| #78 logging | Page order/counts/retries/caller precedence; delivery faults; real F-LOG canaries/redaction and primary precedence | Global logging integration remains F |
+| Evidence / native errors | Both raw conflict versions; first intra-page ordering pair and prior-last/current-first cross-page pair with exact lexemes/provenance; local A2 duplicate; preliminary capture and secondary metadata/cap/attribute faults; same native primary | Private local evidence only |
+| #78 logging | Page order/counts/retries/caller precedence; final-assembly deadline at 180/181s after terminal, 179s control, None/context and secondary-fault variants; real F-LOG canaries/redaction and native primary precedence | Global logging integration remains F |
 | #47 caller integration | Actual full_reload/data_update late-page faults; no new writer; affected dataset's previous bytes/hashes preserved | Broader integration remains open |
 | D/R1 | Local affected-dataset fixture preservation only | NOT_CONNECTED: no multi-dataset/all-format/remote transaction or release claim |
 | Notebook / guard | Indivisible pair sync; unchanged native A/F2/F-LOG/F3 boundaries; clean exact-HEAD validation | Local borrowed runtime does not satisfy owning-worktree F1; hosted CI is separate |

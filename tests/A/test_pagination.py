@@ -555,3 +555,293 @@ def test_late_native_primary_survives_logger_and_evidence_faults(gathering, monk
     assert 'A2_LOGGING_FAILURE: LOGGING_INCOMPLETE' in primary.__notes__
     assert 'A3_EVIDENCE_FAILED_UNVERIFIED' in primary.__notes__
     assert len(state.calls) == 2 and state.sleeps == [3]
+
+
+# Literal, distinct raw lexemes; no duplicate key can hide an ordering refusal.
+ORDER_PREFIX = ('100.0;101.0;102.0;99.0;202000.0;0900;'
+                '2024-03-01 09:00:00;2024-03-01 09:00:59\n')
+ORDER_ZERO = ('100.0;101.0;102.0;99.0;202000.0;0000;'
+              '2024-03-01 10:00:00;2024-03-01 10:00:59\n')
+ORDER_FOUR = ('+1.00e2;101.00;102.0;99.0;202000.0;  +04000  ;'
+              '2024-03-01 10:04:00;2024-03-01 10:04:59\n')
+ORDER_THREE = ('100.00;1.01e2;102.0;99.0;202000.0;3.003e3;'
+               '2024-03-01 10:03:00;2024-03-01 10:03:59\n')
+ORDER_TWO = ('100.0;101.0;1.020e2;99.00;202000.00; 02002 ;'
+             '2024-03-01 10:02:00;2024-03-01 10:02:59\n')
+ORDER_FIRST = ('+1.00e2', '101.00', '102.0', '99.0', '202000.0', '  +04000  ',
+               '2024-03-01 10:04:00', '2024-03-01 10:04:59')
+ORDER_INTRA_SECOND = ('100.00', '1.01e2', '102.0', '99.0', '202000.0', '3.003e3',
+                      '2024-03-01 10:03:00', '2024-03-01 10:03:59')
+ORDER_CROSS_SECOND = ('100.0', '101.0', '1.020e2', '99.00', '202000.00', ' 02002 ',
+                      '2024-03-01 10:02:00', '2024-03-01 10:02:59')
+
+
+def ordering_case(kind):
+    if kind == 'intra':
+        bodies = [HEADER + ORDER_ZERO + ORDER_FOUR + ORDER_THREE + ORDER_TWO]
+        return bodies, [0], (ORDER_FIRST, ORDER_INTRA_SECOND), [(1, 0, 1, 2), (1, 0, 1, 3)], [0, 0]
+    bodies = [HEADER + ORDER_ZERO + ORDER_FOUR, HEADER + ORDER_TWO + ORDER_THREE]
+    if kind == 'cross-prefix':
+        return [HEADER + ORDER_PREFIX, *bodies], [0, 1, 3], (
+            ORDER_FIRST, ORDER_CROSS_SECOND), [(2, 1, 1, 2), (3, 3, 1, 1)], [1, 2]
+    assert kind == 'cross'
+    return bodies, [0, 2], (ORDER_FIRST, ORDER_CROSS_SECOND), [(1, 0, 1, 2), (2, 2, 1, 1)], [0, 1]
+
+
+@pytest.mark.parametrize('kind', ['intra', 'cross', 'cross-prefix'])
+@pytest.mark.parametrize('with_context', [False, True])
+def test_review_a_ordering_has_first_raw_pair_and_native_primary(
+        gathering, monkeypatch, event_log, writers, kind, with_context):
+    bodies, offsets, cells, provenance, body_positions = ordering_case(kind)
+    prepared = [response(body) for body in bodies]
+    unused = response()
+    state = transport(gathering, monkeypatch, [*prepared, unused])
+    observed = []
+    original = gathering._a3_evidence
+    def evidence(primary, *args, **kwargs):
+        observed.append((primary, primary.args))
+        return original(primary, *args, **kwargs)
+    monkeypatch.setattr(gathering, '_a3_evidence', evidence)
+    with pytest.raises(ValueError) as caught:
+        query(gathering, logging_context=event_log.context if with_context else None)
+    primary = caught.value
+    assert type(primary) is ValueError and primary.args == ('A3_ISS_PAGE_ORDER_INVALID',)
+    assert primary is observed[0][0] and primary.args == observed[0][1]
+    raw = primary.a3_evidence
+    assert raw['raw_cells'] == cells
+    meta = raw['metadata']
+    assert meta['reason'] == ('INTRA_PAGE_ORDER' if kind == 'intra' else 'CROSS_PAGE_ORDER')
+    assert [(row['page_ordinal'], row['start'], row['attempt'], row['data_record_ordinal'])
+            for row in meta['rows']] == provenance
+    assert [row['codec'] for row in meta['rows']] == ['utf-8', 'utf-8']
+    assert [row['body_sha256'] for row in meta['rows']] == [
+        hashlib.sha256(bodies[position].encode('utf-8')).hexdigest() for position in body_positions]
+    assert [row['body_bytes'] for row in meta['rows']] == [len(bodies[position].encode()) for position in body_positions]
+    assert [row['admission_state'] for row in meta['rows']] == (
+        ['A2_VALIDATED', 'A2_VALIDATED'] if kind == 'intra' else ['A3_STAGED', 'A2_VALIDATED'])
+    assert (meta['row_cap'], meta['cell_bytes_cap'], meta['metadata_bytes_cap']) == (2, 16777216, 16384)
+    assert meta['source_identity'] == meta['availability'] == 'NOT_VERIFIED'
+    assert meta['persistence'] == 'NOT_REQUESTED' and meta['verified_sha'] is None
+    assert [call['start'] for call in state.calls] == offsets
+    assert state.sleeps == [3] * len(bodies) and writers == []
+    assert all(item.raw.close_calls == 1 for item in prepared)
+    assert unused.raw.reads == [] and unused.raw.close_calls == 0
+    assert not any(item['event'] in ('a2_query_retry', 'a2_query_returned') for item in event_log.events)
+
+
+@pytest.mark.parametrize('kind', ['intra', 'cross', 'cross-prefix'])
+@pytest.mark.parametrize('fault', ['metadata', 'cap', 'helper', 'logger'])
+def test_review_a_ordering_secondary_fault_keeps_original_primary(
+        gathering, monkeypatch, event_log, writers, kind, fault):
+    bodies, offsets, cells, provenance, body_positions = ordering_case(kind)
+    state = transport(gathering, monkeypatch, [response(body) for body in bodies])
+    observed = []
+    original = gathering._a3_evidence
+    def evidence(primary, reason, request, pairs=(), logging_context=None):
+        observed.append((primary, primary.args, reason, tuple(pairs)))
+        if fault == 'helper':
+            raise requests.exceptions.Timeout('ORDER_EVIDENCE_CANARY')
+        return original(primary, reason, request, pairs, logging_context)
+    monkeypatch.setattr(gathering, '_a3_evidence', evidence)
+    if fault == 'metadata':
+        def fail(value):
+            raise ConnectionResetError('ORDER_METADATA_CANARY')
+        monkeypatch.setattr(gathering, '_a3_metadata', fail)
+    if fault == 'cap':
+        monkeypatch.setattr(gathering, '_A3_EVIDENCE_BYTES', 1)
+    if fault == 'logger':
+        original_emit = event_log.logger.emit_event
+        def emit(context, level, event, message, fields):
+            if event == 'a2_query_failed':
+                raise OSError('ORDER_LOG_CANARY')
+            return original_emit(context, level, event, message, fields)
+        monkeypatch.setattr(event_log.logger, 'emit_event', emit)
+    with pytest.raises(ValueError) as caught:
+        query(gathering, logging_context=event_log.context)
+    assert caught.value is observed[0][0] and caught.value.args == observed[0][1] == ('A3_ISS_PAGE_ORDER_INVALID',)
+    assert observed[0][2] == ('INTRA_PAGE_ORDER' if kind == 'intra' else 'CROSS_PAGE_ORDER')
+    assert tuple(tuple(pair[2]) for pair in observed[0][3]) == cells
+    if fault == 'logger':
+        assert caught.value.a3_evidence['raw_cells'] == cells
+        assert 'A2_LOGGING_FAILURE: LOGGING_INCOMPLETE' in caught.value.__notes__
+    else:
+        assert 'A3_EVIDENCE_FAILED_UNVERIFIED' in caught.value.__notes__
+    assert [call['start'] for call in state.calls] == offsets and writers == []
+    assert not any(item['event'] in ('a2_query_retry', 'a2_query_returned') for item in event_log.events)
+
+
+@pytest.mark.parametrize('with_context', [False, True])
+@pytest.mark.parametrize('elapsed', [179.0, 180.0, 181.0])
+def test_review_b_final_assembly_deadline_is_a2_compatible(
+        gathering, monkeypatch, event_log, writers, capsys, with_context, elapsed):
+    pages = [response(numeric_body('2000')), response()]
+    unused = response()
+    state = transport(gathering, monkeypatch, [*pages, unused])
+    original_assemble = gathering._a3_assemble
+    original_diagnostic = gathering._a2_diagnostic
+    observed = []
+    def assemble(frames, ticker):
+        assert len(state.calls) == 2 and state.sleeps == [3, 3]
+        assert [item['event'] for item in event_log.events][-1:] == (['a3_page_terminal'] if with_context else [])
+        result = original_assemble(frames, ticker)
+        state.elapsed = elapsed
+        return result
+    def diagnostic(context, level, event, message, fields, primary=None):
+        observed.append((event, fields, primary, None if primary is None else primary.args))
+        return original_diagnostic(context, level, event, message, fields, primary)
+    monkeypatch.setattr(gathering, '_a3_assemble', assemble)
+    monkeypatch.setattr(gathering, '_a2_diagnostic', diagnostic)
+    if elapsed < 180:
+        result = query(gathering, logging_context=event_log.context if with_context else None)
+        assert result['volume'].tolist() == [2000] and result['ticker'].tolist() == ['FIXTURE_SHARE']
+        assert observed[-1][0] == 'a2_query_returned'
+    else:
+        with pytest.raises(requests.exceptions.Timeout) as caught:
+            query(gathering, logging_context=event_log.context if with_context else None)
+        terminal = observed[-1]
+        assert caught.value is terminal[2] and caught.value.args == terminal[3] == ('A2_ISS_DEADLINE_EXCEEDED',)
+        fields = terminal[1]
+        assert (terminal[0], fields['outcome'], fields['error']['code'], fields['error']['category']) == (
+            'a2_query_failed', 'DEADLINE_EXCEEDED', 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT')
+        assert fields['error']['final'] is True and fields['error']['retryable'] is False
+        assert fields['retries'] == {'attempt': 2, 'limit': 5000}
+        assert fields['counts']['rows_received'] == 1 and fields['counts']['pages'] == 2
+        assert [item[0] for item in observed].count('a2_query_failed') == 1
+        assert not any(item[0] in ('a2_query_retry', 'a2_query_returned') for item in observed)
+        output = capsys.readouterr()
+        if not with_context:
+            assert 'DEADLINE_EXCEEDED: A2_ISS_DEADLINE_EXCEEDED' in output.out
+    assert [call['start'] for call in state.calls] == [0, 1] and state.sleeps == [3, 3]
+    assert all(item.raw.close_calls == 1 for item in pages) and writers == []
+    assert unused.raw.reads == [] and unused.raw.close_calls == 0
+
+
+@pytest.mark.parametrize('with_context', [False, True])
+@pytest.mark.parametrize('secondary', ['evidence', 'delivery', 'both'])
+def test_review_b_final_deadline_primary_precedes_secondary_faults(
+        gathering, monkeypatch, event_log, writers, with_context, secondary):
+    state = transport(gathering, monkeypatch, [response(numeric_body('2000')), response()])
+    original_assemble = gathering._a3_assemble
+    original_evidence = gathering._a3_evidence
+    original_diagnostic = gathering._a2_diagnostic
+    observed, source = [], []
+    def assemble(frames, ticker):
+        result = original_assemble(frames, ticker)
+        state.elapsed = 180.0
+        return result
+    def evidence(primary, *args, **kwargs):
+        source.append((primary, primary.args))
+        return original_evidence(primary, *args, **kwargs)
+    def diagnostic(context, level, event, message, fields, primary=None):
+        observed.append((event, fields, primary))
+        return original_diagnostic(context, level, event, message, fields, primary)
+    monkeypatch.setattr(gathering, '_a3_assemble', assemble)
+    monkeypatch.setattr(gathering, '_a3_evidence', evidence)
+    monkeypatch.setattr(gathering, '_a2_diagnostic', diagnostic)
+    if secondary in ('evidence', 'both'):
+        def fail(value):
+            raise OSError('FINAL_EVIDENCE_CANARY')
+        monkeypatch.setattr(gathering, '_a3_metadata', fail)
+    if secondary in ('delivery', 'both'):
+        if with_context:
+            original_emit = event_log.logger.emit_event
+            def emit(context, level, event, message, fields):
+                if event == 'a2_query_failed':
+                    raise OSError('FINAL_LOG_CANARY')
+                return original_emit(context, level, event, message, fields)
+            monkeypatch.setattr(event_log.logger, 'emit_event', emit)
+        else:
+            import builtins
+            original_print = builtins.print
+            def printing(*args, **kwargs):
+                if args and type(args[0]) is str and args[0].startswith('Свечи DEADLINE_EXCEEDED:'):
+                    raise OSError('FINAL_CONSOLE_CANARY')
+                return original_print(*args, **kwargs)
+            monkeypatch.setattr(builtins, 'print', printing)
+    with pytest.raises(requests.exceptions.Timeout) as caught:
+        query(gathering, logging_context=event_log.context if with_context else None)
+    assert caught.value is source[0][0] and caught.value.args == source[0][1] == ('A2_ISS_DEADLINE_EXCEEDED',)
+    fields = observed[-1][1]
+    assert (fields['outcome'], fields['error']['code'], fields['error']['category']) == (
+        'DEADLINE_EXCEEDED', 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT')
+    assert caught.value is observed[-1][2]
+    if secondary in ('evidence', 'both'):
+        assert 'A3_EVIDENCE_FAILED_UNVERIFIED' in caught.value.__notes__
+    if secondary in ('delivery', 'both'):
+        assert 'A2_LOGGING_FAILURE: LOGGING_INCOMPLETE' in caught.value.__notes__
+    assert len(state.calls) == 2 and state.sleeps == [3, 3] and writers == []
+    assert not any(item[0] in ('a2_query_retry', 'a2_query_returned') for item in observed)
+
+
+@pytest.mark.parametrize('primary', [RuntimeError('ASSEMBLY_NATIVE_CANARY'),
+    requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')])
+def test_review_b_native_assembly_failure_is_not_replaced_by_expired_clock(
+        gathering, monkeypatch, event_log, writers, primary):
+    state = transport(gathering, monkeypatch, [response(numeric_body('2000')), response()])
+    original_args = primary.args
+    def assemble(frames, ticker):
+        state.elapsed = 180.0
+        raise primary
+    monkeypatch.setattr(gathering, '_a3_assemble', assemble)
+    with pytest.raises(type(primary)) as caught:
+        query(gathering, logging_context=event_log.context)
+    assert caught.value is primary and primary.args == original_args
+    assert event_log.events[-1]['error']['code'] != 'A2_ISS_DEADLINE_EXCEEDED'
+    assert len(state.calls) == 2 and state.sleeps == [3, 3] and writers == []
+    assert not any(item['event'] in ('a2_query_retry', 'a2_query_returned') for item in event_log.events)
+
+
+@pytest.mark.parametrize('caller', ['reload', 'update'])
+def test_review_a_actual_caller_order_fault_preserves_affected_previous(
+        gathering, monkeypatch, fixture_root, save_dataset, writers, catalogue,
+        snapshot, candle_frame, event_log, caller):
+    root, root_arg = fixture_root
+    target = root / 'datasets/fixture_order_previous.csv'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    previous_csv = save_dataset(target, candle_frame)
+    excel = target.with_suffix('.xlsx')
+    previous_excel = b'ORDER_PREVIOUS_XLSX_BYTES'
+    excel.write_bytes(previous_excel)
+    hashes = [hashlib.sha256(item).hexdigest() for item in (previous_csv, previous_excel)]
+    source = catalogue[catalogue['TRADE_CODE'] == 'SBER'].copy(deep=True)
+    if caller == 'update':
+        original_read = gathering.pd.read_csv
+        catalogue_path = root / 'datasets/ticker_lists/moex_full.csv'
+        def read(path, *args, **kwargs):
+            if isinstance(path, io.StringIO):
+                return original_read(path, *args, **kwargs)
+            if Path(path) == catalogue_path:
+                assert args == () and kwargs == {'index_col': 0}
+                return source.copy(deep=True)
+            assert Path(path) == target and args == () and kwargs == {}
+            return original_read(path, *args, **kwargs)
+        monkeypatch.setattr(gathering.pd, 'read_csv', read)
+    bodies, offsets, cells, provenance, body_positions = ordering_case('cross')
+    unused = response()
+    state = transport(gathering, monkeypatch, [*[response(body) for body in bodies], unused])
+    observed = []
+    original_evidence = gathering._a3_evidence
+    def evidence(primary, *args, **kwargs):
+        observed.append((primary, primary.args))
+        return original_evidence(primary, *args, **kwargs)
+    monkeypatch.setattr(gathering, '_a3_evidence', evidence)
+    with pytest.raises(ValueError) as caught:
+        if caller == 'reload':
+            gathering.full_reload(source, 1, 10, 'fixture_order_previous', 'минута', root_arg,
+                                  snapshot, logging_context=event_log.context)
+        else:
+            gathering.data_update([{'interval': 1, 'years': 10, 'filename': 'fixture_order_previous',
+                                    'word': 'минута'}], root_arg, source, snapshot,
+                                   logging_context=event_log.context)
+    assert caught.value is observed[0][0] and caught.value.args == observed[0][1] == ('A3_ISS_PAGE_ORDER_INVALID',)
+    assert caught.value.a3_evidence['raw_cells'] == cells
+    meta = caught.value.a3_evidence['metadata']
+    assert meta['request']['security'] == 'SBER'
+    assert [(row['page_ordinal'], row['start'], row['attempt'], row['data_record_ordinal'])
+            for row in meta['rows']] == provenance
+    assert [call['start'] for call in state.calls] == offsets and writers == []
+    assert unused.raw.reads == [] and unused.raw.close_calls == 0
+    assert target.read_bytes() == previous_csv and excel.read_bytes() == previous_excel
+    assert [hashlib.sha256(path.read_bytes()).hexdigest() for path in (target, excel)] == hashes
+    assert not any(item['event'] in ('a2_query_returned', 'a1_full_reload_returned', 'a1_data_update_returned')
+                   for item in event_log.events)

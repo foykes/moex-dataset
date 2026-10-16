@@ -686,6 +686,7 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
     resource = {'bytes': 0}
     frames, captures, seen, payloads = [], [], {}, set()
     capture = None
+    last_raw = None
     retry_after_note = None
     deadline_error = None
 
@@ -815,6 +816,14 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         _a3_evidence(primary, 'LOCAL_DUPLICATE', request,
                      ((capture, first, rows[first - 1]), (capture, current, rows[current - 1])),
                      logging_context)
+
+    def refuse_order(reason, pairs):
+        primary = ValueError('A3_ISS_PAGE_ORDER_INVALID')
+        try:
+            _a3_evidence(primary, reason, request, pairs, logging_context)
+        except BaseException:
+            _a3_evidence_note(primary)
+        raise primary
 
     def page():
         global header
@@ -1002,13 +1011,17 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
                     raise primary
             if digest in payloads:
                 raise ValueError('A3_ISS_PAGE_REPEATED')
-            if any(first[6] >= second[6] for first, second in zip(rows, rows[1:])):
-                raise ValueError('A3_ISS_PAGE_ORDER_INVALID')
+            for ordinal, (first, second) in enumerate(zip(rows, rows[1:]), 1):
+                if first[6] >= second[6]:
+                    refuse_order('INTRA_PAGE_ORDER',
+                        ((capture, ordinal, first), (capture, ordinal + 1, second)))
             if captures and rows[0][6] <= captures[-1]['last_begin']:
-                raise ValueError('A3_ISS_PAGE_ORDER_INVALID')
+                refuse_order('CROSS_PAGE_ORDER', (last_raw, (capture, 1, rows[0])))
             capture['admission_state'] = 'A3_STAGED'
             capture['last_begin'] = rows[-1][6]
             captures.append(capture)
+            # Only one prior raw boundary row is retained; no second CSV parser.
+            last_raw = (capture, len(rows), tuple(rows[-1]))
             payloads.add(digest)
             for ordinal, row in enumerate(rows, 1):
                 key = ('ISS_CANDLES_BOARDLESS', 'stock', request['market'], request['security'],
@@ -1035,16 +1048,20 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         except BaseException:
             _a3_evidence_note(primary)
         if not failed_emitted and not diagnostic_failed and not success_sleep_interrupted:
-            _, category, _, _ = _a2_request_policy(primary)
-            code = (primary.args[0] if type(primary) is ValueError and primary.args
-                    and primary.args[0] in ('A3_ISS_PAGE_OVERLAP', 'A3_ISS_PAGE_REPEATED',
-                        'A3_ISS_PAGE_ORDER_INVALID', 'A3_ISS_PAGE_LIMIT_EXCEEDED',
-                        'A3_ISS_NUMERIC_ASSEMBLY_LOSS') else 'A3_ISS_QUERY_FAILED')
-            if code == 'A3_ISS_PAGE_LIMIT_EXCEEDED':
-                category = 'CAPACITY'
-            elif code != 'A3_ISS_QUERY_FAILED':
-                category = 'SOURCE'
-            emit('ERROR', 'a2_query_failed', 'QUERY_REFUSED', primary, code, category, final=True)
+            if primary is deadline_error:
+                code, category, outcome = 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', 'DEADLINE_EXCEEDED'
+            else:
+                _, category, _, _ = _a2_request_policy(primary)
+                code = (primary.args[0] if type(primary) is ValueError and primary.args
+                        and primary.args[0] in ('A3_ISS_PAGE_OVERLAP', 'A3_ISS_PAGE_REPEATED',
+                            'A3_ISS_PAGE_ORDER_INVALID', 'A3_ISS_PAGE_LIMIT_EXCEEDED',
+                            'A3_ISS_NUMERIC_ASSEMBLY_LOSS') else 'A3_ISS_QUERY_FAILED')
+                if code == 'A3_ISS_PAGE_LIMIT_EXCEEDED':
+                    category = 'CAPACITY'
+                elif code != 'A3_ISS_QUERY_FAILED':
+                    category = 'SOURCE'
+                outcome = 'QUERY_REFUSED'
+            emit('ERROR', 'a2_query_failed', outcome, primary, code, category, final=True)
         raise
     finally:
         seen.clear()
@@ -1052,6 +1069,7 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         payloads.clear()
         frames.clear()
         capture = None
+        last_raw = None
 
 
 # %%
