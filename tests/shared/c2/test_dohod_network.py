@@ -11,6 +11,7 @@ import ssl
 import pandas as pd
 import pytest
 import requests
+from urllib3._collections import HTTPHeaderDict
 from urllib3 import exceptions as ue
 
 import run_logging
@@ -22,6 +23,7 @@ URL = 'https://www.dohod.ru/ik/analytics/dividend'
 DETAIL = URL + '/aaa'
 CANARY = 'C2B_SYNTHETIC_SECRET_713'
 DISCOVERY = b'<a href="/ik/analytics/dividend/aaa">AAA</a>'
+REAL_PREPARE_REQUEST = requests.Session.prepare_request
 
 
 class Raw:
@@ -30,6 +32,7 @@ class Raw:
         self.error = error
         self.after_read = after_read
         self.close_error = close_error
+        self.headers = HTTPHeaderDict()
         self.reads = self.closes = self.releases = 0
 
     def stream(self, size, decode_content=True):
@@ -62,6 +65,8 @@ def reply(body=b'overview', *, status=200, retry_after=None, error=None,
         response.headers['Retry-After'] = retry_after
     response.raw = Raw([body] if chunks is None else chunks, error=error,
                        after_read=after_read, close_error=close_error)
+    if retry_after is not None:
+        response.raw.headers.add('Retry-After', retry_after)
     response.close_calls = 0
     real_close = response.close
     def close():
@@ -112,10 +117,34 @@ def failed(context):
     assert report['delivery_outcome'] == 'COMPLETE' and report['storage_sealed']
 
 
+def _adapter_source(monkeypatch, module, receive):
+    # Observe explicit caller headers separately from real Session defaults.
+    def prepare(session, request):
+        headers = dict(request.headers)
+        prepared = REAL_PREPARE_REQUEST(session, request)
+        prepared._c2_explicit_headers = headers
+        return prepared
+
+    def send(adapter, prepared, *, stream=False, timeout=None, verify=True,
+             cert=None, proxies=None):
+        assert isinstance(prepared, requests.PreparedRequest)
+        assert prepared.method == 'GET' and prepared.body is None
+        headers = prepared._c2_explicit_headers
+        for name, value in requests.utils.default_headers().items():
+            assert prepared.headers[name] == headers.get(name, value)
+        result = receive(prepared.url, headers=headers, timeout=timeout, stream=stream)
+        result.request = prepared
+        result.url = prepared.url
+        return result
+
+    monkeypatch.setattr(module.requests.Session, 'prepare_request', prepare)
+    monkeypatch.setattr(module.requests.adapters.HTTPAdapter, 'send', send)
+
+
 def source(monkeypatch, module, sequence):
     queue = list(sequence)
     calls = []
-    def get(url, *, headers, timeout=None, stream=False):
+    def receive(url, *, headers, timeout=None, stream=False):
         calls.append((url, timeout, stream, dict(headers)))
         assert queue, 'Unexpected fixture request'
         expected, result = queue.pop(0)
@@ -123,7 +152,7 @@ def source(monkeypatch, module, sequence):
         if isinstance(result, BaseException):
             raise result
         return result
-    monkeypatch.setattr(module.requests, 'get', get)
+    _adapter_source(monkeypatch, module, receive)
     return calls
 
 
@@ -398,7 +427,7 @@ def test_infeasible_retry_no_new_request(monkeypatch, model, tmp_path, context, 
     def recorded(url, **kw):
         calls.append(url)
         return get(url, **kw)
-    monkeypatch.setattr(module.requests, 'get', recorded)
+    _adapter_source(monkeypatch, module, recorded)
     written = writers(monkeypatch, module, tmp_path)
     if after_warning:
         real_emit = run_logging.emit_event
@@ -493,7 +522,7 @@ def test_retry_remaining_timeout_and_no_real_wait(monkeypatch, model, tmp_path):
             clock[0] = 33
             raise error
         return reply()
-    monkeypatch.setattr(module.requests, 'get', get)
+    _adapter_source(monkeypatch, module, get)
     parser(monkeypatch, module)
     writers(monkeypatch, module, tmp_path)
     module.get_main(URL)

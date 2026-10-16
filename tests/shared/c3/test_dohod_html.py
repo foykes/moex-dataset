@@ -124,8 +124,8 @@ def assert_no_accumulation(module, original_globals=None):
 def two_page_discovery():
     links = ['/ik/analytics/dividend/aaa', '/ik/analytics/dividend/bbb']
     html = ''.join('<a href="' + link + '">fixture</a>' for link in links).encode('ascii')
-    # Match the historical set iteration; no canonicalization or sorting.
-    urls = ['https://www.dohod.ru' + link for link in list(set(links))]
+    # C3-02 preserves the first DOM appearance of each canonical detail URL.
+    urls = [URL + '/aaa', URL + '/bbb']
     return html, urls
 
 

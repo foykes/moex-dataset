@@ -100,13 +100,12 @@ def test_empty_overview_keeps_other_eight_writers(monkeypatch, model, tmp_path):
     assert written[0][3].empty and written[0][3].columns.tolist() == ['Тикер', 'Дивиденд']
 
 
-def test_url_filter_set_iteration_and_no_normalization(monkeypatch, model, tmp_path):
+def test_url_filter_preserves_first_dom_order_and_rejects_foreign(monkeypatch, model, tmp_path):
     module, _, _ = model
     links = ['/ik/analytics/dividend/bbb', '/ik/analytics/dividend/aaa',
         '/ik/analytics/dividend/aaa', '/ik/analytics/dividend/report.pdf',
         '/other', 'https://foreign.invalid/ik/analytics/dividend/weird']
-    expected = ['https://www.dohod.ru' + value for value in list(set(links))
-                if '/ik/analytics/dividend/' in value and '.pdf' not in value]
+    expected = [URL + '/bbb', URL + '/aaa']
     html = ''.join('<a href="' + value + '">fixture</a>' for value in links).encode()
     calls = source(monkeypatch, module, [(URL, reply(html))] + [(u, reply(b'detail')) for u in expected])
     parser(monkeypatch, module)
@@ -115,7 +114,7 @@ def test_url_filter_set_iteration_and_no_normalization(monkeypatch, model, tmp_p
     assert [c[0] for c in calls] == [URL] + expected
     assert result[0]['page_url'].tolist() == [u for u in expected for _ in range(2)]
     assert result[0]['ticker'].tolist() == [u.split('/')[-1].upper() for u in expected for _ in range(2)]
-    assert result[0].index.tolist() == [0, 2] * 3
+    assert result[0].index.tolist() == [0, 2, 0, 2]
 
 
 @pytest.mark.parametrize('cross_call', [4, 6, 8])
@@ -195,7 +194,7 @@ def test_late_detail_failure_three_early_six_previous_untouched(monkeypatch, mod
     previous_hashes = {name: hashlib.sha256(payload).hexdigest() for name, payload in old.items()}
     error = requests.ConnectionError(ConnectionRefusedError(111, 'fixture'))
     links = ['/ik/analytics/dividend/aaa', '/ik/analytics/dividend/bbb']
-    detail_urls = ['https://www.dohod.ru' + u for u in list(set(links))]
+    detail_urls = [URL + '/aaa', URL + '/bbb']
     html = ''.join('<a href="' + u + '">fixture</a>' for u in links).encode()
     calls = source(monkeypatch, module, [(URL, reply()), (URL, reply(html)),
         (detail_urls[0], reply(b'detail')), (detail_urls[1], error)])
@@ -262,7 +261,7 @@ def test_200_overview_parser_error_zero_writers_no_transport_retry(monkeypatch, 
 def test_one_source_deadline_across_multiple_fresh_operations(monkeypatch, model, tmp_path, context):
     module, clock, _ = model
     links = ['/ik/analytics/dividend/aaa', '/ik/analytics/dividend/bbb']
-    detail_urls = ['https://www.dohod.ru' + u for u in list(set(links))]
+    detail_urls = [URL + '/aaa', URL + '/bbb']
     html = ''.join('<a href="' + u + '">fixture</a>' for u in links).encode()
     def advance():
         clock[0] += 20

@@ -1,4 +1,4 @@
-# dohod.ru acquisition and HTML compatibility
+# dohod.ru acquisition, HTML compatibility and URL admission
 
 This transport-only slice starts from `3b6e78f11f7681cdcd9c813fff4236a8c63ab677`.
 The owner accepted PLAN R2 and granted condition H exclusive ownership of
@@ -27,18 +27,28 @@ reset or extended. Each overview, discovery or detail operation starts a fresh
 The operation includes retries, final-body consumption, closing, cached text
 decoding, the historical parser/transforms, progress diagnostics and barriers.
 
-Every outer attempt uses `requests.get(url, headers=headers, stream=True,
-timeout=(t, t))`, where `t=min(10, positive remaining operation budget)`.
-Status is checked before consuming the final response body. Final 2xx means
-transport acceptance only. Final 4xx/5xx preserves Requests' HTTPError;
-terminal 1xx/3xx raises a fixed-message HTTPError. Requests' existing TLS,
-proxy, authentication and redirect defaults and the historical User-Agent
-are unchanged. There is no persistent Session or adapter retry policy.
+Each outer attempt owns a fresh `requests.Session` for its entire approved
+redirect chain. Preparation uses `Session.prepare_request(Request(...))` and
+`merge_environment_settings`; sending uses the public `HTTPAdapter.send` with
+`stream=True, timeout=(t, t)`, where `t=min(10, positive remaining operation
+budget)` is recomputed immediately before each send. Prepared URL equality is
+checked before sending. The default adapter disables urllib3 redirects and
+preloading. `Session.get/send` is deliberately avoided: even `allow_redirects=False`
+can consume a 3xx body while Requests prepares `_next`. See C3-02 below.
+
+Status is checked before consuming the terminal body. Final 2xx means transport
+acceptance only. Final 4xx/5xx preserves Requests' HTTPError; unsupported terminal
+1xx/3xx and missing Location use a fixed-message HTTPError. TLS/proxy/CA/netrc,
+Session default headers and the explicit historical User-Agent remain Requests
+policy. Cookie extraction uses its real cookie jar/domain/path/expiry rules
+within an attempt; cookies and Sessions do not persist across attempts or pages.
+No adapter retry policy is added. Response history/elapsed/_next and external
+hooks are not recreated; private Responses are never returned to callers.
 
 `.content` supplies the cached body bytes to the C3 HTML adapter described below.
 Discovery consumes the same cached body and uses Requests' `.text` encoding
 behavior after closing.
-Every obtained response is closed, including falsey HTTP-error responses and
+Every obtained response and owned Session is closed, including falsey HTTP-error responses and
 exception-attached responses; identity deduplication prevents double close.
 Partial bytes from a failed read never reach the parser. A secondary cleanup
 failure cannot replace the primary OPEN/READ error. CLOSE-only failures are IO
@@ -122,8 +132,8 @@ Empty overview omits only call 1; the other eight retain their behavior.
 The parser retains `df_list[-1]`, historical columns/drop/reset/concat behavior,
 2/3-table branches, duplicates, indices and existing bare detail `read_html`
 exception handling. Budget/diagnostics stay outside that bare except, including
-its skip path. Filtering/prefix concatenation and `list(set(data))` remain
-unchanged; order across distinct detail URLs remains set-dependent.
+its skip path. C3-02 replaces prefix concatenation/set iteration with approved
+canonical URLs in first DOM order. Source-row duplicates remain unchanged.
 
 ## Diagnostics and offline evidence
 
@@ -194,8 +204,9 @@ production-writer evidence is claimed.
 
 C2-02B's literal parser-output doubles do not prove genuine HTML compatibility.
 C3-01 below addresses #31 with a byte-reader adapter and synthetic real-parser
-regressions; today's live dohod HTML remains unverified. #32 canonical/allowed
-URLs and #33 table semantics/completeness remain separate. C2-03 quality and C2-04/D
+regressions; today's live dohod HTML remains unverified. C3-02 below implements
+the selected #32 consumer URL policy; live URL grammar remains unverified.
+#33 table semantics/completeness remain separate. C2-03 quality and C2-04/D
 publication/previous integrity, D2/F child supervision and parent diagnostic
 hookup remain open integration AC. HTTP 200, an empty/skipped detail or a
 successful writer does not establish complete data or publication success.
@@ -273,3 +284,102 @@ sleep, production writers, credentials, cron, Google or FTP is used for C3 tests
 C3 rollback is a reviewed revert of these six paths, including both notebook
 pair members and the C2 boundary adaptations. It does not restore an already
 published release or repair historical partial output.
+
+## C3-02 URL and redirect policy
+
+C3-02 PLAN R2 starts from `945c424ecbf7bdd4459de50711929e21e6a3aeb4`
+(tree `8259a6c46fc691325d81a9443b8c15137e768c9c`). The owner/coordinator explicitly
+released C3-01's reservation to C3-02, transferred the six existing pair/test/doc
+paths and admitted `tests/shared/c3/test_dohod_urls.py`. The independent local
+ignored HANDOFF_GRANTED records that direct grant and the ownership snapshot.
+A retained inactive worktree is not itself a competing writer.
+
+The consumer admission profile accepts HTTPS and exact ASCII `www.dohod.ru`
+(DNS case insensitive), no userinfo, and absent or literal `:443` only. It strips
+fragment/default port and preserves path case. Overview has two distinct routes:
+`/ik/analytics/dividend` (O) and `/ik/analytics/dividend/` (S). Detail has exactly
+one nonempty ASCII-unreserved slug below that subtree, without trailing slash.
+After normalization, a slug containing `.pdf` in any case is rejected.
+No host aliases, query parameters, alternate ports, Unicode hosts/paths, nested
+slugs or trailing-slash detail aliases are inferred from synthetic fixtures.
+
+Raw whitespace/C0/DEL/backslash/non-ASCII, malformed percent escapes and raw or
+decoded dot segments are rejected before URL joining. Path percent escapes are
+decoded once only for ASCII unreserved characters; encoded reserved/control/percent
+bytes are rejected. A nonempty query is rejected; an empty delimiter is removed.
+Relative, root-relative, absolute and scheme-relative hrefs resolve against the
+approved final overview URL using RFC joining, then undergo the full admission
+check. HTML `<base>` is ignored. Empty/local-fragment and ordinary same-host
+navigation outside the detail subtree create no detail operation.
+
+Private `_request_page(..., page_kind=..., text=False)` returns
+`(body, approved_final_url)` only after a successful terminal 2xx body, Response/
+Session cleanup and existing decode/diagnostic/budget checks. The URL is the
+controller's approved PreparedRequest URL, never untrusted `response.url` or a
+value recovered from mutable diagnostic state. `_main_frame` uses only body;
+`_page_frames` retains the discovery result URL locally while detail operations
+replace diagnostic state. No global base/cache/seen set is added. Public function
+signatures and DataFrame/tuple/None returns stay unchanged.
+
+Thus after O -> S, href `aaa` resolves to detail A. Without the slash redirect,
+that href resolves outside the detail subtree and is ignored; `dividend/aaa`
+resolves to A from O. The controller never adds a slash to invent equivalence.
+First DOM occurrence of each canonical discovered detail URL wins. Equivalent
+hrefs share one logical operation; retries may repeat its GET. Separate overview
+acquisitions in `main` and new public invocations remain separate requests.
+Ordering, admitted URL counts and page_url values can intentionally change;
+columns, dtypes, indices, source values/duplicates and writer kwargs do not.
+Ticker/provenance derives from the canonical discovered detail URL.
+
+Redirect statuses are 301/302/303/307/308. Raw
+`response.raw.headers.getlist('Location')` must yield exactly one nonempty string.
+More than one field is rejected even if identical or differently cased; merged
+`response.headers` is not an authority and there is no comma splitting. Missing
+raw headers/getlist or an accessor exception fails closed without a merged-header
+fallback or network retry. Invalid targets never reach a new adapter send.
+
+For every hop, resolve/admit the target, require the original page role, preserve
+exact canonical detail identity, and check visited URLs/30-transition ceiling
+before closing the unread redirect Response and emitting the accepted-hop INFO.
+Only then prepare/revalidate/send the next request. O <-> S is allowed once;
+O -> S -> O fails before the final O. Overview -> detail and detail -> overview
+fail before sending. Detail A -> B (including case-only slug changes) fails with
+`REDIRECT_DETAIL_IDENTITY_CHANGED`; uppercase ticker equality proves no alias.
+An equivalent detail target becomes the already visited A and fails as a loop.
+With this finite profile, 30 valid transitions are unreachable: the ceiling is
+defensive, not evidence of a supported long redirect chain.
+
+URL/redirect/cookie/preparation/cleanup/diagnostic failures are terminal acquisition
+failures outside the legacy detail parser bare except. Retryable OPEN/READ failure
+at any hop restarts the entire chain from its original URL with fresh Session,
+visited set and the same 35-second operation/600-second source deadlines. For
+O -> S -> 503 exhaustion, requests are `[O,S,O,S,O,S]` with waits `[1,2]`; the last
+original network exception and args survive. An attempt-local identity ledger
+prevents re-closing an earlier redirect also attached to a later exception.
+Session cleanup never masks a primary failure; CLOSE-only errors never retry.
+
+Discovery emits at most one `dohod_url_rejected` WARNING per distinct fixed reason
+per invocation. An accepted overview hop emits `dohod_redirect_followed` after
+close, before another send. New rejection messages/fields/exception chains do not
+include raw href, Location or header/body exception canaries. Logging refusal or
+budget expiry stops further sends/waits. Existing received/failed envelopes,
+redaction, barriers and writer-group admissions remain in place.
+
+The new offline suite starts with public behavioral RED on the unchanged pair,
+then checks real Requests preparation/cookie/Response/raw-header semantics,
+forbidden sends, effective O/S bases, repeated same-import calls, literal real-HTML
+frames, discovery vs retry counts, cleanup, bounded warnings and late writer/hash
+boundaries. Existing C2 transport/compatibility assertions and C3-01 real
+UTF-8/windows-1251 normal/fallback parsers remain required. No HTTP socket, real
+sleep, production writer or credential is used. Final exact-HEAD evidence requires
+all four C2/C3 files, F2/F-LOG/F3, all ten notebook pairs, hosted F1 and Linux syntax;
+working-tree GREEN is not a substitute for those clean-commit gates.
+
+The live source grammar remains UNKNOWN outside this explicit consumer profile.
+No cross-slug identity, semantic table selection, completeness, required-page,
+partial-output, previous-snapshot or publication guarantee is added. A late URL
+failure can still leave the three early outputs updated and six later targets
+untouched. #33/C3-03 and D integration remain separate. Rollback is a reviewed
+seven-path revert with the notebook pair; it does not restore published data.
+No main/logger/runner/guard/CI/coordination/dependency changes, issue closure,
+auto-merge, production or next-slice activation are authorized by C3-02.
