@@ -154,16 +154,34 @@ def test_named_response_preserves_literal_rows(monkeypatch, context, reordered, 
         assert returned['duration_ms'] >= 0
 
 
-@pytest.mark.parametrize('value', [0, 0.000000001, '0.000000001', None])
+@pytest.mark.parametrize('value', [0, 0.000000001, -0.000000001])
 def test_decoded_values_are_not_coerced(monkeypatch, value):
     module = load_dividends()
     detail = {'dividends': {'columns': COLUMNS,
-        'data': [['SBER', ISIN, '2111-01-01', value, None]]}}
+        'data': [['SBER', ISIN, '2111-01-01', value, 'RUB']]}}
     source(monkeypatch, module, detail)
     module.div_loader(ISIN, 'SBER')
-    assert module.divs_all == [[ISIN, 'SBER', '2111-01-01', value, None]]
+    assert module.divs_all == [[ISIN, 'SBER', '2111-01-01', value, 'RUB']]
     assert type(module.divs_all[0][3]) is type(value)
     # Это сохранение representation, не приёмка quality/2111/currency.
+
+
+@pytest.mark.parametrize('value,currency,rule,field', [
+    ('0.000000001', 'RUB', 'VALUE_TYPE', 'value'),
+    (None, 'RUB', 'VALUE_TYPE', 'value'),
+    (1.0, None, 'CURRENCY_TYPE', 'currency'),
+])
+def test_new_local_profile_explicitly_refuses_old_untyped_inputs(
+        monkeypatch, value, currency, rule, field):
+    module = load_dividends()
+    detail = {'dividends': {'columns': COLUMNS,
+        'data': [['SBER', ISIN, '2111-01-01', value, currency]]}}
+    calls = source(monkeypatch, module, detail)
+    with pytest.raises(ValueError) as caught:
+        module.div_loader(ISIN, 'SBER')
+    assert str(caught.value) == (
+        'DIVIDEND_SOURCE_SEMANTIC_INVALID: rule={}; field={}; row=0'.format(rule, field))
+    assert module.divs_all == [] and calls == [SEARCH_URL, DETAIL_URL]
 
 
 INVALID = [

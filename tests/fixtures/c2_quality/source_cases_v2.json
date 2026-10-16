@@ -1,0 +1,516 @@
+{
+  "fixture_version": 2,
+  "policy": "C2_03B_RESPONSE_LOCAL_V1",
+  "runtime_profile": {
+    "implementation": "CPython",
+    "numpy": "2.3.4",
+    "openpyxl": "3.1.5",
+    "pandas": "2.3.3",
+    "platform": "win32",
+    "pytest": "8.4.2",
+    "python": "3.14.8"
+  },
+  "historical_fixture_blob": "524943fa9f886aff9fdb751a5e21c9aad33738d3",
+  "historical_oracle_blob": "4f285c1184a8224db3df164d838c35935517cc0b",
+  "historical_cases": [
+    {
+      "case_id": "healthy",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "historical_2111",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "valid_leap_day",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "invalid_leap_day",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_CALENDAR",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "future_date",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "empty_date",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_SHAPE",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "null_date",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_TYPE",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "malformed_date",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_SHAPE",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "numeric_date",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_TYPE",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "zero_integer",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "zero_float",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "tiny_positive",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "underflow_positive",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "negative_amount",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "long_decimal",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "many_decimal_digits",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "large_integer",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "null_amount",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "numeric_string",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "boolean_amount",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "list_amount",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "object_amount",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "overflow_number",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_NONFINITE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "nonstandard_nan",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_NONFINITE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "nonstandard_inf",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_NONFINITE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "nonstandard_negative_inf",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_NONFINITE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "runtime_nan",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_NONFINITE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "runtime_inf",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_NONFINITE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "runtime_negative_inf",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_NONFINITE",
+        "field": "value",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "null_currency",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "CURRENCY_TYPE",
+        "field": "currency",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "empty_currency",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "CURRENCY_BLANK",
+        "field": "currency",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "unknown_currency",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "numeric_currency",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "CURRENCY_TYPE",
+        "field": "currency",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "list_currency",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "CURRENCY_TYPE",
+        "field": "currency",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "serializer_illegal_character",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "CURRENCY_CONTROL",
+        "field": "currency",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "distinct_same_date_payouts",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "identical_source_rows",
+      "expected_failure_stage": null,
+      "semantic_failure": null
+    },
+    {
+      "case_id": "zero_and_null",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 1
+      }
+    },
+    {
+      "case_id": "large_integer_and_null",
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 1
+      }
+    },
+    {
+      "case_id": "late_malformed_row",
+      "expected_failure_stage": "parse",
+      "semantic_failure": null
+    },
+    {
+      "case_id": "valid_empty",
+      "expected_failure_stage": "main",
+      "semantic_failure": null
+    }
+  ],
+  "additional_cases": [
+    {
+      "case_id": "invalid_century_leap_day",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"1900-02-29\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_CALENDAR",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "unicode_digit_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"\\uff12\\uff10\\uff12\\uff14-07-11\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_SHAPE",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "trailing_date_suffix",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11Z\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_SHAPE",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "year_zero_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"0000-07-11\",17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_CALENDAR",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "whitespace_currency",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\" \\t\\r\\n\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "CURRENCY_BLANK",
+        "field": "currency",
+        "row_ordinal": 0
+      }
+    },
+    {
+      "case_id": "late_currency_control",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"RUB\"],[\"2024-07-12\",17.35,\"RUB\\u0001\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        },
+        {
+          "row_ordinal": 1,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "CURRENCY_CONTROL",
+        "field": "currency",
+        "row_ordinal": 1
+      }
+    },
+    {
+      "case_id": "late_null_amount",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[\"2024-07-11\",17.35,\"RUB\"],[\"2024-07-12\",null,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        },
+        {
+          "row_ordinal": 1,
+          "raw_token": "null",
+          "decimal_reference": null,
+          "comparison_reason": "SOURCE_NULL"
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "VALUE_TYPE",
+        "field": "value",
+        "row_ordinal": 1
+      }
+    },
+    {
+      "case_id": "boolean_date",
+      "input_kind": "STANDARD_JSON",
+      "provenance": "SYNTHETIC",
+      "isin": "RU0009029540",
+      "ticker": "SBER",
+      "raw_json_utf8": "{\"dividends\":{\"columns\":[\"registryclosedate\",\"value\",\"currencyid\"],\"data\":[[true,17.35,\"RUB\"]]}}",
+      "runtime_rows": null,
+      "value_inputs": [
+        {
+          "row_ordinal": 0,
+          "raw_token": "17.35",
+          "decimal_reference": "17.35",
+          "comparison_reason": null
+        }
+      ],
+      "expected_failure_stage": "semantic",
+      "semantic_failure": {
+        "rule": "DATE_TYPE",
+        "field": "dt",
+        "row_ordinal": 0
+      }
+    }
+  ]
+}
