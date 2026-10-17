@@ -1,6 +1,7 @@
-# dohod.ru acquisition, HTML compatibility and URL admission
+# dohod.ru acquisition, HTML, URL admission and semantic coverage
 
-This transport-only slice starts from `3b6e78f11f7681cdcd9c813fff4236a8c63ab677`.
+The original C2-02B transport-only slice started from
+`3b6e78f11f7681cdcd9c813fff4236a8c63ab677`.
 The owner accepted PLAN R2 and granted condition H exclusive ownership of
 `dohodru_data.py`, `dohodru_data.ipynb`,
 `tests/shared/c2/test_dohod_network.py`,
@@ -8,7 +9,9 @@ The owner accepted PLAN R2 and granted condition H exclusive ownership of
 The historical F/C reservation is released for these paths only. The local
 ignored handoff retains the approval, competing-writer snapshot, actual base,
 final HEAD/tree, guard reports and hosted CI results. A snapshot is not a lock;
-recheck ownership and actual main differences before a later mutation.
+recheck ownership and actual main differences before a later mutation. The C3-01,
+C3-02 and C3-03 sections record the subsequent bounded changes; the current
+semantic contract supersedes C2's positional table/skip/empty behavior.
 
 ## Public calls and transport
 
@@ -101,7 +104,7 @@ uses fixed `DOHOD_BUDGET_EXHAUSTED` and retains the interrupted network cause.
 | `main` early group | Same preparation and one source admission | Conditional overview XLSX, main-page XLSX, main-page CSV |
 | Transition to discovery | Check the original source deadline after early writes | No rollback of early group |
 | `get_page_info` | Discovery and each detail operation, assembly/barriers and final source check | None |
-| `main` final group | All frames prepared, barriers confirmed and one source admission | All six remaining XLSX/CSV calls, in original order |
+| `main` final group | All expected detail frames validated, payments present everywhere, barriers confirmed and one source admission | All six remaining XLSX/CSV calls, in original order |
 
 There are no acquisition checks between or after writers in an admitted group.
 An XLSX writer crossing the deadline therefore cannot cause the group's CSV or
@@ -128,12 +131,11 @@ previous preservation.
 | 8 / 9 | all_payments.xlsx / all_payments.csv |
 
 All original kwargs remain omitted, including pandas' default index=True.
-Empty overview omits only call 1; the other eight retain their behavior.
-The parser retains `df_list[-1]`, historical columns/drop/reset/concat behavior,
-2/3-table branches, duplicates, indices and existing bare detail `read_html`
-exception handling. Budget/diagnostics stay outside that bare except, including
-its skip path. C3-02 replaces prefix concatenation/set iteration with approved
-canonical URLs in first DOM order. Source-row duplicates remain unchanged.
+C3-03 rejects an empty/unverified overview before all early writes. It replaces
+`df_list[-1]`, positional 2/3-table selection and silent detail skips with the
+exact semantic profiles below. Accepted frames retain the historical
+drop/reset/concat projection, values, duplicates and indices. C3-02's canonical
+URLs and first DOM order remain unchanged.
 
 ## Diagnostics and offline evidence
 
@@ -151,14 +153,14 @@ not raw exception args, server reasons/bodies/headers or custom tracebacks.
 Endpoint sanitization uses the existing logger. Secondary diagnostic failure
 preserves the primary error; retry-warning refusal stops retries.
 
-The two approved pytest files use actual offline Requests Response objects,
+The C2/C3 pytest files use actual offline Requests Response objects,
 typed urllib3 errors and real `.content` wrapper conversions, literal parser
 output doubles, actual BeautifulSoup discovery, fake monotonic/wall clocks,
 fake waits and writer spies/disposable byte files. They do not run a production
 writer, live HTTP or real sleep. Literal PASS criteria include:
 
-- Healthy positional calls retain return types, schemas, values, duplicates,
-  ordering, indices, full paths, kwargs and all nine calls (eight for empty overview).
+- Healthy calls retain return types, schemas, values, duplicates, ordering,
+  indices, full paths, kwargs and all nine calls. Empty overview now fails closed.
 - Permanent failures make one request; transient exhaustion makes three with
   waits exactly [1, 2]; status errors never read body; resources close once.
 - Retry-After refusal/infeasibility, expiry after read/close/parser/barrier/wait,
@@ -206,12 +208,12 @@ C2-02B's literal parser-output doubles do not prove genuine HTML compatibility.
 C3-01 below addresses #31 with a byte-reader adapter and synthetic real-parser
 regressions; today's live dohod HTML remains unverified. C3-02 below implements
 the selected #32 consumer URL policy; live URL grammar remains unverified.
-#33 table semantics/completeness remain separate. C2-03 quality and C2-04/D
+#33's bounded semantic/observed gate is described below. C2-03 quality and C2-04/D
 publication/previous integrity, D2/F child supervision and parent diagnostic
 hookup remain open integration AC. HTTP 200, an empty/skipped detail or a
 successful writer does not establish complete data or publication success.
-Legacy parser URL prints and standalone uncaught traceback privacy remain
-residuals outside the new B diagnostics. No main/logger/CI/guard/coordination,
+Legacy overview/network standalone traceback privacy remains outside the new
+semantic diagnostics. No main/logger/CI/guard/coordination,
 dividend pair, D helper, OHLC/history/RSI or Excel/Google policy is changed.
 
 Hard prerequisites are the accepted R2/implementation approval, exact ownership,
@@ -253,7 +255,7 @@ Other dependency versions require separate verification.
 Preserving `encoding=None` and the default flavor alone does not prove parity
 with historical raw-byte decoding; the byte handoff and real fallback must be
 verified. Changing the IO object can change upstream parser exception messages
-or their input representation. C3 introduces no new diagnostic category/code or
+or their input representation. C3-01 introduced no new diagnostic category/code or
 transport-error reclassification; existing fixed C2 diagnostics/redaction stay.
 
 C3 uses synthetic overview/detail HTML with hand-written literal rows, columns,
@@ -272,16 +274,18 @@ The existing C2 doubles adapt only their reader input; their literal frames,
 transport-policy assertions, writer order/kwargs and exception identities stay
 unchanged.
 
-Overview parser errors still propagate before writer admission. Detail parsing
-retains its historical bare `except` and skip behavior; 2/3-table transforms and
-unrecognized counts are unchanged. Stream compatibility does not establish page
+Overview parser errors still propagate before writer admission. At the C3-01
+baseline detail parsing retained its bare `except` and skip behavior; C3-03
+explicitly supersedes that behavior with terminal fixed failures and semantic
+selection. Stream compatibility does not establish page
 completeness, atomic publication, URL safety, strict deadlines or a live encoding
-contract. #32, #33, C2-03 quality, D publication and D/F diagnostics remain separate.
+contract. At that baseline #32/#33 were separate; C3-02/03 describe their bounded
+contributions below. C2-03 quality, D publication and D/F diagnostics stay separate.
 Final exact-HEAD regression, notebook, F1/F2/F-LOG/F3 and Linux syntax results
 belong to the handoff/PR; skipped checks are NOT VERIFIED. No live HTTP, real
 sleep, production writers, credentials, cron, Google or FTP is used for C3 tests.
 
-C3 rollback is a reviewed revert of these six paths, including both notebook
+C3-01 rollback is a reviewed revert of these six paths, including both notebook
 pair members and the C2 boundary adaptations. It does not restore an already
 published release or repair historical partial output.
 
@@ -376,10 +380,181 @@ all four C2/C3 files, F2/F-LOG/F3, all ten notebook pairs, hosted F1 and Linux s
 working-tree GREEN is not a substitute for those clean-commit gates.
 
 The live source grammar remains UNKNOWN outside this explicit consumer profile.
-No cross-slug identity, semantic table selection, completeness, required-page,
-partial-output, previous-snapshot or publication guarantee is added. A late URL
+The C3-02 baseline added no semantic table selection or completeness policy;
+C3-03's limited policy follows below. No cross-slug identity, coherent release,
+previous-snapshot or publication guarantee is added. A late URL
 failure can still leave the three early outputs updated and six later targets
-untouched. #33/C3-03 and D integration remain separate. Rollback is a reviewed
+untouched. C3-02 left #33/C3-03 to the next slice; D integration remains separate.
+Its rollback is a reviewed
 seven-path revert with the notebook pair; it does not restore published data.
 No main/logger/runner/guard/CI/coordination/dependency changes, issue closure,
 auto-merge, production or next-slice activation are authorized by C3-02.
+
+## C3-03 semantic consumer profile and observed coverage
+
+C3-03 starts from `6b7e97148227400841b90ad614d50d94f139f665`, tree
+`3d891d4980fd22f57012ed76c7cbe35ed545fc32`. The direct owner grant accepts
+PLAN R2 + R2.1, releases C3-02's reservation for the seven existing dohod
+pair/C2/C3 test/doc paths and admits `tests/shared/c3/test_dohod_semantics.py`.
+Its own ignored HANDOFF_GRANTED records the new ownership snapshot. The scope
+is one offline C-owned PR; #33 AC3 remains **NOT_MET** and D/F integration is
+**NOT_CONNECTED**. Linux application admission requires its own grants and is
+not activated or inherited by this slice.
+
+The owner-selected policy makes every admitted canonical detail URL in this
+invocation's discovery mandatory. Metrics/history are required; payments may be
+absent for collection, but their absence on even one expected page blocks all
+six late writers. Zero discovery and unverified empty data fail closed. These
+are consumer policies, not observations about the current live site.
+
+### Exact post-parser profiles
+
+Matching is ordered, case-sensitive and exact. There are no inferred aliases,
+header renames, coercions or general table-count rules. After the historical
+`Unnamed:` / `Капитализация, sorting` overview drops, recognized columns are:
+
+| Role | Ordered source columns / technical header |
+| --- | --- |
+| Overview | `Тикер, Дивиденд` or `Тикер, Компания, Дивиденд`, or the nine-field profile below |
+| History | `Год, Сумма` or `Год, Дивиденд (руб.), Изм. к пред. году` |
+| Payments | `Дата, Выплата` or `Дата объявления дивиденда, Дата закрытия реестра, Год для учета дивиденда, Дивиденд` |
+| Metrics | Three source columns; physical row 1 exactly `текущая доходность, доля от прибыли, индекс DSI` |
+
+The nine-field overview profile is `Акция, Сектор, Период, Выплата на акцию
+(прогноз), Доходность выплаты, Цена расчета доходности, Дата закрытия реестра
+(оценка), Капитализация, млн. руб., DSI`. Historical export CSVs establish past
+output fields, not input HTML. The owner explicitly adopted these signatures
+as post-`pd.read_html` consumer profiles; other live forms remain UNKNOWN.
+
+Every returned table must have exactly one recognized role. Duplicate role
+candidates, conflicting roles, duplicate/MultiIndex/unsupported headers and
+cross-page history/payments profile changes reject the operation. Table order
+does not select a role. The noise allowlist is empty: **any unknown table**, even
+empty or lacking all known anchors, is NOT_VERIFIED. An unknown fourth table or
+fully renamed payments table cannot be silently discarded.
+
+Payload is nonempty only if an original source payload cell is non-null by
+pandas' `isna` policy. Derived `page_url`/`ticker`, index metadata, column labels
+and metrics' technical header row never count. `0` and `False` remain valid;
+blank-string normalization is not added. Required/present optional empty roles
+are unverified; there is no approved VALID_EMPTY profile. The predicate does not
+delete null rows, deduplicate, round, parse dates/years or convert source values.
+
+Metrics keeps its legacy projection: set columns from physical row 1,
+reset index, remove that technical row and select the three known columns.
+The literal oracle retains indices `[0,2]` and `columns.name=1`; duplicate source
+rows and history/payment indices remain intact. A frame with null rows 0/2 and
+the technical triad in row 1 rejects; changing one source cell in row 0 to `0`
+accepts while retaining the null row 2. Frames are copied before transformations.
+One page joins the local accumulators only after all roles, barriers and budget
+checks pass. A terminal page failure stops before the next send and returns no
+partial tuple.
+
+### Caller-owned result and failure report
+
+Private `_prepare_pages_result(..., coverage_sink=sink)` requires a fresh empty
+built-in dict before HTTP and installs `sink['report']` before acquisition. On
+success it returns `(frames_tuple_of_three, report)` with the very same report
+object. On failure/interruption the report is finalized before diagnostics and
+remains available to the private sink owner, including `logging_context=None`.
+No global report, exception attribute or DataFrame metadata is added. Public
+`get_main` / `get_page_info` / `main` returns remain DataFrame / tuple / None.
+Parent and D consumers are not connected to this private channel.
+
+Report version 1 has scope ADMITTED_DISCOVERY, approved overview provenance,
+ordered expected canonical URLs, discovery admitted/deduplicated/ignored/rejected
+counts, per-page roles/profiles/rows, attempts/sends/timing, typed stage counts,
+missing identities, coverage/input statuses and diagnostic delivery status.
+An unknown expected set is `None`, never a misleading zero. Private canonical
+provenance is not copied into public coverage events; raw href/HTML/Location or
+exception objects/tracebacks are not retained.
+
+For expected `[A,B,C,D]`, with C parsed but rejected for an unknown table:
+
+```text
+requested/received/parsed = [A,B,C]
+validated/accepted = [A,B]
+failed = [C]; not_run = [D]; missing = [C,D]
+C: PARSED / NOT_VERIFIED / DOHOD_UNKNOWN_NONEMPTY_TABLE
+D: DISCOVERED / NOT_RUN / PRIOR_PAGE_FAILED
+counts: expected=4 requested=3 received=3 parsed=3 validated=2 accepted=2
+        failed=1 not_run=1 missing=2
+observed_coverage=INCOMPLETE; late_group_input_status=BLOCKED_FAILED
+```
+
+`requested` means an actual adapter send invocation; retries/hops increase
+separate sends, not expected-page membership. `received` requires the entire
+successful transport/cleanup/decode/logging boundary. A page is ACCEPTED only
+after the full semantic page and its barriers pass. `COMPLETE_OBSERVED` covers
+only the nonempty discovered set. `source_coverage` always remains NOT_VERIFIED:
+there is no source-universe oracle or proof that two overview acquisitions saw
+the same site generation.
+
+### Failure ownership and closed F-LOG projection
+
+`_prepare_pages_result` alone owns collection failure. `_prepare_pages` only
+allocates/unpacks; `main` does not catch/re-emit collection or source-checkpoint
+failures. Coverage delivery is attempted at most once: page events in discovery
+order, one summary, confirmed flush/health. The attempt flag is set before the
+first event. Partial delivery or failed flush cannot replay the batch.
+
+| Failure path | Terminal diagnostic and exception |
+| --- | --- |
+| New overview/detail semantic, detail parse or payments gate | One safe-new fixed-code terminal envelope; no raw parser/endpoint; no cause/context |
+| Legacy transport/budget/overview parser | One legacy terminal envelope; original exception identity/args/chain preserved |
+| Writer | Existing export handler only; identity and IO classification preserved |
+| Coverage-delivery failure on otherwise healthy processing | One safe LOGGING_INCOMPLETE terminal attempt; batch not replayed |
+| Secondary diagnostics failure during primary failure | Primary state/error retained; report diagnostics INCOMPLETE |
+| KeyboardInterrupt/SystemExit | Finalized interrupted sink and best-effort coverage; no semantic replacement |
+
+Detail parser errors are caught only to record a fixed pending reason. The
+existing post-parser budget check runs before a new fixed error is created
+outside the handler, so budget takes precedence. New overview semantic errors
+also explicitly select the safe branch. Safe records bypass legacy make_error
+and endpoint insertion. Tests inspect `__context__`, `__cause__`, formatted
+traceback, JSONL and console; `raise ... from None` alone is insufficient.
+
+Coverage INFO events contain only permitted fields: stage `dohodru_data`, safe
+`page=dohod-page-<sha256(canonical ASCII URL)>` (summary null), fixed outcome,
+elapsed/duration, page `{attempt,limit:3}` (summary null), `error=null`, `fields={}`.
+Summary has page null reason AGGREGATE_COVERAGE and retries reason
+MULTIPLE_LOGICAL_OPERATIONS; unrequested page retries use NO_REQUEST_ATTEMPTED.
+Error null reason is NO_ERROR on success or PRIMARY_ERROR_REPORTED_SEPARATELY.
+
+Counts have exactly the five existing metrics plus `null_reasons`:
+`rows_received=null`, `rows_accepted=null`, `rows_quarantined=null`,
+`pages=<received distinct details, 0/1 per page>`, `instruments=null`.
+Row reasons are HETEROGENEOUS_TABLE_ROWS_NOT_AGGREGATED (received/accepted),
+NOT_EVALUATED (quarantined), and SOURCE_UNIVERSE_NOT_VERIFIED (instruments).
+Expected/accepted/missing breakdown uses fixed numeric summary text and the
+typed private report, not extra event fields or fake row/instrument counts.
+New safe terminal records use full existing error schema and null reasons,
+including endpoint RAW_ENDPOINT_NOT_EMITTED. Existing logger adds correlation
+and the rest of the nullable schema. `run_logging.py` is unchanged.
+
+### Payments, previous and remaining acceptance
+
+Payments absence can yield a valid collection tuple and COMPLETE_OBSERVED while
+`payments_coverage=NOT_VERIFIED` and late input is BLOCKED_NOT_VERIFIED. `main`
+then raises DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED before all late-six writes. It
+does not carry old payments forward, write partial payments, or replace them
+with an empty frame. The historical first three writes stay in place and may
+already have updated previous files: **#33 AC3=NOT_MET** in this C-only PR.
+
+Offline hash oracles distinguish failure before early admission (all nine
+previous files untouched), late acquisition/semantic/payments failure (early
+three may change, later six untouched), and before/after-mutation failures at
+each writer 1–9 (actual changed prefix, failed target and untouched suffix).
+No nine-file transaction, CSV/XLSX parity or remote recovery is claimed. D1's
+single-file replacement is not connected here. Candidate/generation/capacity,
+promotion, previous retention/readback/recovery and parent report integration
+remain D/F work; COMPLETE_OBSERVED is not a release-ready verdict.
+
+Required evidence includes genuine behavioral RED, all five narrow C2/C3 files,
+clean exact-HEAD F2/F-LOG/F3, hosted Windows F1/F2/F-LOG/F3, all ten notebook pairs
+and ordinary Linux syntax, with native source/environment/guard reconciliation.
+UTF-8/windows-1251 real normal/fallback parsers and original noisy adapter bodies
+remain tested separately from semantic admission. No live request, real wait,
+production writer, credential, publication, CI/guard/shared logger change or
+issue closure is part of C3-03. Rollback is a reviewed eight-path revert with
+the notebook pair; it does not restore data already rewritten or published.

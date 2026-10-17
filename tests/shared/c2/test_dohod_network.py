@@ -179,7 +179,9 @@ def parser(monkeypatch, module, *, detail_count=3, after_parse=None, overview_em
         if raw == b'overview':
             frame = pd.DataFrame([['AAA', 10, 'drop', 'drop']], columns=[
                 'Тикер', 'Дивиденд', 'Unnamed: 0', 'Капитализация, sorting'])
-            return [pd.DataFrame([['unused']]), frame.iloc[:0] if overview_empty else frame]
+            # C3-03 принимает только известные source tables; transport oracle
+            # не добавляет отдельную неизвестную непустую служебную таблицу.
+            return [frame.iloc[:0] if overview_empty else frame]
         assert raw == b'detail'
         rate = pd.DataFrame([[0.1, 0.2, 0.3],
             ['текущая доходность', 'доля от прибыли', 'индекс DSI'],

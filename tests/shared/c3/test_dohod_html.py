@@ -32,14 +32,17 @@ def document(tables, codec='utf-8', declaration='utf-8'):
             + '</p></body></html>').encode(codec)
 
 
-def overview_html(codec='utf-8', declaration='utf-8', *, amount=10):
-    tables = ('<table><tr><th>Служебное</th></tr><tr><td>Не источник</td></tr></table>'
-        '<table><tr><th>Тикер</th><th>Компания</th><th>Дивиденд</th>'
+def overview_html(codec='utf-8', declaration='utf-8', *, amount=10, noise=False):
+    tables = ('<table><tr><th>Тикер</th><th>Компания</th><th>Дивиденд</th>'
         '<th>Unnamed: 0</th><th>Капитализация, sorting</th></tr>'
         '<tr><td>AAA</td><td>Газпром</td><td>' + str(amount)
         + '</td><td>obsolete</td><td>obsolete</td></tr>'
         '<tr><td>AAA</td><td>Газпром</td><td>' + str(amount)
         + '</td><td>obsolete</td><td>obsolete</td></tr></table>')
+    if noise:
+        # Исходное C3-01 тело остаётся parser oracle, но уже не consumer-positive.
+        tables = ('<table><tr><th>Служебное</th></tr><tr><td>Не источник</td></tr></table>'
+                  + tables)
     return document(tables, codec, declaration)
 
 
@@ -241,11 +244,44 @@ def test_real_overview_cyrillic_schema_duplicates_and_backend_fallback(
     assert_overview(frame)
     assert_writers(written, FILES[:1])
     assert_overview(written[0][3])
-    assert_parser_trace(trace, [html], [2], fallback=fallback)
+    assert_parser_trace(trace, [html], [1], fallback=fallback)
     assert_requests(calls)
     assert len(calls) == 1 and waits == []
     assert_closed([response])
     assert_private_messages(context, received=1)
+    assert_no_accumulation(module)
+
+
+@pytest.mark.parametrize('codec,declaration', ENCODINGS)
+@pytest.mark.parametrize('fallback', [None, 'prefix', 'full'])
+def test_original_noisy_overview_remains_real_adapter_oracle_but_consumer_rejects(
+        monkeypatch, model, tmp_path, context, codec, declaration, fallback):
+    module, _, waits = model
+    html = overview_html(codec, declaration, noise=True)
+    trace = real_parser_observer(monkeypatch, module, fallback=fallback)
+    tables = module._read_dohod_html(html)
+    pd.testing.assert_frame_equal(tables[0], pd.DataFrame(
+        [['Не источник']], columns=['Служебное']), check_exact=True)
+    raw_overview = pd.DataFrame([
+        ['AAA', 'Газпром', 10, 'obsolete', 'obsolete'],
+        ['AAA', 'Газпром', 10, 'obsolete', 'obsolete'],
+    ], columns=OVERVIEW_COLUMNS + ['Unnamed: 0', 'Капитализация, sorting'])
+    pd.testing.assert_frame_equal(tables[1], raw_overview, check_exact=True)
+
+    response = reply(html)
+    calls = source(monkeypatch, module, [(URL, response)])
+    written = writers(monkeypatch, module, tmp_path)
+    with pytest.raises(ValueError, match='DOHOD_UNKNOWN_NONEMPTY_TABLE') as caught:
+        module.get_main(URL, logging_context=context)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert_parser_trace(trace, [html, html], [2, 2], fallback=fallback)
+    assert_requests(calls)
+    assert len(calls) == 1 and written == waits == []
+    assert_closed([response])
+    values = assert_private_messages(context, received=1, failed_count=1)
+    error = values[-1]['error']
+    assert error['code'] == 'DOHOD_UNKNOWN_NONEMPTY_TABLE' and error['endpoint'] is None
+    failed(context)
     assert_no_accumulation(module)
 
 
@@ -261,7 +297,7 @@ def test_real_detail_cyrillic_two_three_tables_and_backend_fallback(
     written = writers(monkeypatch, module, tmp_path)
     trace = real_parser_observer(monkeypatch, module, fallback=fallback)
     frames = module.get_page_info(URL, logging_context=context)
-    # Outside historical bare except: swallowed observer faults cannot make RED pass.
+    # Literal frames проверяются снаружи parser handler: observer faults не дают PASS.
     assert_detail(frames, table_count)
     assert_parser_trace(trace, [html], [table_count], fallback=fallback)
     assert_requests(calls)
@@ -291,8 +327,11 @@ def test_http_body_that_names_local_html_is_document_content_only(
         assert_private_messages(context, received=1, failed_count=1)
         failed(context)
     else:
-        assert_empty_frames(module.get_page_info(URL, logging_context=context))
-        assert_private_messages(context, received=2)
+        with pytest.raises(ValueError, match='DOHOD_DETAIL_PARSE_FAILED') as caught:
+            module.get_page_info(URL, logging_context=context)
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+        assert_private_messages(context, received=2, failed_count=1)
+        failed(context)
     assert_requests(calls)
     assert len(calls) == len(responses) and written == waits == []
     assert_closed(responses)
@@ -319,7 +358,7 @@ def test_real_recoverable_malformed_html_preserves_literal_rows(
     else:
         assert_detail(module.get_page_info(URL, logging_context=context))
         assert written == []
-    assert_parser_trace(trace, [html], [2 if stage == 'overview' else 3], fallback='full')
+    assert_parser_trace(trace, [html], [1 if stage == 'overview' else 3], fallback='full')
     assert_requests(calls)
     assert len(calls) == len(responses) and waits == []
     assert_closed(responses)
@@ -337,7 +376,7 @@ def test_invalid_declared_utf8_byte_retains_real_html5lib_recovery(
     frame = module.get_main(URL, logging_context=context)
     assert_overview(frame, companies=['\ufffd', 'Газпром'])
     assert_writers(written, FILES[:1])
-    assert_parser_trace(trace, [html], [2], fallback='full')
+    assert_parser_trace(trace, [html], [1], fallback='full')
     assert_requests(calls)
     assert len(calls) == 1 and waits == []
     assert_closed([response])
@@ -345,7 +384,7 @@ def test_invalid_declared_utf8_byte_retains_real_html5lib_recovery(
 
 
 @pytest.mark.parametrize('stage', ['overview', 'detail'])
-def test_real_no_tables_fallback_keeps_overview_failure_and_historical_detail_skip(
+def test_real_no_tables_fallback_keeps_overview_error_and_fixed_detail_failure(
         monkeypatch, model, tmp_path, context, stage):
     module, _, waits = model
     html = document('<p>Нет таблиц</p>')
@@ -360,8 +399,11 @@ def test_real_no_tables_fallback_keeps_overview_failure_and_historical_detail_sk
         assert_private_messages(context, received=1, failed_count=1)
         failed(context)
     else:
-        assert_empty_frames(module.get_page_info(URL, logging_context=context))
-        assert_private_messages(context, received=2)
+        with pytest.raises(ValueError, match='DOHOD_DETAIL_PARSE_FAILED') as caught:
+            module.get_page_info(URL, logging_context=context)
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+        assert_private_messages(context, received=2, failed_count=1)
+        failed(context)
     assert trace['bodies'] == [html] and trace['table_counts'] == []
     assert len(trace['lxml']) == len(trace['bs4']) == 1
     assert trace['lxml'][0][0] is trace['bs4'][0][0]
@@ -386,7 +428,7 @@ def test_real_fallback_completion_cannot_hide_expired_operation_budget(
     entry = module.get_main if stage == 'overview' else module.get_page_info
     with pytest.raises(TimeoutError, match='DOHOD_BUDGET_EXHAUSTED'):
         entry(URL, logging_context=context)
-    assert_parser_trace(trace, [html], [2 if stage == 'overview' else 3], fallback='full')
+    assert_parser_trace(trace, [html], [1 if stage == 'overview' else 3], fallback='full')
     assert_requests(calls)
     assert len(calls) == len(responses) and written == waits == []
     assert_closed(responses)
@@ -395,8 +437,8 @@ def test_real_fallback_completion_cannot_hide_expired_operation_budget(
     failed(context)
 
 
-@pytest.mark.parametrize('middle', ['failure', 'skip'])
-def test_same_import_a_then_failure_or_skip_then_b_has_no_accumulated_rows(
+@pytest.mark.parametrize('middle', ['failure', 'parser-failure'])
+def test_same_import_a_then_network_or_parser_failure_then_b_has_no_accumulated_rows(
         monkeypatch, model, tmp_path, middle):
     module, clock, waits = model
     original_globals = tuple(getattr(module, name) for name in
@@ -416,7 +458,7 @@ def test_same_import_a_then_failure_or_skip_then_b_has_no_accumulated_rows(
             sequence = [(URL, responses[0]), (detail_urls[0], responses[1]),
                         (detail_urls[1], error)]
         else:
-            html = (document('<p>Нет таблиц</p>') if label == 'skip'
+            html = (document('<p>Нет таблиц</p>') if label == 'parser-failure'
                     else detail_html(3 if label == 'a' else 2, amount=amount))
             responses = [reply(DISCOVERY), reply(html)]
             sequence = list(zip([URL, DETAIL], responses))
@@ -436,9 +478,12 @@ def test_same_import_a_then_failure_or_skip_then_b_has_no_accumulated_rows(
                 assert [call[0] for call in calls] == [URL] + detail_urls
                 assert_private_messages(session, received=2, failed_count=1)
                 failed(session)
-            elif label == 'skip':
-                assert_empty_frames(module.get_page_info(URL, logging_context=session))
-                assert_private_messages(session, received=2)
+            elif label == 'parser-failure':
+                with pytest.raises(ValueError, match='DOHOD_DETAIL_PARSE_FAILED') as caught:
+                    module.get_page_info(URL, logging_context=session)
+                assert caught.value.__context__ is None and caught.value.__cause__ is None
+                assert_private_messages(session, received=2, failed_count=1)
+                failed(session)
             else:
                 frames = module.get_page_info(URL, logging_context=session)
                 assert_detail(frames, 3 if label == 'a' else 2, amount=amount)
@@ -499,7 +544,7 @@ def test_same_import_get_main_a_real_failure_b_retains_returned_a_and_single_wri
         assert_closed([response])
         assert_no_accumulation(module, original_globals)
     assert_overview(saved_a, 10)
-    assert trace['table_counts'] == [2, 2]
+    assert trace['table_counts'] == [1, 1]
     assert len(trace['bodies']) == len(trace['lxml']) == len(trace['bs4']) == 3
     assert all(buffer.closed for buffer in trace['buffers'])
     assert len({id(buffer) for buffer in trace['buffers']}) == 3
