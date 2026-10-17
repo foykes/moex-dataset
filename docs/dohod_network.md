@@ -457,6 +457,8 @@ built-in dict before HTTP and installs `sink['report']` before acquisition. On
 success it returns `(frames_tuple_of_three, report)` with the very same report
 object. On failure/interruption the report is finalized before diagnostics and
 remains available to the private sink owner, including `logging_context=None`.
+Expected identities and their page records are installed together; an
+interruption during record initialization leaves membership unknown (`None`).
 No global report, exception attribute or DataFrame metadata is added. Public
 `get_main` / `get_page_info` / `main` returns remain DataFrame / tuple / None.
 Parent and D consumers are not connected to this private channel.
@@ -506,6 +508,10 @@ first event. Partial delivery or failed flush cannot replay the batch.
 | Coverage-delivery failure on otherwise healthy processing | One safe LOGGING_INCOMPLETE terminal attempt; batch not replayed |
 | Secondary diagnostics failure during primary failure | Primary state/error retained; report diagnostics INCOMPLETE |
 | KeyboardInterrupt/SystemExit | Finalized interrupted sink and best-effort coverage; no semantic replacement |
+
+`diagnostics_status` covers the required terminal attempt as well as the batch.
+A refused/raised terminal delivery marks the caller-owned report INCOMPLETE;
+the primary error, single terminal attempt and batch delivery flag are retained.
 
 Detail parser errors are caught only to record a fixed pending reason. The
 existing post-parser budget check runs before a new fixed error is created

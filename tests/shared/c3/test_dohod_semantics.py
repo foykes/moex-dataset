@@ -967,3 +967,141 @@ def test_main_missing_payments_gate_events_failure_privacy_and_previous_boundary
         actual = (targets / name).read_bytes()
         assert actual == originals[name] and hashlib.sha256(actual).hexdigest() == hashes[name]
     assert [call[0] for call in calls] == [URL, URL, DETAIL] and waits == []
+
+
+@pytest.mark.parametrize('primary_kind', ['semantic-unknown', 'legacy-tls', 'main-payments'])
+@pytest.mark.parametrize('terminal_delivery', ['refused-receipt', 'raised-private-error'])
+def test_terminal_failure_delivery_refusal_marks_real_coverage_incomplete_without_replay(
+        monkeypatch, model, tmp_path, context, capsys, primary_kind, terminal_delivery):
+    module, _, waits = model
+    legacy_cause = LookupError('fixture original legacy cause')
+    legacy_error = requests.exceptions.SSLError('fixture primary legacy TLS error')
+    legacy_error.__cause__ = legacy_cause
+    if primary_kind == 'main-payments':
+        calls = source(monkeypatch, module, [(URL, reply(b'overview')),
+            (URL, reply(DISCOVERY)), (DETAIL, reply(b'detail'))])
+        parse_map(monkeypatch, module, {b'overview': [overview_frame()],
+            b'detail': detail_frames(payments=False)})
+    else:
+        answer = legacy_error if primary_kind == 'legacy-tls' else detail_frames() + [
+            pd.DataFrame([[PRIVATE_MARKER + CANARY + PATH_MARKER]], columns=['Changed source'])]
+        calls, _ = install_pages(monkeypatch, module, {DETAIL: answer})
+    written = writers(monkeypatch, module, tmp_path)
+    real_prepare_result = module._prepare_pages_result
+    real_semantic_error, real_emit = module._semantic_error, run_logging.emit_event
+    reports, primary_errors, attempts = [], [], []
+    def prepare_result(*args, **kwargs):
+        sink = kwargs['coverage_sink']
+        try:
+            return real_prepare_result(*args, **kwargs)
+        finally:
+            if 'report' in sink:
+                reports.append(sink['report'])
+    def semantic_error(state, code, *, page_ref=None):
+        error = real_semantic_error(state, code, page_ref=page_ref)
+        if code in ('DOHOD_UNKNOWN_NONEMPTY_TABLE', 'DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED'):
+            primary_errors.append(error)
+        return error
+    def emit(session, level, event, message, fields=None):
+        attempts.append(event)
+        if event == 'dohod_acquisition_failed':
+            if terminal_delivery == 'refused-receipt':
+                return {'accepted': False, 'confirmed': False}
+            raise OSError(PRIVATE_MARKER + ' ' + CANARY + ' ' + PATH_MARKER + ' ' + DETAIL)
+        return real_emit(session, level, event, message, fields)
+    monkeypatch.setattr(module, '_prepare_pages_result', prepare_result)
+    monkeypatch.setattr(module, '_semantic_error', semantic_error)
+    monkeypatch.setattr(run_logging, 'emit_event', emit)
+    error_type = requests.exceptions.SSLError if primary_kind == 'legacy-tls' else ValueError
+    with pytest.raises(error_type) as caught:
+        if primary_kind == 'main-payments':
+            module.main(URL, logging_context=context)
+        else:
+            private_result(module, {}, context)
+    if primary_kind == 'legacy-tls':
+        assert caught.value is legacy_error
+        assert caught.value.args == ('fixture primary legacy TLS error',)
+        assert caught.value.__cause__ is legacy_cause
+        assert caught.value.__context__ is None and primary_errors == []
+    else:
+        expected_code = ('DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED' if primary_kind == 'main-payments'
+                         else 'DOHOD_UNKNOWN_NONEMPTY_TABLE')
+        assert len(primary_errors) == 1 and caught.value is primary_errors[0]
+        assert caught.value.args == (expected_code,)
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert len(reports) == 1
+    report = reports[0]
+    assert report['finalized'] is True and report['coverage_delivery_attempted'] is True
+    assert report['diagnostics_status'] == 'INCOMPLETE'
+    assert report['source_coverage'] == 'NOT_VERIFIED'
+    assert report['execution_outcome'] == ('RETURNED' if primary_kind == 'main-payments' else 'FAILED')
+    assert attempts.count('dohod_acquisition_failed') == 1
+    assert attempts[-1] == 'dohod_acquisition_failed'
+    assert attempts[-2] == ('dohod_late_group_blocked' if primary_kind == 'main-payments'
+                            else 'dohod_coverage_summary')
+    assert attempts.count('dohod_page_coverage') == attempts.count('dohod_coverage_summary') == 1
+    assert attempts.count('dohod_late_group_blocked') == int(primary_kind == 'main-payments')
+    values = events(context)
+    assert all(value['event'] != 'dohod_acquisition_failed' for value in values)
+    assert sum(value['event'] == 'dohod_page_coverage' for value in values) == 1
+    assert sum(value['event'] == 'dohod_coverage_summary' for value in values) == 1
+    assert run_logging.check_logging_health(context)['healthy']
+    output = capsys.readouterr()
+    new_values = [value for value in values if value['event'] in (
+        'dohod_page_coverage', 'dohod_coverage_summary', 'dohod_late_group_blocked')]
+    safe = json.dumps(new_values, ensure_ascii=False) + output.out + output.err
+    if primary_kind != 'legacy-tls':
+        safe += ''.join(traceback.format_exception(caught.value))
+    for marker in (PRIVATE_MARKER, CANARY, PATH_MARKER, DETAIL, URL):
+        assert marker not in safe
+    assert_writers(written, FILES[:3] if primary_kind == 'main-payments' else [])
+    expected_sends = [URL, URL, DETAIL] if primary_kind == 'main-payments' else [URL, DETAIL]
+    assert [call[0] for call in calls] == expected_sends and waits == []
+
+
+@pytest.mark.parametrize('failed_record', [1, 2])
+@pytest.mark.parametrize('error_type', [OSError, KeyboardInterrupt])
+def test_discovery_record_initialization_failure_does_not_publish_partial_membership(
+        monkeypatch, model, tmp_path, failed_record, error_type):
+    module, _, waits = model
+    a, b = DETAIL, URL + '/bbb'
+    calls = source(monkeypatch, module, [(URL, reply(links([a, b])))])
+    parsed = parse_map(monkeypatch, module, {})
+    written = writers(monkeypatch, module, tmp_path)
+    original_cause = LookupError('fixture original discovery record cause')
+    error = error_type('fixture discovery record initialization failed')
+    error.__cause__ = original_cause
+    real_new_page = module._new_page
+    attempted, local_records = [], []
+    def new_page(target):
+        attempted.append(target)
+        if len(attempted) == failed_record:
+            raise error
+        record = real_new_page(target)
+        local_records.append(record)
+        return record
+    monkeypatch.setattr(module, '_new_page', new_page)
+    sink = {}
+    with pytest.raises(error_type) as caught:
+        private_result(module, sink)
+    assert caught.value is error
+    assert caught.value.args == ('fixture discovery record initialization failed',)
+    assert caught.value.__cause__ is original_cause and caught.value.__context__ is None
+    assert attempted == [a, b][:failed_record]
+    assert len(local_records) == failed_record - 1
+    if local_records:
+        assert local_records[0]['url'] == a
+        assert local_records[0]['stage'] == 'DISCOVERED'
+    report = sink['report']
+    assert_finished_report(report)
+    assert report['expected'] is None and report['missing'] is None
+    assert report['pages'] == []
+    assert report['counts'] == dict(expected=None, requested=0, received=0, parsed=0,
+        validated=0, accepted=0, failed=0, not_run=0, missing=None)
+    assert report['execution_outcome'] == ('FAILED' if error_type is OSError else 'INTERRUPTED')
+    assert report['observed_coverage'] == report['source_coverage'] == 'NOT_VERIFIED'
+    assert report['payments_coverage'] == 'NOT_EVALUATED'
+    assert report['late_group_input_status'] == 'BLOCKED_FAILED'
+    assert report['diagnostics_status'] == 'NOT_REQUESTED'
+    assert [call[0] for call in calls] == [URL]
+    assert parsed == written == waits == []

@@ -245,7 +245,7 @@ def _safe_error_record(logging_context, state):
     return record
 
 
-def _failure(logging_context, error, state, *, export=False):
+def _failure(logging_context, error, state, *, export=False, coverage_report=None):
     if logging_context is None:
         return
     try:
@@ -266,6 +266,8 @@ def _failure(logging_context, error, state, *, export=False):
             'Выгрузка доход.ру прервана: ' + code + '; ' + state['reason'] + _phase_marker(state),
             error=record, state=state, outcome='FAILED')
     except BaseException:
+        if coverage_report is not None:
+            coverage_report['diagnostics_status'] = 'INCOMPLETE'
         try:
             print('Не удалось записать диагностику доход.ру.', file=sys.stderr)
         except BaseException:
@@ -859,7 +861,7 @@ def _prepare_pages_result(url, source_deadline, logging_context, *, coverage_sin
         if report['coverage_delivery_attempted'] and report['diagnostics_status'] == 'PENDING':
             report['diagnostics_status'] = 'INCOMPLETE'
         if isinstance(error, Exception):
-            _failure(logging_context, error, primary_state)
+            _failure(logging_context, error, primary_state, coverage_report=report)
         raise
 
 
@@ -912,8 +914,10 @@ def _page_frames(url, source_deadline, logging_context, state, report):
     print("Количество страниц для обхода: {}".format(len(url_list)))
     _logging_barrier(logging_context)
     _check_budget(deadline, state=state)
-    report['expected'] = list(url_list)
-    report['pages'] = [_new_page(target) for target in url_list]
+    # Expected и records становятся видимыми вместе. Прерывание при их
+    # подготовке оставляет membership неизвестным, а не ложно полным.
+    pages = [_new_page(target) for target in url_list]
+    report.update(expected=list(url_list), pages=pages)
     if not url_list:
         raise _semantic_error(state, 'DOHOD_DISCOVERY_EMPTY_NOT_VERIFIED')
 
@@ -1021,7 +1025,7 @@ def main(url, *, logging_context=None):
                 dict(stage='dohodru_data', outcome='BLOCKED_NOT_VERIFIED', fields={}), state)
         except BaseException:
             coverage['diagnostics_status'] = 'INCOMPLETE'
-        _failure(logging_context, error, primary_state)
+        _failure(logging_context, error, primary_state, coverage_report=coverage)
         raise error
     df_overview_full, df_years_full, df_each_full = frames
     _source_checkpoint(source_deadline, logging_context)
