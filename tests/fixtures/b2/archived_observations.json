@@ -1,0 +1,285 @@
+{
+  "fixture_version": 1,
+  "evidence_layer": "RECONSTRUCTED_PARSED_ARCHIVE",
+  "source_verification": "NOT_VERIFIED",
+  "observation_id_semantics": "Locally assigned fixture identifiers; original observation identifiers are unavailable.",
+  "numeric_representation": "Number token spelling is retained from archived parsed text; original provider response token spelling and declared numeric types are unavailable.",
+  "columns": [
+    "open",
+    "close",
+    "high",
+    "low",
+    "value",
+    "volume",
+    "begin",
+    "end"
+  ],
+  "public_export_samples": [
+    {
+      "observation_id": "PUB07_SAMPLE_00",
+      "ticker": "ASSB",
+      "values": [
+        0.0,
+        0.0,
+        0.3,
+        0.3,
+        300.0,
+        1000,
+        "2013-12-05 00:00:00",
+        "2013-12-05 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_00"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_01",
+      "ticker": "BISVP",
+      "values": [
+        0.0,
+        0.0,
+        5.101,
+        5.101,
+        5101.0,
+        1000,
+        "2013-08-22 00:00:00",
+        "2013-08-22 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_01"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_02",
+      "ticker": "BRZL",
+      "values": [
+        0.0,
+        0.0,
+        500.0,
+        500.0,
+        5000.0,
+        10,
+        "2013-05-06 00:00:00",
+        "2013-05-06 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_02"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_03",
+      "ticker": "CHGZ",
+      "values": [
+        0.0,
+        0.0,
+        12.005,
+        12.005,
+        12005.0,
+        1000,
+        "2012-07-17 00:00:00",
+        "2012-07-17 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_03"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_04",
+      "ticker": "CHGZ",
+      "values": [
+        0.0,
+        0.0,
+        22.59,
+        22.59,
+        22590.0,
+        1000,
+        "2014-02-12 00:00:00",
+        "2014-02-12 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_04"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_05",
+      "ticker": "CNTLP",
+      "values": [
+        0.0,
+        0.0,
+        7.094,
+        7.094,
+        709.4,
+        100,
+        "2012-08-10 00:00:00",
+        "2012-08-10 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_05"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_06",
+      "ticker": "CNTLP",
+      "values": [
+        0.0,
+        0.0,
+        7.044,
+        7.044,
+        704.4,
+        100,
+        "2013-08-06 00:00:00",
+        "2013-08-06 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_06"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_07",
+      "ticker": "CNTLP",
+      "values": [
+        0.0,
+        0.0,
+        6.858,
+        6.858,
+        3429.0,
+        500,
+        "2013-12-16 00:00:00",
+        "2013-12-16 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_07"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_08",
+      "ticker": "DZRD",
+      "values": [
+        0.0,
+        0.0,
+        994.1,
+        994.1,
+        1988.2,
+        2,
+        "2012-08-14 00:00:00",
+        "2012-08-14 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_08"
+    },
+    {
+      "observation_id": "PUB07_SAMPLE_09",
+      "ticker": "DZRD",
+      "values": [
+        0.0,
+        0.0,
+        827.5,
+        827.5,
+        827.5,
+        1,
+        "2012-10-08 00:00:00",
+        "2012-10-08 23:59:59"
+      ],
+      "provenance_id": "PUB07_SAMPLE_09"
+    }
+  ],
+  "source_corroborations": [
+    {
+      "observation_id": "ASSB_SOURCE_SPOT_00",
+      "ticker": "ASSB",
+      "values": [
+        0,
+        0,
+        0.3,
+        0.3,
+        300,
+        1000,
+        "2013-12-05 00:00:00",
+        "2013-12-05 23:59:59"
+      ],
+      "corroborates": "PUB07_SAMPLE_00",
+      "provenance_id": "ASSB_SOURCE_SPOT_00"
+    }
+  ],
+  "abio_variants": [
+    {
+      "observation_id": "ABIO_SOURCE_SPOT_00",
+      "ticker": "ABIO",
+      "values": [
+        15.508,
+        113.56,
+        177,
+        7.6,
+        89460829048.60226,
+        1050632740,
+        "2011-01-01 00:00:00",
+        "2023-08-22 10:08:36"
+      ],
+      "provenance_id": "ABIO_SOURCE_SPOT_00"
+    },
+    {
+      "observation_id": "ABIO_SOURCE_SPOT_01",
+      "ticker": "ABIO",
+      "values": [
+        10.812,
+        15.099,
+        21.985,
+        9.265,
+        329244623.3999992,
+        22398800,
+        "2011-01-01 00:00:00",
+        "2023-08-22 10:08:36"
+      ],
+      "provenance_id": "ABIO_SOURCE_SPOT_01"
+    }
+  ],
+  "known_abio_signatures": [
+    {
+      "identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "ABIO"
+      },
+      "interval": 24,
+      "columns": [
+        "open",
+        "close",
+        "high",
+        "low",
+        "value",
+        "volume",
+        "begin",
+        "end"
+      ],
+      "values": [
+        15.508,
+        113.56,
+        177,
+        7.6,
+        89460829048.60226,
+        1050632740,
+        "2011-01-01 00:00:00",
+        "2023-08-22 10:08:36"
+      ],
+      "provenance_id": "ABIO_SOURCE_SPOT_00",
+      "evidence_ref": "b2/archive/ABIO_SOURCE_SPOT_00"
+    },
+    {
+      "identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "ABIO"
+      },
+      "interval": 24,
+      "columns": [
+        "open",
+        "close",
+        "high",
+        "low",
+        "value",
+        "volume",
+        "begin",
+        "end"
+      ],
+      "values": [
+        10.812,
+        15.099,
+        21.985,
+        9.265,
+        329244623.3999992,
+        22398800,
+        "2011-01-01 00:00:00",
+        "2023-08-22 10:08:36"
+      ],
+      "provenance_id": "ABIO_SOURCE_SPOT_01",
+      "evidence_ref": "b2/archive/ABIO_SOURCE_SPOT_01"
+    }
+  ]
+}
