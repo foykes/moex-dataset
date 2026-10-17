@@ -1,10 +1,11 @@
-# B2-01 candle quality and lineage assessment
+# B2 candle assessment and offline computation
 
-This slice implements the accepted B2-01 R2 plan and R3 regression clarification.
-It adds an isolated procedural assessment helper; it does not connect it to
-`tech.py`, calculate indicators in production, retain responses on disk or
-publish a dataset. The remaining calculator defect in [#16](https://github.com/foykes/moex-dataset/issues/16)
-is therefore still open.
+The B2-01 sections below record the accepted R2 plan and R3 regression
+clarification for the isolated assessment helper. The B2-02 section adds an
+offline in-memory consumer. Legacy file callers are not activated through that
+consumer; production calculation, retention and publication remain separate.
+The runtime defect in [#16](https://github.com/foykes/moex-dataset/issues/16)
+therefore remains open.
 
 ## Authority, ownership and compatibility
 
@@ -380,3 +381,94 @@ schema impact, this AC matrix, open hookups, permissions and self-review.
 `NO_AUTO_MERGE=true`. Rollback is a separately reviewed revert of the B2-01
 commit; this slice changes no dataset or remote target. Stop after independent
 review handoff: no automatic merge, issue closure, next slice or production.
+
+## B2-02: offline computation under Full Completion R2
+
+The owner-direct grant `B2-P1P2-OWNER-DIRECT-20261017-01` releases only the
+ten P1/P2 paths in the accepted Full Completion R2 plan. This P1 changes only
+`tech.py`, `tech.ipynb`, this document, `tests/shared/b2/test_calculator.py` and
+`tests/fixtures/b2/calculator_cases.json`. The existing assessment implementation,
+quality tests, E19/cases and archival assets are read-only. The tech pair is one
+ownership zone. P0/B1, P3 normalization and P4 runtime integration are excluded.
+
+```python
+calculate_candles(frame, *, spec, metadata, retained_evidence,
+                  logging_context=None) -> computation
+```
+
+`frame` is the candidate population; retained evidence includes selected and
+unselected raw variants. The function snapshots its inputs and calls
+`assess_candles` itself. There is no public mode, skip-assessment flag or fallback
+to the legacy file calculator.
+
+Before the first arithmetic call, the whole request must have independently
+verified bindings, COMPLETE local coverage, PASS request/group eligibility,
+nonempty required groups and a valid identity/interval/ordinal projection.
+All six numeric computational columns are prepared for every group before any
+group is calculated. Missing authority, unsupported normalization, unresolved
+counts/membership, a blocked/empty required group or unrepresentable binary64
+input blocks the whole request with zero TA-Lib calls. The overall quality
+result is not the admission switch: full F0 remains NOT_VERIFIED, and known raw
+quarantine FAIL can coexist with PASS effective eligibility.
+
+The computational copy preserves exact integers when representable, checks
+overflow/precision loss and keeps negative zero. It does not mutate source
+values, impose positive/integer-volume rules or provide a production float
+normalization profile. A conversion failure is a computational blocker, not a
+new raw-data corruption verdict.
+
+The single private `_calculate_frame(..., group_ordinals=...)` kernel retains
+the existing 66 TA-Lib calls, parameters, 80 indicator names/order and RSI14
+implementation. The legacy wrapper supplies its existing display-ticker groups.
+The admitted path supplies one explicitly scoped, chronological dense-index
+group at a time and returns original candidate ordinals. The kernel never
+reconstructs admitted identity from ticker. Native dtype and NaN masks remain
+per-column; HT_TRENDMODE retains its integer/zero warm-up semantics. H89 is the
+legacy raw-nine plus 80-column schema, not a row-trimming policy.
+
+| Internal result | Meaning |
+| --- | --- |
+| `status` | CALCULATED_OFFLINE or BLOCKED; never successful empty/partial required computation. |
+| `assessment` | Unmodified raw, quality, coverage, eligibility and assessment diagnostics. |
+| `candidate_rows` | Original-value copy, including column order, extra columns and original index labels. |
+| `candidate_row_map` | Original ordinal/index, verified key/ref/identity when available, disposition and reasons. Unverified bindings are not invented. |
+| `effective_groups` | Identity/interval, ordered original ordinals, sorted original-value rows and separate 80-column indicator frames on matching dense indices. Empty when blocked. |
+| `quarantine` | Verified candidate quarantine ordinals and retained raw findings/groups. Missing effective ordinals alone never imply quarantine. |
+| `blockers`, `diagnostics` | Internal reasons and safe diagnostic outcome; no raw payload logging. |
+| `production_admission` | NOT_ENABLED. |
+
+The function does not insert public NaN rows, remove public keys or serialize a
+candidate. `calculator(filename)` and `tech.main` retain legacy behavior and are
+UNVERIFIED admission paths. P4 will require an accepted producer handoff and
+separate B4/D error/release gates. In particular, current producer writes occur
+before tech; metadata alone cannot establish preservation of the previous
+release. Quarantine representation in CSV/XLSX remains an owner decision.
+
+P1 regressions retain the frozen legacy-order counterexample and compare the new
+path by full key/value across independently captured permutation snapshots.
+They cover all-group admission before TA calls, raw/candidate preservation,
+extra columns and duplicate/custom indices, the exact CONTINUE 18-to-16 oracle,
+all native parameter/output bindings, dtype/masks, conversion and diagnostic
+faults. A 320-bar fixture exercises long lookbacks; it is not a universal minimum
+history/admission rule or evidence of historical completeness.
+
+The P1 legacy parity fixture retains the original campaign-anchor tech Git
+blob as compressed bytes in `calculator_cases.json`. A literal length, SHA256
+and Git blob check precedes import, with strict decoding and no runtime Git,
+network or candidate-source fallback. This makes the same historical reference
+available in shallow CI. It is a code reference, not candle/source evidence,
+and does not implement or replace the separately owned P0/B1 companion.
+
+P0 is a separate B1/F3 reference-preparation companion. The existing B1 source
+guard rejects substantial tech changes before running its accepted-reference
+comparison. Until P0 is independently accepted and included in the actual base,
+full P1 GREEN and READY_FOR_INDEPENDENT_CODE_REVIEW are not claimed. Its tests,
+pins, tolerances, runner and guard are not weakened in this PR. Focused results
+and this prerequisite must both be included in the handoff.
+
+The milestones remain separate: B2_COMPUTE_OFFLINE_ACCEPTED requires independent
+P1 acceptance; B2_REFERENCE_EVIDENCE_ACCEPTED or PARTIAL reports only its actual
+scope; B2_RUNTIME_INTEGRATION_ACCEPTED requires the real caller hookup;
+B2_FULL_AC_ACCEPTED requires all original #16/#55/#56 evidence. None is implied
+by a successful local calculation. P1/P2 grant no source acquisition,
+production/live, merge, issue closure, P3 or P4 permission.
