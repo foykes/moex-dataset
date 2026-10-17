@@ -35,6 +35,11 @@ WINDOWS = {
     '10m': (10, '2024-12-02', '2024-12-13'),
     '1m': (1, '2024-12-02', '2024-12-02'),
 }
+MATH_UNSTABLE_PERIODS = (
+    'ADX', 'ADXR', 'ATR', 'CMO', 'DX', 'EMA', 'HT_DCPERIOD', 'HT_DCPHASE',
+    'HT_PHASOR', 'HT_SINE', 'HT_TRENDLINE', 'HT_TRENDMODE', 'KAMA', 'MFI',
+    'MINUS_DI', 'MINUS_DM', 'NATR', 'PLUS_DI', 'PLUS_DM', 'RSI', 'STOCHRSI', 'T3',
+)
 
 
 def _strict_json(text):
@@ -327,6 +332,36 @@ def _math_frame(data):
     return frame
 
 
+def _assert_math_native_profile():
+    # Независимый test-only профиль; globals не меняем, validator кандидата не используем.
+    compatibility = talib.get_compatibility()
+    assert type(compatibility) is int and compatibility == 0, 'MATH_NATIVE_PROFILE:compatibility'
+    unstable = {}
+    for name in MATH_UNSTABLE_PERIODS:
+        period = talib.get_unstable_period(name)
+        assert type(period) is int and period == 0, 'MATH_NATIVE_PROFILE:' + name
+        unstable[name] = period
+    return compatibility, unstable
+
+
+def _math_only_kernel_result(tech, frame, profiles):
+    native_profile = _assert_math_native_profile()
+    expected = frame.copy(deep=True)
+    for profile in profiles:
+        inputs = [frame[column].to_numpy(dtype=np.float64, copy=True) for column in profile['inputs']]
+        values = getattr(talib, profile['function'])(*inputs, **profile['parameters'])
+        outputs = values if len(profile['outputs']) > 1 else (values,)
+        assert len(outputs) == len(profile['outputs'])
+        for name, value in zip(profile['outputs'], outputs):
+            expected[name] = value
+    assert _assert_math_native_profile() == native_profile
+    state = {'rows': len(frame), 'instruments': 1, 'phase': 'CALCULATING',
+             'columns': None, 'diagnostics': False, 'native_dtypes': True}
+    actual = tech._calculate_frame(frame, None, state, group_ordinals=[list(range(len(frame)))])
+    assert _assert_math_native_profile() == native_profile
+    return actual, expected
+
+
 def test_math_only_private_kernel_matches_all_66_native_profiles(reference_bundle):
     # Общий kernel, но без публичного admission adapter и без source/F0 PASS.
     import tech
@@ -341,17 +376,7 @@ def test_math_only_private_kernel_matches_all_66_native_profiles(reference_bundl
     assert len(profiles) == 66
     names = [name for profile in profiles for name in profile['outputs']]
     assert len(names) == len(set(names)) == 80
-    expected = frame.copy(deep=True)
-    for profile in profiles:
-        inputs = [frame[column].to_numpy(dtype=np.float64, copy=True) for column in profile['inputs']]
-        values = getattr(talib, profile['function'])(*inputs, **profile['parameters'])
-        outputs = values if len(profile['outputs']) > 1 else (values,)
-        assert len(outputs) == len(profile['outputs'])
-        for name, value in zip(profile['outputs'], outputs):
-            expected[name] = value
-    state = {'rows': len(frame), 'instruments': 1, 'phase': 'CALCULATING',
-             'columns': None, 'diagnostics': False, 'native_dtypes': True}
-    actual = tech._calculate_frame(frame, None, state, group_ordinals=[list(range(len(frame)))])
+    actual, expected = _math_only_kernel_result(tech, frame, profiles)
     assert list(actual.columns) == RAW_COLUMNS + names
     assert actual.index.equals(frame.index)
     pd.testing.assert_frame_equal(actual, expected, check_dtype=True, check_exact=False,
@@ -366,3 +391,51 @@ def test_math_only_private_kernel_matches_all_66_native_profiles(reference_bundl
     assert all(value == 'NOT_VERIFIED' for value in manifest['f0_statuses'].values())
     assert manifest['source_reference_status'] == 'NOT_AVAILABLE'
     assert manifest['production_admission'] == 'NOT_ENABLED'
+
+
+@pytest.mark.parametrize('setting,phase', [
+    ('compatibility', 'before_reference'), ('HT_TRENDMODE', 'before_reference'),
+    ('EMA', 'before_reference'), ('EMA', 'before_kernel'), ('EMA', 'after_kernel'),
+])
+def test_math_only_native_profile_drift_cannot_validate_both_sides(reference_bundle, monkeypatch,
+                                                               setting, phase):
+    import tech
+
+    _manifest, data = reference_bundle
+    frame = _math_frame(data).iloc[:20].copy(deep=True)
+    profiles = data['native_controls']['profiles']
+    compatibility = talib.get_compatibility
+    unstable = talib.get_unstable_period
+    bbands = talib.BBANDS
+    observed = {'drift': phase == 'before_reference', 'native_calls': 0, 'kernel_calls': 0}
+
+    def reported_compatibility():
+        return 1 if observed['drift'] and setting == 'compatibility' else compatibility()
+
+    def reported_unstable(name):
+        return 1 if observed['drift'] and name == setting else unstable(name)
+
+    def native_reference(*args, **kwargs):
+        observed['native_calls'] += 1
+        result = bbands(*args, **kwargs)
+        if phase == 'before_kernel':
+            observed['drift'] = True
+        return result
+
+    def kernel(working, _context, _state, *, group_ordinals):
+        observed['kernel_calls'] += 1
+        assert phase == 'after_kernel', 'UNEXPECTED_KERNEL_CALL'
+        observed['drift'] = True
+        return working.copy(deep=True)
+
+    # Только Python getters: реальные C-library compatibility/unstable globals неизменны.
+    with monkeypatch.context() as patch:
+        patch.setattr(talib, 'get_compatibility', reported_compatibility)
+        patch.setattr(talib, 'get_unstable_period', reported_unstable)
+        patch.setattr(talib, 'BBANDS', native_reference)
+        patch.setattr(tech, '_calculate_frame', kernel)
+        with pytest.raises(AssertionError, match='MATH_NATIVE_PROFILE:' + setting):
+            _math_only_kernel_result(tech, frame, profiles)
+    assert observed['native_calls'] == (0 if phase == 'before_reference' else 1)
+    assert observed['kernel_calls'] == (1 if phase == 'after_kernel' else 0)
+    assert _assert_math_native_profile()[0] == 0
