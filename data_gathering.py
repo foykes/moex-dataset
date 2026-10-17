@@ -15,7 +15,7 @@
 
 # %%
 import datetime, pandas as pd, requests, csv, sys, time, os, json, math, re
-import random, socket, errno, calendar
+import random, socket, errno, calendar, hashlib, uuid
 from io import StringIO
 from urllib3 import exceptions as http_errors
 from urllib3._collections import HTTPHeaderDict
@@ -430,7 +430,13 @@ def _a2_request_policy(primary):
     return 'A2_ISS_REQUEST_ERROR', category, False, 'REQUEST_FAILED'
 
 
-def _a2_candle_body(response, checkpoint):
+_A3_MAX_PAGES = 1000
+_A3_MAX_BYTES = 64 * 1024 * 1024
+_A3_EVIDENCE_BYTES = 16 * 1024 * 1024
+_A3_METADATA_BYTES = 16 * 1024
+
+
+def _a2_candle_body(response, checkpoint, resource=None):
     values = _a2_header_values(response, 'Content-Encoding')
     if (values is None or len(values) > 1 or values and
             (not values[0].isascii() or values[0].strip(' \t').lower() != 'identity')):
@@ -438,10 +444,17 @@ def _a2_candle_body(response, checkpoint):
     content = bytearray()
     while True:
         checkpoint()
-        part = response.raw.read(min(65536, 8 * 1024 * 1024 + 1 - len(content)),
+        amount = min(65536, 8 * 1024 * 1024 + 1 - len(content))
+        if resource is not None:
+            amount = min(amount, _A3_MAX_BYTES + 1 - resource['bytes'])
+        part = response.raw.read(amount,
                                  decode_content=False)
         if type(part) is not bytes:
             raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+        if resource is not None:
+            resource['bytes'] += len(part)
+            if resource['bytes'] > _A3_MAX_BYTES:
+                raise ValueError('A3_ISS_QUERY_BYTES_EXCEEDED')
         if len(content) + len(part) > 8 * 1024 * 1024:
             raise ValueError('A2_ISS_BODY_LIMIT_EXCEEDED')
         checkpoint()
@@ -479,7 +492,7 @@ def _a2_candle_codec(response, content):
     return codec
 
 
-def _a2_candle_records(text):
+def _a2_candle_records(text, duplicate=None):
     # Только временное представление; возвращаемый pandas frame не нормализуем.
     if '\r' in text.replace('\r\n', ''):
         raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
@@ -490,10 +503,10 @@ def _a2_candle_records(text):
     if len(records) < 2 or records[0] != ['candles'] or records[1] != columns:
         raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
     rows = records[2:]
-    seen_begin = set()
+    seen_begin = {}
     number = r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
     timestamp = r'[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}'
-    for row in rows:
+    for ordinal, row in enumerate(rows, 1):
         if len(row) != 8:
             raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
         for cell in row[:6]:
@@ -513,8 +526,15 @@ def _a2_candle_records(text):
                 raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
         # Локальная request-bound проекция; полную source identity она не доказывает.
         if row[6] in seen_begin:
-            raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
-        seen_begin.add(row[6])
+            primary = ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
+            if duplicate is not None:
+                # Diagnostic-only hook: existing parser refusal remains primary.
+                try:
+                    duplicate(primary, seen_begin[row[6]], ordinal, rows)
+                except BaseException:
+                    _a3_evidence_note(primary)
+            raise primary
+        seen_begin[row[6]] = ordinal
     return rows
 
 
@@ -534,6 +554,114 @@ def _a2_candle_frame(df, rows):
                 raise ValueError('A2_ISS_RESPONSE_SCHEMA_INVALID')
 
 
+def _a3_capture(content, page, offset, attempt):
+    # До decode/parser; ошибка capture сама становится terminal primary.
+    return dict(body=content, body_bytes=len(content), body_sha256=hashlib.sha256(content).hexdigest(),
+                page_ordinal=page, start=offset, attempt=attempt, codec=None,
+                admission_state='RAW_CAPTURED')
+
+
+def _a3_evidence_note(primary):
+    try:
+        BaseException.add_note(primary, 'A3_EVIDENCE_FAILED_UNVERIFIED')
+    except BaseException:
+        pass
+
+
+def _a3_metadata(value):
+    if type(value) is str:
+        if (len(value) <= 128 and not any(0xd800 <= ord(char) <= 0xdfff for char in value)
+                and len(value.encode('utf-8')) <= 128):
+            return value
+        digest, size = hashlib.sha256(), 0
+        for offset in range(0, len(value), 4096):
+            part = value[offset:offset + 4096].encode('utf-8', errors='surrogatepass')
+            size += len(part)
+            digest.update(part)
+        return dict(value=None, state='HASH_ONLY_OVERSIZE_OR_ENCODING', bytes=size,
+                    sha256=digest.hexdigest(), encoding='UTF8_SURROGATEPASS')
+    if value is None or type(value) in (int, bool):
+        if value is None or type(value) is bool or value.bit_length() <= 64:
+            return value
+    return dict(value=None, state='UNSUPPORTED_METADATA_TYPE')
+
+
+def _a3_evidence(primary, reason, request, pairs=(), logging_context=None):
+    # Только bounded local exception attribute. Production writer отсутствует.
+    if hasattr(primary, 'a3_evidence'):
+        return
+    try:
+        from datetime import datetime as utc_datetime, timezone
+        cells, provenance = [], []
+        size = 0
+        for capture, ordinal, row in pairs[:2]:
+            if len(row) != 8 or any(type(cell) is not str for cell in row):
+                raise ValueError('A3_EVIDENCE_CELLS_INVALID')
+            size += sum(len(cell.encode('utf-8')) for cell in row)
+            if size > _A3_EVIDENCE_BYTES:
+                raise ValueError('A3_EVIDENCE_CELLS_LIMIT')
+            cells.append(tuple(row))
+            provenance.append({key: capture[key] for key in (
+                'page_ordinal', 'start', 'attempt', 'body_bytes', 'body_sha256',
+                'codec', 'admission_state')})
+            provenance[-1]['data_record_ordinal'] = ordinal
+        context = logging_context if type(logging_context) is dict else {}
+        metadata = dict(format='RAW_CSV_CELLS_V1', reason=reason, state='CAPTURED',
+            metadata_exact=True, omitted_fields=[], request={key: _a3_metadata(value)
+                for key, value in request.items()}, engine='stock', endpoint='ISS_CANDLES',
+            identity='ISS_CANDLES_BOARDLESS/stock/market/security/interval/raw_begin',
+            board=None, board_reason='NOT_PRESENT_IN_REQUEST_A5_UNVERIFIED',
+            source_identity='NOT_VERIFIED', availability='NOT_VERIFIED',
+            columns=['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end'],
+            row_cap=2, cell_bytes_cap=_A3_EVIDENCE_BYTES, cell_bytes=size,
+            metadata_bytes_cap=_A3_METADATA_BYTES, rows=provenance,
+            captured_utc=utc_datetime.now(timezone.utc).isoformat(),
+            correlation={key: _a3_metadata(context.get(key))
+                         for key in ('run_id', 'snapshot_id', 'dataset_id')},
+            verified_sha=None, sha_reason='NOT_VERIFIED', persistence='NOT_REQUESTED')
+        metadata['omitted_fields'] = [key for key, value in metadata['request'].items()
+                                      if type(value) is dict]
+        metadata['omitted_fields'] += ['correlation.' + key for key, value in metadata['correlation'].items()
+                                        if type(value) is dict]
+        metadata['metadata_exact'] = not metadata['omitted_fields']
+        if len(json.dumps(metadata, ensure_ascii=False, sort_keys=True,
+                          separators=(',', ':')).encode('utf-8')) > _A3_METADATA_BYTES:
+            raise ValueError('A3_EVIDENCE_METADATA_LIMIT')
+        primary.a3_evidence = dict(metadata=metadata, raw_cells=tuple(cells))
+    except BaseException:
+        _a3_evidence_note(primary)
+
+
+def _a3_numeric_identity(value):
+    if pd.api.types.is_integer(value) and not isinstance(value, bool):
+        return int(value), 1, False
+    if pd.api.types.is_float(value) and math.isfinite(value):
+        native = float(value)
+        return (*native.as_integer_ratio(), native == 0 and math.copysign(1, native) < 0)
+    raise ValueError('A3_ISS_NUMERIC_ASSEMBLY_LOSS')
+
+
+def _a3_assemble(frames, ticker):
+    if not frames:
+        return pd.DataFrame()
+    result = pd.concat(frames, ignore_index=True)
+    for column in ('open', 'close', 'high', 'low', 'value', 'volume'):
+        dtype = result[column].dtype
+        if not pd.api.types.is_numeric_dtype(dtype):
+            raise ValueError('A3_ISS_NUMERIC_ASSEMBLY_LOSS')
+        source_dtypes = [frame[column].dtype for frame in frames]
+        if all(item == source_dtypes[0] for item in source_dtypes) and dtype != source_dtypes[0]:
+            raise ValueError('A3_ISS_NUMERIC_ASSEMBLY_LOSS')
+        offset = 0
+        for frame in frames:
+            for before, after in zip(frame[column], result[column].iloc[offset:offset + len(frame)]):
+                if _a3_numeric_identity(before) != _a3_numeric_identity(after):
+                    raise ValueError('A3_ISS_NUMERIC_ASSEMBLY_LOSS')
+            offset += len(frame)
+    result['ticker'] = ticker
+    return result
+
+
 def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3, *, logging_context=None, retry_jitter=0):
     global header
     global headers_full
@@ -549,19 +677,28 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
     attempt = 0
     status = body_bytes = None
 
+    page_ordinal, offset = 1, 0
+    total_attempts = retry_total = rows_received_total = pages_validated = accumulated = 0
+    page_received, added = None, 0
+    failed_emitted = False
+    diagnostic_failed = False
+    success_sleep_interrupted = False
+    resource = {'bytes': 0}
+    frames, captures, seen, payloads = [], [], {}, set()
+    capture = None
+    last_raw = None
     retry_after_note = None
     deadline_error = None
 
     def message(outcome, code='NO_ERROR', rotated=False):
-        # Фиксированные aliases: raw ticker, URL, headers/body/exception не печатаем.
-        return (f'Свечи {outcome}: {code}; MOEX_ISS/ISS_CANDLES/{market}; REQUEST_INSTRUMENT; '
-                f'i={_a2_number(attempt)}/{_a2_number(max_retries)}; tf={_a2_number(interval)}; '
-                f'{_a2_date(end_date_mx)}..{_a2_date(start_date_mx)}; '
-                f'HTTP={_a2_number(status)}; bytes={_a2_number(body_bytes)}'
+        # Only fixed aliases/counters; raw bounds, body and exceptions stay local.
+        return (f'Свечи {outcome}: {code}; p={page_ordinal}; start={offset}; '
+                f'got={page_received}; add={added}; sum={accumulated}; '
+                f'get={total_attempts}; retry={retry_total}; term={outcome}'
                 + ('; HEADER_ROTATED' if rotated else '')
                 + ('; ' + retry_after_note if retry_after_note is not None else ''))
 
-    def correlation_fields():
+    def correlation_fields(aggregate=False):
         fields = {}
         if type(logging_context) is dict:
             for key in ('snapshot_id', 'dataset_id', 'file', 'artifact_id', 'target_id'):
@@ -571,15 +708,17 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
             page = logging_context.get('page')
             if type(page) is str or type(page) is int and page >= 0:
                 fields['page'] = page
+        if 'page' not in fields:
+            fields['page'] = None if aggregate else offset
         return fields
 
-    def error_record(primary, code, category, final):
+    def error_record(primary, code, category, final, aggregate):
         nullable = ('run_id', 'snapshot_id', 'dataset_id', 'instrument', 'interval',
                     'page', 'file', 'artifact_id', 'target_id', 'endpoint', 'attempt', 'exception_type')
         record = dict(category=category, code=code, stage='data_gathering',
                       retryable=not final, final=final, message='Отказ запроса свечей: ' + code)
         record.update({key: None for key in nullable})
-        record.update(correlation_fields())
+        record.update(correlation_fields(aggregate))
         if type(logging_context) is dict and type(logging_context.get('run_id')) is str:
             record['run_id'] = logging_context['run_id']
         exception_type = 'Exception'
@@ -597,28 +736,42 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         record.update(instrument=ticker_in if type(ticker_in) is str else None,
                       interval=interval if type(interval) is int and interval > 0 else None,
                       endpoint='ISS_CANDLES', attempt=attempt, exception_type=exception_type)
-        record['null_reasons'] = {key: 'NOT_AVAILABLE_OR_NOT_APPLICABLE'
+        record['null_reasons'] = {key: ('AGGREGATE_QUERY' if key == 'page' and aggregate else 'NOT_AVAILABLE_OR_NOT_APPLICABLE')
                                   for key in nullable if record[key] is None}
         return record
 
     def emit(level, event, outcome, primary=None, code='NO_ERROR', category='SOURCE', final=False,
              received=None, invalid=False, rotated=False, pending_primary=None):
+        nonlocal failed_emitted, diagnostic_failed
+        aggregate = event in ('a2_query_started', 'a2_query_returned', 'a2_query_failed')
+        if event == 'a2_query_failed':
+            failed_emitted = True
         fields = dict(stage='data_gathering', fields={}, outcome=outcome,
                       instrument=ticker_in if type(ticker_in) is str else None,
                       interval=interval if type(interval) is int and interval > 0 else None,
                       duration_ms=max(0, (time.perf_counter() - operation_started) * 1000),
-                      retries=None if invalid else dict(attempt=attempt, limit=max_retries),
-                      error=None if primary is None else error_record(primary, code, category, final))
-        fields.update(correlation_fields())
+                      retries=None if invalid else dict(
+                          attempt=total_attempts if aggregate else attempt,
+                          limit=_A3_MAX_PAGES * max_retries if aggregate else max_retries),
+                      error=None if primary is None else error_record(primary, code, category, final, aggregate))
+        fields.update(correlation_fields(aggregate))
         if invalid:
             fields['null_reasons'] = {'retries': 'INVALID_CONFIGURATION'}
-        if received is not None:
-            fields['counts'] = dict(rows_received=received, rows_accepted=None,
-                rows_quarantined=None, pages=None, instruments=None,
-                null_reasons={'rows_accepted': 'NOT_ASSESSED', 'rows_quarantined': 'NOT_ASSESSED',
-                              'pages': 'NOT_PAGINATION_EVIDENCE', 'instruments': 'NOT_ASSESSED'})
-        _a2_diagnostic(logging_context, level, event, message(outcome, code, rotated), fields,
-                       primary if primary is not None else pending_primary)
+        if fields.get('page') is None:
+            fields.setdefault('null_reasons', {})['page'] = 'AGGREGATE_QUERY'
+        fields['counts'] = dict(rows_received=rows_received_total if aggregate else page_received,
+            rows_accepted=None, rows_quarantined=None,
+            pages=pages_validated if aggregate else int(received is not None), instruments=None,
+            null_reasons={'rows_accepted': 'NOT_ASSESSED', 'rows_quarantined': 'NOT_ASSESSED',
+                          'instruments': 'NOT_ASSESSED'})
+        if not aggregate and page_received is None:
+            fields['counts']['null_reasons']['rows_received'] = 'NOT_YET_VALIDATED'
+        try:
+            _a2_diagnostic(logging_context, level, event, message(outcome, code, rotated), fields,
+                           primary if primary is not None else pending_primary)
+        except BaseException:
+            diagnostic_failed = True
+            raise
 
     if (type(max_retries) is not int or not 1 <= max_retries <= 5 or
             type(retry_sleep_start) not in (int, float) or not 0 <= retry_sleep_start <= 30 or
@@ -647,161 +800,276 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
     deadline()
     emit('INFO', 'a2_query_started', 'QUERY_STARTED')
     deadline()
-    query = f'https://iss.moex.com/iss/engines/stock/markets/{market}/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #универсальный шаблон
+    request = dict(market=market, security=f'{ticker_in}', interval=f'{interval}',
+                   from_date=f'{end_date_mx}', till_date=f'{start_date_mx}',
+                   request_id=uuid.uuid4().hex)
+    query = (f'https://iss.moex.com/iss/engines/stock/markets/{market}/securities/'
+             f"{request['security']}/candles.csv?from={request['from_date']}&till="
+             f"{request['till_date']}&interval={request['interval']}")
 
     # Если global header почему-то не задан или пустой —
     # инициализируем первым User-Agent из headers_full
     if not isinstance(header, dict) or len(header) == 0:
         header = get_next_header(None)
 
-    primary = None
-    while attempt < max_retries:
-        deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
-                 category if primary is not None else 'TIMEOUT')
-        status = body_bytes = None
-        retry_after_note = None
-        emit('DEBUG', 'a2_query_attempt_started', 'REQUEST_ADMISSION_STARTED', pending_primary=primary)
-        deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
-                 category if primary is not None else 'TIMEOUT')
-        request_headers = {key: value for key, value in header.items()
-                           if type(key) is not str or key.lower() != 'accept-encoding'}
-        request_headers['Accept-Encoding'] = 'identity'
-        available = remaining()
-        deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
-                 category if primary is not None else 'TIMEOUT', available=available)
+    def local_duplicate(primary, first, current, rows):
+        _a3_evidence(primary, 'LOCAL_DUPLICATE', request,
+                     ((capture, first, rows[first - 1]), (capture, current, rows[current - 1])),
+                     logging_context)
+
+    def refuse_order(reason, pairs):
+        primary = ValueError('A3_ISS_PAGE_ORDER_INVALID')
+        try:
+            _a3_evidence(primary, reason, request, pairs, logging_context)
+        except BaseException:
+            _a3_evidence_note(primary)
+        raise primary
+
+    def page():
+        global header
+        nonlocal attempt, status, body_bytes, retry_after_note, capture
+        nonlocal total_attempts, retry_total, page_received, rows_received_total, pages_validated
+        nonlocal success_sleep_interrupted
         primary = None
-        response = None
-        retryable = False
-        code, category, terminal = 'A2_ISS_REQUEST_ERROR', 'UNKNOWN', None
-        phase = 'request'
-        attempt += 1
-        try:
-            response = requests.get(query, headers=request_headers,
-                                    timeout=(min(5, available), min(30, available)),
-                                    verify=True, allow_redirects=False, stream=True)
-            status = response.status_code
-            if 300 <= status <= 399:
-                raise requests.exceptions.TooManyRedirects('A2_ISS_REDIRECT_REJECTED', response=response)
-            if status != 200:
-                raise requests.exceptions.HTTPError('A2_ISS_HTTP_STATUS', response=response)
-            checkpoint()
-            content = _a2_candle_body(response, checkpoint)
-            body_bytes = len(content)
-            phase = 'validation'
-            code, category = 'A2_ISS_RESPONSE_SCHEMA_INVALID', 'SOURCE'
-            codec = _a2_candle_codec(response, content)
-            checkpoint()
-            code = 'A2_ISS_RESPONSE_DECODE_ERROR'
-            text = content.decode(codec, errors='strict')
-            checkpoint()
-            code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
-            rows = _a2_candle_records(text)
-            checkpoint()
-            code = 'A2_ISS_PARSE_ERROR'
-            df = pd.read_csv(StringIO(text), sep=';', header=1)
-            checkpoint()
-            code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
-            _a2_candle_frame(df, rows)
-            checkpoint()
-        except BaseException as error:
-            primary = error
-            if error is deadline_error:
-                code, category, terminal = 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', 'DEADLINE_EXCEEDED'
-            elif isinstance(error, requests.exceptions.HTTPError):
-                code, category = 'A2_ISS_HTTP_STATUS', 'QUOTA_429' if status == 429 else 'SOURCE'
-                retryable = status in (408, 429, 500, 502, 503, 504)
-                terminal = None if retryable else 'HTTP_NONRETRYABLE'
-            elif isinstance(error, MemoryError):
-                code, category, retryable, terminal = _a2_request_policy(error)
-            elif phase == 'validation' and isinstance(error, (ValueError, UnicodeDecodeError, csv.Error,
-                                                             pd.errors.ParserError, pd.errors.EmptyDataError)):
-                terminal = 'RESPONSE_REJECTED'
-            elif type(error) is ValueError and error.args == ('A2_ISS_BODY_LIMIT_EXCEEDED',):
-                code, category, terminal = 'A2_ISS_BODY_LIMIT_EXCEEDED', 'CAPACITY', 'BODY_LIMIT_EXCEEDED'
-            elif type(error) is ValueError and error.args in (
-                    ('A2_ISS_CONTENT_ENCODING_UNSUPPORTED',), ('A2_ISS_RESPONSE_SCHEMA_INVALID',)):
-                code, category, terminal = error.args[0], 'SOURCE', 'RESPONSE_REJECTED'
-            else:
-                code, category, retryable, terminal = _a2_request_policy(error)
-        # Закрываем и falsey HTTPError response. Cleanup не заменяет native primary.
-        cleanup_failed = False
-        responses = [response] if response is not None else []
-        attached = getattr(primary, 'response', None)
-        if attached is not None and all(attached is not item for item in responses):
-            responses.append(attached)
-        for closing_response in responses:
+        while attempt < max_retries:
+            deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
+                     category if primary is not None else 'TIMEOUT')
+            status = body_bytes = None
+            retry_after_note = None
+            emit('DEBUG', 'a2_query_attempt_started', 'REQUEST_ADMISSION_STARTED', pending_primary=primary)
+            deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
+                     category if primary is not None else 'TIMEOUT')
+            request_headers = {key: value for key, value in header.items()
+                               if type(key) is not str or key.lower() != 'accept-encoding'}
+            request_headers['Accept-Encoding'] = 'identity'
+            available = remaining()
+            deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
+                     category if primary is not None else 'TIMEOUT', available=available)
+            primary = None
+            response = None
+            retryable = False
+            code, category, terminal = 'A2_ISS_REQUEST_ERROR', 'UNKNOWN', None
+            phase = 'request'
+            attempt += 1
+            total_attempts += 1
+            retry_total += int(attempt > 1)
+            capture = None
             try:
-                closing_response.close()
+                response = requests.get(query + f'&start={offset}', headers=request_headers,
+                                        timeout=(min(5, available), min(30, available)),
+                                        verify=True, allow_redirects=False, stream=True)
+                status = response.status_code
+                if 300 <= status <= 399:
+                    raise requests.exceptions.TooManyRedirects('A2_ISS_REDIRECT_REJECTED', response=response)
+                if status != 200:
+                    raise requests.exceptions.HTTPError('A2_ISS_HTTP_STATUS', response=response)
+                checkpoint()
+                content = _a2_candle_body(response, checkpoint, resource)
+                body_bytes = len(content)
+                phase = 'a3_evidence'
+                capture = _a3_capture(content, page_ordinal, offset, attempt)
+                phase = 'validation'
+                code, category = 'A2_ISS_RESPONSE_SCHEMA_INVALID', 'SOURCE'
+                codec = _a2_candle_codec(response, content)
+                capture['codec'] = codec
+                checkpoint()
+                code = 'A2_ISS_RESPONSE_DECODE_ERROR'
+                text = content.decode(codec, errors='strict')
+                checkpoint()
+                code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
+                rows = _a2_candle_records(text, local_duplicate)
+                checkpoint()
+                code = 'A2_ISS_PARSE_ERROR'
+                df = pd.read_csv(StringIO(text), sep=';', header=1)
+                checkpoint()
+                code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
+                _a2_candle_frame(df, rows)
+                page_received = len(rows)
+                rows_received_total += page_received
+                pages_validated += 1
+                capture['admission_state'] = 'A2_VALIDATED'
+                checkpoint()
             except BaseException as error:
-                cleanup_failed = True
-                if primary is None:
-                    primary, code, category = error, 'A2_ISS_CLOSE_ERROR', 'IO'
+                primary = error
+                if error is deadline_error:
+                    code, category, terminal = 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', 'DEADLINE_EXCEEDED'
+                elif phase == 'a3_evidence':
+                    code, category, terminal = 'A3_ISS_RAW_CAPTURE_FAILED', 'IO', 'EVIDENCE_FAILED'
+                elif type(error) is ValueError and error.args == ('A3_ISS_QUERY_BYTES_EXCEEDED',):
+                    code, category, terminal = error.args[0], 'CAPACITY', 'QUERY_BYTES_EXCEEDED'
+                elif isinstance(error, requests.exceptions.HTTPError):
+                    code, category = 'A2_ISS_HTTP_STATUS', 'QUOTA_429' if status == 429 else 'SOURCE'
+                    retryable = status in (408, 429, 500, 502, 503, 504)
+                    terminal = None if retryable else 'HTTP_NONRETRYABLE'
+                elif isinstance(error, MemoryError):
+                    code, category, retryable, terminal = _a2_request_policy(error)
+                elif phase == 'validation' and isinstance(error, (ValueError, UnicodeDecodeError, csv.Error,
+                                                                 pd.errors.ParserError, pd.errors.EmptyDataError)):
+                    terminal = 'RESPONSE_REJECTED'
+                elif type(error) is ValueError and error.args == ('A2_ISS_BODY_LIMIT_EXCEEDED',):
+                    code, category, terminal = 'A2_ISS_BODY_LIMIT_EXCEEDED', 'CAPACITY', 'BODY_LIMIT_EXCEEDED'
+                elif type(error) is ValueError and error.args in (
+                        ('A2_ISS_CONTENT_ENCODING_UNSUPPORTED',), ('A2_ISS_RESPONSE_SCHEMA_INVALID',)):
+                    code, category, terminal = error.args[0], 'SOURCE', 'RESPONSE_REJECTED'
                 else:
-                    try:
-                        BaseException.add_note(primary, 'A2_ISS_SECONDARY_CLOSE_ERROR')
-                    except BaseException:
-                        pass
-                terminal, retryable = 'REQUEST_FAILED', False
-
-        # Диагностика и health находятся вне request/parser retry-catching блоков.
-        if primary is not None:
-            if not cleanup_failed or code != 'A2_ISS_CLOSE_ERROR':
-                deadline(primary, code, category)
-            if terminal is not None or not retryable or attempt == max_retries or cleanup_failed:
-                emit('ERROR', 'a2_query_failed', terminal or 'RETRY_EXHAUSTED', primary,
-                     code, category, final=True)
-                raise primary
-            server_wait = 0
-            if isinstance(primary, requests.exceptions.HTTPError):
+                    code, category, retryable, terminal = _a2_request_policy(error)
+            # Закрываем и falsey HTTPError response. Cleanup не заменяет native primary.
+            cleanup_failed = False
+            responses = [response] if response is not None else []
+            attached = getattr(primary, 'response', None)
+            if attached is not None and all(attached is not item for item in responses):
+                responses.append(attached)
+            for closing_response in responses:
                 try:
-                    server_wait, retry_after_note = _a2_retry_after(response, time.time())
-                except Exception:
-                    # HTTP primary уже существует; metadata fault не начинает retry.
-                    server_wait, retry_after_note = None, 'RETRY_AFTER_UNAVAILABLE'
-            local_wait = retry_sleep_start * (2 ** (attempt - 1))
-            if retry_jitter:
-                local_wait += random.uniform(0, retry_jitter)
-            local_wait = min(30, local_wait)
-            wait = max(local_wait, server_wait or 0)
-            deadline(primary, code, category)
-            if server_wait is None or wait > 30 or wait >= remaining():
-                emit('ERROR', 'a2_query_failed', 'RETRY_NOT_ADMITTED', primary, code, category, final=True)
-                raise primary
-            header = get_next_header(header)
-            emit('WARNING', 'a2_query_retry', 'RETRY_PENDING', primary,
-                 code, category, rotated=True)
-            deadline(primary, code, category)
-            if wait >= remaining():
-                emit('ERROR', 'a2_query_failed', 'RETRY_NOT_ADMITTED', primary, code, category, final=True)
-                raise primary
-            time.sleep(wait)
-            deadline(primary, code, category)
-            continue
+                    closing_response.close()
+                except BaseException as error:
+                    cleanup_failed = True
+                    if primary is None:
+                        primary, code, category = error, 'A2_ISS_CLOSE_ERROR', 'IO'
+                    else:
+                        try:
+                            BaseException.add_note(primary, 'A2_ISS_SECONDARY_CLOSE_ERROR')
+                        except BaseException:
+                            pass
+                    terminal, retryable = 'REQUEST_FAILED', False
 
-        deadline()
-        try:
-            df_ticker = pd.DataFrame()
-            received = len(df)
-            if received > 0:
-                df['ticker'] = ticker_in
-                df_ticker = pd.concat([df_ticker, df], ignore_index=True)
-        except Exception as primary:
-            code, category, _, _ = _a2_request_policy(primary)
-            deadline(primary, code, category)
-            emit('ERROR', 'a2_query_failed', 'REQUEST_FAILED', primary, code, category, final=True)
-            raise
-        # Структура проверена целиком; identity/quality/coverage ещё не доказаны.
-        deadline()
-        if remaining() <= 3:
-            primary = requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')
-            emit('ERROR', 'a2_query_failed', 'DEADLINE_EXCEEDED', primary,
-                 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', final=True)
-            raise primary
-        time.sleep(3)
-        deadline()
+            # Диагностика и health находятся вне request/parser retry-catching блоков.
+            if primary is not None:
+                if not cleanup_failed or code != 'A2_ISS_CLOSE_ERROR':
+                    deadline(primary, code, category)
+                if terminal is not None or not retryable or attempt == max_retries or cleanup_failed:
+                    emit('ERROR', 'a2_query_failed', terminal or 'RETRY_EXHAUSTED', primary,
+                         code, category, final=True)
+                    raise primary
+                server_wait = 0
+                if isinstance(primary, requests.exceptions.HTTPError):
+                    try:
+                        server_wait, retry_after_note = _a2_retry_after(response, time.time())
+                    except Exception:
+                        # HTTP primary уже существует; metadata fault не начинает retry.
+                        server_wait, retry_after_note = None, 'RETRY_AFTER_UNAVAILABLE'
+                local_wait = retry_sleep_start * (2 ** (attempt - 1))
+                if retry_jitter:
+                    local_wait += random.uniform(0, retry_jitter)
+                local_wait = min(30, local_wait)
+                wait = max(local_wait, server_wait or 0)
+                deadline(primary, code, category)
+                if server_wait is None or wait > 30 or wait >= remaining():
+                    emit('ERROR', 'a2_query_failed', 'RETRY_NOT_ADMITTED', primary, code, category, final=True)
+                    raise primary
+                header = get_next_header(header)
+                emit('WARNING', 'a2_query_retry', 'RETRY_PENDING', primary,
+                     code, category, rotated=True)
+                deadline(primary, code, category)
+                if wait >= remaining():
+                    emit('ERROR', 'a2_query_failed', 'RETRY_NOT_ADMITTED', primary, code, category, final=True)
+                    raise primary
+                time.sleep(wait)
+                deadline(primary, code, category)
+                continue
+
+            deadline()
+            # Структура проверена целиком; identity/quality/coverage ещё не доказаны.
+            deadline()
+            if remaining() <= 3:
+                primary = requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')
+                emit('ERROR', 'a2_query_failed', 'DEADLINE_EXCEEDED', primary,
+                     'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', final=True)
+                raise primary
+            try:
+                time.sleep(3)
+            except BaseException:
+                success_sleep_interrupted = True
+                raise
+            deadline()
+            return df, rows, capture
+
+    try:
+        while True:
+            attempt = added = 0
+            page_received = None
+            emit('DEBUG', 'a3_page_started', 'PAGE_STARTED')
+            df, rows, capture = page()
+            if not rows:
+                emit('INFO', 'a3_page_terminal', 'OFFSET_TERMINAL_EMPTY', received=0)
+                break
+            digest = capture['body_sha256']
+            for ordinal, row in enumerate(rows, 1):
+                key = ('ISS_CANDLES_BOARDLESS', 'stock', request['market'], request['security'],
+                       request['interval'], row[6])
+                if key in seen:
+                    previous_capture, previous_ordinal = seen[key]
+                    primary = ValueError('A3_ISS_PAGE_OVERLAP')
+                    try:
+                        previous_rows = _a2_candle_records(previous_capture['body'].decode(
+                            previous_capture['codec'], errors='strict'))
+                        _a3_evidence(primary, 'CROSS_PAGE_OVERLAP', request,
+                            ((previous_capture, previous_ordinal, previous_rows[previous_ordinal - 1]),
+                             (capture, ordinal, row)), logging_context)
+                    except BaseException:
+                        _a3_evidence_note(primary)
+                    raise primary
+            if digest in payloads:
+                raise ValueError('A3_ISS_PAGE_REPEATED')
+            for ordinal, (first, second) in enumerate(zip(rows, rows[1:]), 1):
+                if first[6] >= second[6]:
+                    refuse_order('INTRA_PAGE_ORDER',
+                        ((capture, ordinal, first), (capture, ordinal + 1, second)))
+            if captures and rows[0][6] <= captures[-1]['last_begin']:
+                refuse_order('CROSS_PAGE_ORDER', (last_raw, (capture, 1, rows[0])))
+            capture['admission_state'] = 'A3_STAGED'
+            capture['last_begin'] = rows[-1][6]
+            captures.append(capture)
+            # Only one prior raw boundary row is retained; no second CSV parser.
+            last_raw = (capture, len(rows), tuple(rows[-1]))
+            payloads.add(digest)
+            for ordinal, row in enumerate(rows, 1):
+                key = ('ISS_CANDLES_BOARDLESS', 'stock', request['market'], request['security'],
+                       request['interval'], row[6])
+                seen[key] = (capture, ordinal)
+            frames.append(df)
+            added = len(rows)
+            accumulated += added
+            emit('INFO', 'a3_page_returned', 'PAGE_STAGED', received=len(rows))
+            if page_ordinal >= _A3_MAX_PAGES:
+                raise ValueError('A3_ISS_PAGE_LIMIT_EXCEEDED')
+            offset += len(rows)
+            page_ordinal += 1
+        checkpoint()
+        result = _a3_assemble(frames, ticker_in)
+        checkpoint()
         emit('INFO', 'a2_query_returned',
-             'QUERY_RETURNED_UNVALIDATED' if received else 'QUERY_EMPTY_UNVALIDATED', received=received)
-        return df_ticker
+             'QUERY_RETURNED_UNVALIDATED' if accumulated else 'QUERY_EMPTY_UNVALIDATED',
+             received=rows_received_total)
+        return result
+    except BaseException as primary:
+        try:
+            _a3_evidence(primary, 'QUERY_REFUSED', request, logging_context=logging_context)
+        except BaseException:
+            _a3_evidence_note(primary)
+        if not failed_emitted and not diagnostic_failed and not success_sleep_interrupted:
+            if primary is deadline_error:
+                code, category, outcome = 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', 'DEADLINE_EXCEEDED'
+            else:
+                _, category, _, _ = _a2_request_policy(primary)
+                code = (primary.args[0] if type(primary) is ValueError and primary.args
+                        and primary.args[0] in ('A3_ISS_PAGE_OVERLAP', 'A3_ISS_PAGE_REPEATED',
+                            'A3_ISS_PAGE_ORDER_INVALID', 'A3_ISS_PAGE_LIMIT_EXCEEDED',
+                            'A3_ISS_NUMERIC_ASSEMBLY_LOSS') else 'A3_ISS_QUERY_FAILED')
+                if code == 'A3_ISS_PAGE_LIMIT_EXCEEDED':
+                    category = 'CAPACITY'
+                elif code != 'A3_ISS_QUERY_FAILED':
+                    category = 'SOURCE'
+                outcome = 'QUERY_REFUSED'
+            emit('ERROR', 'a2_query_failed', outcome, primary, code, category, final=True)
+        raise
+    finally:
+        seen.clear()
+        captures.clear()
+        payloads.clear()
+        frames.clear()
+        capture = None
+        last_raw = None
 
 
 # %%
