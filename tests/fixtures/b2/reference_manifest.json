@@ -1,0 +1,330 @@
+{
+  "manifest_version": 1,
+  "profile": "MATH_ONLY",
+  "evidence_category": "SOURCE_AVAILABILITY_AND_SYNTHETIC_MATHEMATICAL_CONTROLS",
+  "source_reference_status": "NOT_AVAILABLE",
+  "source_capture_permission": "NONE",
+  "f0_statuses": {
+    "identity": "NOT_VERIFIED",
+    "response": "NOT_VERIFIED",
+    "quality": "NOT_VERIFIED",
+    "coverage": "NOT_VERIFIED",
+    "full_dataset_validation": "NOT_VERIFIED"
+  },
+  "production_admission": "NOT_ENABLED",
+  "reference_data": {
+    "path": "tests/fixtures/b2/reference_data.json",
+    "sha256_basis": "UTF8_TEXT_LF",
+    "sha256": "8d0ded371bf11a71b64e2b393a49dd0dcb8bfaa1bc2c89990d945cd889fcc367",
+    "bytes": 21912
+  },
+  "source_cells": [
+    {
+      "cell_id": "SBER_1d",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "SBER",
+        "interval": 24
+      },
+      "requested_window": {
+        "from": "2023-01-01",
+        "till": "2024-12-31"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    },
+    {
+      "cell_id": "SBER_1h",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "SBER",
+        "interval": 60
+      },
+      "requested_window": {
+        "from": "2024-10-01",
+        "till": "2024-12-31"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    },
+    {
+      "cell_id": "SBER_10m",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "SBER",
+        "interval": 10
+      },
+      "requested_window": {
+        "from": "2024-12-02",
+        "till": "2024-12-13"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    },
+    {
+      "cell_id": "SBER_1m",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "SBER",
+        "interval": 1
+      },
+      "requested_window": {
+        "from": "2024-12-02",
+        "till": "2024-12-02"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    },
+    {
+      "cell_id": "MOEX_1d",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "MOEX",
+        "interval": 24
+      },
+      "requested_window": {
+        "from": "2023-01-01",
+        "till": "2024-12-31"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    },
+    {
+      "cell_id": "MOEX_1h",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "MOEX",
+        "interval": 60
+      },
+      "requested_window": {
+        "from": "2024-10-01",
+        "till": "2024-12-31"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    },
+    {
+      "cell_id": "MOEX_10m",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "MOEX",
+        "interval": 10
+      },
+      "requested_window": {
+        "from": "2024-12-02",
+        "till": "2024-12-13"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    },
+    {
+      "cell_id": "MOEX_1m",
+      "requested_identity": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "MOEX",
+        "interval": 1
+      },
+      "requested_window": {
+        "from": "2024-12-02",
+        "till": "2024-12-02"
+      },
+      "availability": "NOT_AVAILABLE",
+      "source_verification": "NOT_AVAILABLE",
+      "reason": "No approved frozen raw source corpus is available; live capture permission is NONE.",
+      "observed": {
+        "first_begin": null,
+        "last_begin": null,
+        "received_rows": null,
+        "clean_rows": null,
+        "page_count": null,
+        "terminal_empty_page": null,
+        "acquired_at": null,
+        "original_http_sha256s": null
+      },
+      "source_pages": []
+    }
+  ],
+  "future_capture_limits": {
+    "permission_required": true,
+    "minimum_clean_rows_per_cell": 320,
+    "maximum_gets_per_cell": 10,
+    "maximum_rows_per_cell": 5000,
+    "maximum_total_gets": 80,
+    "maximum_total_original_body_bytes": 67108864,
+    "terminal_empty_page_required": true,
+    "automatic_window_expansion": false,
+    "cap_or_insufficient_clean_rows_outcome": "INCOMPLETE",
+    "daily_window_note": "The daily window begins in 2023 because one 2024 calendar year cannot supply 320 trading bars.",
+    "source_boundary": "Bounded-window mathematics does not prove full-history/prehistory, provider identity, source authentication or production admission."
+  },
+  "frozen_input_contract": {
+    "body_hash_basis": "ORIGINAL_HTTP_BYTES",
+    "required_page_fields": [
+      "original_body_base64",
+      "original_body_bytes",
+      "original_body_sha256"
+    ],
+    "sha256_form": "64 lowercase ASCII hexadecimal characters",
+    "json_policy": "UTF-8 JSON; reject duplicate keys and nonfinite constants. Do not hash a parsed reserialization as original bytes.",
+    "empty_page_policy": "An empty body/data page alone is never positive source evidence or coverage proof.",
+    "required_source_provenance": [
+      "request_parameters",
+      "source_identity",
+      "acquired_at",
+      "response_status",
+      "response_headers",
+      "page_ordinal",
+      "observed_bounds",
+      "received_rows",
+      "terminal_page_evidence"
+    ],
+    "scope": "Mechanical byte validation does not authenticate the provider or admit a dataset."
+  },
+  "historical_baseline": {
+    "read_only": true,
+    "evidence_category": "RECONSTRUCTED_PARSED_ARCHIVE",
+    "source_verification": "NOT_VERIFIED",
+    "files": [
+      {
+        "path": "tests/fixtures/b2/archived_observations.json",
+        "sha256_basis": "UTF8_TEXT_LF",
+        "sha256": "95e3ecda17bd7aa8b55f8128f24a99c2f3df600109b7b5e8e05392baaee8cf00"
+      },
+      {
+        "path": "tests/fixtures/b2/evidence_manifest.json",
+        "sha256_basis": "UTF8_TEXT_LF",
+        "sha256": "e3e335e74db714fb3b1c312201fd1d526c0d404e6d52417e79ac2d661589606e"
+      }
+    ],
+    "expected_original_observations": 79,
+    "reconstructed_parsed_public_observations": 10,
+    "unavailable_unenumerated_original_observations": 69,
+    "unavailable_observation_ids": null,
+    "additional_assb_corroborations": 1,
+    "additional_abio_variants": 2,
+    "corroboration_increases_10_of_79": false,
+    "original_http_bodies_available": false,
+    "recovered_export_status": "NOT_AVAILABLE",
+    "recovered_files_created": false,
+    "historical_public_export": {
+      "path": "datasets/30years_data_1d_interval.csv",
+      "bytes": 1050022377,
+      "sha256": "6bb644d1b88a9fa83a2009d05a259d09b2ccc53648372fee355bbbff6edea009",
+      "status": "NOT_AVAILABLE",
+      "meaning": "Historical recovery target only. No production dataset was read, and fresh capture cannot recover the unknown 69."
+    },
+    "separate_local_audit": {
+      "ohlc_anomalies": 39,
+      "same_corpus_as_public_79": false,
+      "may_replace_unknown_69": false
+    }
+  }
+}

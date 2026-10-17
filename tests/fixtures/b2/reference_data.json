@@ -1,0 +1,1235 @@
+{
+  "schema_version": 1,
+  "profile": "MATH_ONLY",
+  "evidence_category": "SYNTHETIC_MATHEMATICAL_CONTROLS",
+  "source_observations": [],
+  "source_observation_count": 0,
+  "synthetic_identity": "B2_MATH_ONLY",
+  "rsi_period": 14,
+  "rsi_controls": [
+    {
+      "case_id": "B2_MATH_EMPTY",
+      "closes": [],
+      "expected_rsi_rationals": []
+    },
+    {
+      "case_id": "B2_MATH_SINGLE",
+      "closes": [
+        100
+      ],
+      "expected_rsi_rationals": [
+        null
+      ]
+    },
+    {
+      "case_id": "B2_MATH_WARMUP_ONLY",
+      "closes": [
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113
+      ],
+      "expected_rsi_rationals": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "case_id": "B2_MATH_FLAT",
+      "closes": [
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42,
+        42
+      ],
+      "expected_rsi_rationals": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "0/1",
+        "0/1",
+        "0/1",
+        "0/1",
+        "0/1",
+        "0/1"
+      ]
+    },
+    {
+      "case_id": "B2_MATH_RISING",
+      "closes": [
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119
+      ],
+      "expected_rsi_rationals": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "100/1",
+        "100/1",
+        "100/1",
+        "100/1",
+        "100/1",
+        "100/1"
+      ]
+    },
+    {
+      "case_id": "B2_MATH_FALLING",
+      "closes": [
+        120,
+        119,
+        118,
+        117,
+        116,
+        115,
+        114,
+        113,
+        112,
+        111,
+        110,
+        109,
+        108,
+        107,
+        106,
+        105,
+        104,
+        103,
+        102,
+        101
+      ],
+      "expected_rsi_rationals": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "0/1",
+        "0/1",
+        "0/1",
+        "0/1",
+        "0/1",
+        "0/1"
+      ]
+    },
+    {
+      "case_id": "B2_MATH_ALTERNATING",
+      "closes": [
+        100,
+        101,
+        100,
+        101,
+        100,
+        101,
+        100,
+        101,
+        100,
+        101,
+        100,
+        101,
+        100,
+        101,
+        100,
+        101,
+        100,
+        101,
+        100,
+        101
+      ],
+      "expected_rsi_rationals": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "50/1",
+        "375/7",
+        "4875/98",
+        "73175/1372",
+        "951275/19208",
+        "14287375/268912"
+      ]
+    },
+    {
+      "case_id": "B2_MATH_MIXED_SEED",
+      "closes": [
+        100,
+        103,
+        101,
+        102,
+        98,
+        104,
+        107,
+        103,
+        109,
+        108,
+        111,
+        107,
+        112,
+        113,
+        110,
+        115,
+        114,
+        118,
+        116,
+        120
+      ],
+      "expected_rsi_rationals": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "1400/23",
+        "10850/167",
+        "14105/222",
+        "1054025/15802",
+        "2740465/43006",
+        "68340475/1021434"
+      ]
+    },
+    {
+      "case_id": "B2_MATH_OWNER_CONTINUATION",
+      "closes": [
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        110
+      ],
+      "expected_rsi_rationals": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "100/1",
+        "1300/17"
+      ]
+    }
+  ],
+  "native_controls": {
+    "row_count": 320,
+    "recipe": {
+      "close": "200 + ((i * 17) % 31) + (i // 9)",
+      "open": "close + (i % 3) - 1",
+      "high": "max(open, close) + 2 + (i % 5)",
+      "low": "min(open, close) - 2 - (i % 4)",
+      "volume": "1000 + 11 * i",
+      "value": "close * volume",
+      "first_synthetic_day": "2020-01-01",
+      "date_step_days": 1
+    },
+    "profile_provenance": {
+      "commit": "223be5ebd552e3369d4b6b2488c6838798711458",
+      "path": "tech.py",
+      "git_blob": "ec1c1f194980e66c0e451129b52d01df51a4653d",
+      "meaning": "Frozen legacy native inputs, parameters and output names; not market-source evidence."
+    },
+    "profiles": [
+      {
+        "function": "BBANDS",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 5,
+          "nbdevup": 2,
+          "nbdevdn": 2,
+          "matype": 0
+        },
+        "outputs": [
+          "BBANDS_upperband",
+          "BBANDS_middleband",
+          "BBANDS_lowerband"
+        ]
+      },
+      {
+        "function": "DEMA",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30
+        },
+        "outputs": [
+          "DEMA"
+        ]
+      },
+      {
+        "function": "EMA",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30
+        },
+        "outputs": [
+          "EMA"
+        ]
+      },
+      {
+        "function": "HT_TRENDLINE",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "HT_TRENDLINE"
+        ]
+      },
+      {
+        "function": "KAMA",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30
+        },
+        "outputs": [
+          "KAMA"
+        ]
+      },
+      {
+        "function": "MA",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30,
+          "matype": 0
+        },
+        "outputs": [
+          "MA"
+        ]
+      },
+      {
+        "function": "MIDPOINT",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "MIDPOINT"
+        ]
+      },
+      {
+        "function": "MIDPRICE",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "MIDPRICE"
+        ]
+      },
+      {
+        "function": "SAR",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {
+          "acceleration": 0,
+          "maximum": 0
+        },
+        "outputs": [
+          "SAR"
+        ]
+      },
+      {
+        "function": "SAREXT",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {
+          "startvalue": 0,
+          "offsetonreverse": 0,
+          "accelerationinitlong": 0,
+          "accelerationlong": 0,
+          "accelerationmaxlong": 0,
+          "accelerationinitshort": 0,
+          "accelerationshort": 0,
+          "accelerationmaxshort": 0
+        },
+        "outputs": [
+          "SAREXT"
+        ]
+      },
+      {
+        "function": "T3",
+        "inputs": [
+          "high"
+        ],
+        "parameters": {
+          "timeperiod": 5,
+          "vfactor": 0
+        },
+        "outputs": [
+          "T3"
+        ]
+      },
+      {
+        "function": "TEMA",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30
+        },
+        "outputs": [
+          "TEMA"
+        ]
+      },
+      {
+        "function": "TRIMA",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30
+        },
+        "outputs": [
+          "TRIMA"
+        ]
+      },
+      {
+        "function": "WMA",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30
+        },
+        "outputs": [
+          "WMA"
+        ]
+      },
+      {
+        "function": "ADX",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "ADX"
+        ]
+      },
+      {
+        "function": "ADXR",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "ADXR"
+        ]
+      },
+      {
+        "function": "APO",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "fastperiod": 12,
+          "slowperiod": 26,
+          "matype": 0
+        },
+        "outputs": [
+          "APO"
+        ]
+      },
+      {
+        "function": "AROON",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "AROON_down",
+          "AROON_up"
+        ]
+      },
+      {
+        "function": "AROONOSC",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "AROONOSC"
+        ]
+      },
+      {
+        "function": "BOP",
+        "inputs": [
+          "open",
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "BOP"
+        ]
+      },
+      {
+        "function": "CCI",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "CCI"
+        ]
+      },
+      {
+        "function": "CMO",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "CMO"
+        ]
+      },
+      {
+        "function": "DX",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "DX"
+        ]
+      },
+      {
+        "function": "MACD",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "fastperiod": 12,
+          "slowperiod": 26,
+          "signalperiod": 9
+        },
+        "outputs": [
+          "MACD_real",
+          "MACD_signal",
+          "MACD_hist"
+        ]
+      },
+      {
+        "function": "MACDEXT",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "fastperiod": 12,
+          "fastmatype": 0,
+          "slowperiod": 26,
+          "slowmatype": 0,
+          "signalperiod": 9,
+          "signalmatype": 0
+        },
+        "outputs": [
+          "MACDEXT_real",
+          "MACDEXT_signal",
+          "MACDEXT_hist"
+        ]
+      },
+      {
+        "function": "MACDFIX",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "signalperiod": 9
+        },
+        "outputs": [
+          "MACDFIX_real",
+          "MACDFIX_signal",
+          "MACDFIX_hist"
+        ]
+      },
+      {
+        "function": "MFI",
+        "inputs": [
+          "high",
+          "low",
+          "close",
+          "volume"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "MFI"
+        ]
+      },
+      {
+        "function": "MINUS_DI",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "MINUS_DI"
+        ]
+      },
+      {
+        "function": "MINUS_DM",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "MINUS_DM"
+        ]
+      },
+      {
+        "function": "MOM",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 100
+        },
+        "outputs": [
+          "MOM"
+        ]
+      },
+      {
+        "function": "PLUS_DI",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "PLUS_DI"
+        ]
+      },
+      {
+        "function": "PLUS_DM",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "PLUS_DM"
+        ]
+      },
+      {
+        "function": "PPO",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "fastperiod": 12,
+          "slowperiod": 26,
+          "matype": 0
+        },
+        "outputs": [
+          "PPO"
+        ]
+      },
+      {
+        "function": "ROC",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 10
+        },
+        "outputs": [
+          "ROC"
+        ]
+      },
+      {
+        "function": "ROCP",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 10
+        },
+        "outputs": [
+          "ROCP"
+        ]
+      },
+      {
+        "function": "ROCR",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 10
+        },
+        "outputs": [
+          "ROCR"
+        ]
+      },
+      {
+        "function": "ROCR100",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 10
+        },
+        "outputs": [
+          "ROCR100"
+        ]
+      },
+      {
+        "function": "RSI",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "RSI14"
+        ]
+      },
+      {
+        "function": "STOCH",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "fastk_period": 5,
+          "slowk_period": 3,
+          "slowk_matype": 0,
+          "slowd_period": 3,
+          "slowd_matype": 0
+        },
+        "outputs": [
+          "STOCH_slowk",
+          "STOCH_slowd"
+        ]
+      },
+      {
+        "function": "STOCHF",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "fastk_period": 5,
+          "fastd_period": 3,
+          "fastd_matype": 0
+        },
+        "outputs": [
+          "STOCHF_fastk",
+          "STOCHF_fastd"
+        ]
+      },
+      {
+        "function": "STOCHRSI",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14,
+          "fastk_period": 5,
+          "fastd_period": 3,
+          "fastd_matype": 0
+        },
+        "outputs": [
+          "STOCHRSI_fastk",
+          "STOCHRSI_fastd"
+        ]
+      },
+      {
+        "function": "TRIX",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 30
+        },
+        "outputs": [
+          "TRIX"
+        ]
+      },
+      {
+        "function": "ULTOSC",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod1": 7,
+          "timeperiod2": 14,
+          "timeperiod3": 28
+        },
+        "outputs": [
+          "ULTOSC"
+        ]
+      },
+      {
+        "function": "WILLR",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "WILLR"
+        ]
+      },
+      {
+        "function": "ATR",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "ATR"
+        ]
+      },
+      {
+        "function": "NATR",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "NATR"
+        ]
+      },
+      {
+        "function": "TRANGE",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "TRANGE"
+        ]
+      },
+      {
+        "function": "AD",
+        "inputs": [
+          "high",
+          "low",
+          "close",
+          "volume"
+        ],
+        "parameters": {},
+        "outputs": [
+          "AD"
+        ]
+      },
+      {
+        "function": "ADOSC",
+        "inputs": [
+          "high",
+          "low",
+          "close",
+          "volume"
+        ],
+        "parameters": {
+          "fastperiod": 3,
+          "slowperiod": 10
+        },
+        "outputs": [
+          "ADOSC"
+        ]
+      },
+      {
+        "function": "OBV",
+        "inputs": [
+          "close",
+          "volume"
+        ],
+        "parameters": {},
+        "outputs": [
+          "OBV"
+        ]
+      },
+      {
+        "function": "AVGPRICE",
+        "inputs": [
+          "open",
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "AVGPRICE"
+        ]
+      },
+      {
+        "function": "MEDPRICE",
+        "inputs": [
+          "high",
+          "low"
+        ],
+        "parameters": {},
+        "outputs": [
+          "MEDPRICE"
+        ]
+      },
+      {
+        "function": "TYPPRICE",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "TYPPRICE"
+        ]
+      },
+      {
+        "function": "WCLPRICE",
+        "inputs": [
+          "high",
+          "low",
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "WCLPRICE"
+        ]
+      },
+      {
+        "function": "HT_DCPERIOD",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "HT_DCPERIOD"
+        ]
+      },
+      {
+        "function": "HT_DCPHASE",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "HT_DCPHASE"
+        ]
+      },
+      {
+        "function": "HT_PHASOR",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "HT_PHASOR_inphase",
+          "HT_PHASOR_quadrature"
+        ]
+      },
+      {
+        "function": "HT_SINE",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "HT_SINE_sine",
+          "HT_SINE_leadsine"
+        ]
+      },
+      {
+        "function": "HT_TRENDMODE",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {},
+        "outputs": [
+          "HT_TRENDMODE"
+        ]
+      },
+      {
+        "function": "LINEARREG",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "LINEARREG"
+        ]
+      },
+      {
+        "function": "LINEARREG_ANGLE",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "LINEARREG_ANGLE"
+        ]
+      },
+      {
+        "function": "LINEARREG_INTERCEPT",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "LINEARREG_INTERCEPT"
+        ]
+      },
+      {
+        "function": "LINEARREG_SLOPE",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "LINEARREG_SLOPE"
+        ]
+      },
+      {
+        "function": "STDDEV",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 5,
+          "nbdev": 1
+        },
+        "outputs": [
+          "STDDEV"
+        ]
+      },
+      {
+        "function": "TSF",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 14
+        },
+        "outputs": [
+          "TSF"
+        ]
+      },
+      {
+        "function": "VAR",
+        "inputs": [
+          "close"
+        ],
+        "parameters": {
+          "timeperiod": 5,
+          "nbdev": 1
+        },
+        "outputs": [
+          "VAR"
+        ]
+      }
+    ]
+  },
+  "frozen_byte_controls": [
+    {
+      "control_id": "B2_MATH_EMPTY_PAGE_BYTES",
+      "profile": "MATH_ONLY",
+      "original_body_base64": "eyJmaXh0dXJlX3Byb2ZpbGUiOiJNQVRIX09OTFkiLCJjYW5kbGVzIjp7ImNvbHVtbnMiOlsib3BlbiIsImNsb3NlIiwiaGlnaCIsImxvdyIsInZhbHVlIiwidm9sdW1lIiwiYmVnaW4iLCJlbmQiXSwiZGF0YSI6W119fQ==",
+      "original_body_bytes": 124,
+      "original_body_sha256": "1ab61841c2f11d719911985d2b8f6674aee1d0b70981c8414c5e9f826396ba19",
+      "meaning": "Synthetic empty body for mechanical byte/hash parsing only; never positive source or coverage evidence."
+    }
+  ]
+}
