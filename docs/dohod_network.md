@@ -509,6 +509,17 @@ first event. Partial delivery or failed flush cannot replay the batch.
 | Secondary diagnostics failure during primary failure | Primary state/error retained; report diagnostics INCOMPLETE |
 | KeyboardInterrupt/SystemExit | Finalized interrupted sink and best-effort coverage; no semantic replacement |
 
+Before detail operation initialization, the current page/ref is bound to fresh
+zero-send state. If initialization fails, that page is FAILED or INTERRUPTED
+with DOHOD_DETAIL_INITIALIZATION_FAILED, requested=false and sends=0; later
+pages remain NOT_RUN. Prior accepted pages keep their identities and counts.
+The primary exception object, args, cause and context are preserved. This
+initialization-only path attempts one safe terminal even for KeyboardInterrupt,
+as required by the C3-03 CODE_CHANGES review; other interruption paths retain
+the policy above. Its page hash and timing use the current binding and last
+confirmed clock value, without sampling the failed clock again. Exception
+names come from fixed builtin categories; args/chains/endpoint are not logged.
+
 `diagnostics_status` covers the required terminal attempt as well as the batch.
 A refused/raised terminal delivery marks the caller-owned report INCOMPLETE;
 the primary error, single terminal attempt and batch delivery flag are retained.
@@ -555,6 +566,14 @@ No nine-file transaction, CSV/XLSX parity or remote recovery is claimed. D1's
 single-file replacement is not connected here. Candidate/generation/capacity,
 promotion, previous retention/readback/recovery and parent report integration
 remain D/F work; COMPLETE_OBSERVED is not a release-ready verdict.
+
+For otherwise complete input with payments, the coverage batch reports
+late_group_input=PENDING_FINAL_BUDGET_CHECK. Only after delivery/flush and the
+final source-budget check does the returned private report become PASS. Expiry
+during page events, summary or flush finalizes BLOCKED_FAILED, preserves the
+legacy budget exception and emits one terminal attempt without replaying the
+batch or admitting late writers. A coverage summary is not final writer-group
+admission; the existing main checkpoint and both C2 writer groups are unchanged.
 
 Required evidence includes genuine behavioral RED, all five narrow C2/C3 files,
 clean exact-HEAD F2/F-LOG/F3, hosted Windows F1/F2/F-LOG/F3, all ten notebook pairs

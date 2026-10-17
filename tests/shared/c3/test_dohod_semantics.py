@@ -819,56 +819,175 @@ def test_single_source_table_matching_history_and_metrics_is_role_conflict(
     assert [call[0] for call in calls] == [URL, DETAIL] and written == waits == []
 
 
-@pytest.mark.parametrize('detail_number', [1, 2])
+@pytest.mark.parametrize('budget_phase', ['page-event', 'summary-event', 'flush'])
+@pytest.mark.parametrize('entrypoint', ['private', 'main'])
+def test_coverage_delivery_expiry_never_publishes_final_input_pass_or_replays_batch(
+        monkeypatch, model, tmp_path, context, budget_phase, entrypoint):
+    module, clock, waits = model
+    if entrypoint == 'main':
+        calls = source(monkeypatch, module, [(URL, reply(b'overview')),
+            (URL, reply(DISCOVERY)), (DETAIL, reply(b'detail'))])
+        parse_map(monkeypatch, module, {b'overview': [overview_frame()], b'detail': detail_frames()})
+    else:
+        calls, _ = install_pages(monkeypatch, module, {DETAIL: detail_frames()})
+    written = writers(monkeypatch, module, tmp_path)
+    real_prepare, real_check = module._prepare_pages_result, module._check_budget
+    real_emit, real_flush = run_logging.emit_event, run_logging.flush_logging
+    sinks, attempts, provisional, budget_errors, fired = [], [], [], [], []
+    summary_sent = [False]
+    def prepare(*args, **kwargs):
+        sinks.append(kwargs['coverage_sink'])
+        return real_prepare(*args, **kwargs)
+    def check(*args, **kwargs):
+        try:
+            return real_check(*args, **kwargs)
+        except TimeoutError as error:
+            budget_errors.append(error)
+            raise
+    def expire(phase):
+        if not fired:
+            fired.append(phase)
+            clock[0] = 600
+    def emit(session, level, event, message, fields=None):
+        attempts.append(event)
+        if event in ('dohod_page_coverage', 'dohod_coverage_summary'):
+            provisional.append((event, sinks[0]['report']['late_group_input_status']))
+        receipt = real_emit(session, level, event, message, fields)
+        if event == 'dohod_page_coverage' and budget_phase == 'page-event':
+            expire('page-event')
+        if event == 'dohod_coverage_summary':
+            summary_sent[0] = True
+            if budget_phase == 'summary-event':
+                expire('summary-event')
+        return receipt
+    def flush(session):
+        receipt = real_flush(session)
+        if summary_sent[0] and budget_phase == 'flush':
+            expire('flush')
+        return receipt
+    monkeypatch.setattr(module, '_prepare_pages_result', prepare)
+    monkeypatch.setattr(module, '_check_budget', check)
+    monkeypatch.setattr(run_logging, 'emit_event', emit)
+    monkeypatch.setattr(run_logging, 'flush_logging', flush)
+    with pytest.raises(TimeoutError, match='DOHOD_BUDGET_EXHAUSTED') as caught:
+        if entrypoint == 'main':
+            module.main(URL, logging_context=context)
+        else:
+            private_result(module, {}, context)
+    assert len(budget_errors) == 1 and caught.value is budget_errors[0]
+    assert fired == [budget_phase] and len(sinks) == 1
+    assert provisional and all(status == 'PENDING_FINAL_BUDGET_CHECK' for _, status in provisional)
+    report = sinks[0]['report']
+    assert_finished_report(report)
+    assert report['execution_outcome'] == 'FAILED'
+    assert report['late_group_input_status'] == 'BLOCKED_FAILED'
+    assert report['source_coverage'] == 'NOT_VERIFIED'
+    assert report['counts']['accepted'] == 1 and report['missing'] == []
+    assert report['coverage_delivery_attempted'] is True
+    assert attempts.count('dohod_page_coverage') == 1
+    assert attempts.count('dohod_coverage_summary') <= 1
+    assert attempts.count('dohod_acquisition_failed') == 1
+    assert attempts[-1] == 'dohod_acquisition_failed'
+    assert 'dohod_late_group_blocked' not in attempts
+    monkeypatch.setattr(run_logging, 'flush_logging', real_flush)
+    values = events(context)
+    terminal = [value for value in values if value['event'] == 'dohod_acquisition_failed']
+    assert len(terminal) == 1 and terminal[0]['error']['code'] == 'DOHOD_BUDGET_EXHAUSTED'
+    summaries = [value for value in values if value['event'] == 'dohod_coverage_summary']
+    assert all('late_group_input=PASS' not in value['message'] for value in summaries)
+    assert len(summaries) <= 1
+    assert_writers(written, FILES[:3] if entrypoint == 'main' else [])
+    assert [call[0] for call in calls] == ([URL, URL, DETAIL] if entrypoint == 'main' else [URL, DETAIL])
+    assert waits == []
+
+
+@pytest.mark.parametrize('membership', ['single', 'second', 'remaining'])
 @pytest.mark.parametrize('error_type', [RuntimeError, KeyboardInterrupt])
+@pytest.mark.parametrize('with_context', [False, True])
 def test_clock_failure_during_detail_state_initialization_keeps_finalized_sink(
-        monkeypatch, model, tmp_path, detail_number, error_type):
+        monkeypatch, model, tmp_path, context, capsys, membership, error_type, with_context):
     module, _, waits = model
-    urls = [DETAIL] if detail_number == 1 else [DETAIL, URL + '/bbb']
+    urls = [DETAIL] if membership == 'single' else [DETAIL, URL + '/bbb']
+    if membership == 'remaining':
+        urls += [URL + '/ccc', URL + '/ddd']
+    failed_index = 0 if membership == 'single' else 1
+    failed_url = urls[failed_index]
     calls, parsed = install_pages(monkeypatch, module,
         {target: detail_frames() for target in urls})
     written = writers(monkeypatch, module, tmp_path)
     real_operation_state, real_clock = module._operation_state, module._network_clock
-    error = error_type('fixture clock failed during detail initialization')
+    raw_message = PRIVATE_MARKER + ' ' + CANARY + ' ' + PATH_MARKER + ' ' + failed_url
+    original_cause, original_context = LookupError(raw_message), OSError(raw_message)
+    error = error_type(raw_message)
+    error.__cause__, error.__context__ = original_cause, original_context
     armed, fired = [False], []
     def clock():
         if armed[0]:
-            armed[0] = False
-            fired.append(urls[-1])
+            # Clock остаётся сломанным: terminal diagnostics не читает его снова.
+            fired.append(failed_url)
             raise error
         return real_clock()
     def operation_state(target):
-        if target == urls[-1]:
+        if target == failed_url:
             armed[0] = True
         return real_operation_state(target)
     monkeypatch.setattr(module, '_network_clock', clock)
     monkeypatch.setattr(module, '_operation_state', operation_state)
     sink = {}
     with pytest.raises(error_type) as caught:
-        private_result(module, sink)
+        private_result(module, sink, context if with_context else None)
     assert caught.value is error
-    assert caught.value.args == ('fixture clock failed during detail initialization',)
-    assert caught.value.__context__ is None and caught.value.__cause__ is None
-    assert fired == [urls[-1]]
+    assert caught.value.args == (raw_message,)
+    assert caught.value.__context__ is original_context and caught.value.__cause__ is original_cause
+    assert fired == [failed_url]
     report = sink['report']
     assert_finished_report(report)
     assert report['execution_outcome'] == ('FAILED' if error_type is RuntimeError else 'INTERRUPTED')
-    assert report['diagnostics_status'] == 'NOT_REQUESTED'
-    assert report['expected'] == urls and report['missing'] == [urls[-1]]
-    assert report['counts'] == dict(expected=detail_number, requested=detail_number - 1,
-        received=detail_number - 1, parsed=detail_number - 1, validated=detail_number - 1,
-        accepted=detail_number - 1, failed=0, not_run=1, missing=1)
-    pending = report['pages'][-1]
-    assert pending['url'] == urls[-1] and pending['stage'] == 'DISCOVERED'
-    assert pending['outcome'] == 'NOT_RUN' and pending['reason'] == 'PRIOR_PAGE_FAILED'
-    assert pending['requested'] is False and pending['sends'] == 0
-    if detail_number == 2:
+    assert report['diagnostics_status'] == ('CONFIRMED' if with_context else 'NOT_REQUESTED')
+    assert report['expected'] == urls and report['missing'] == urls[failed_index:]
+    assert report['counts'] == dict(expected=len(urls), requested=failed_index,
+        received=failed_index, parsed=failed_index, validated=failed_index,
+        accepted=failed_index, failed=1, not_run=len(urls) - failed_index - 1,
+        missing=len(urls) - failed_index)
+    attempted = report['pages'][failed_index]
+    expected_outcome = 'FAILED' if error_type is RuntimeError else 'INTERRUPTED'
+    assert attempted['url'] == failed_url and attempted['stage'] == 'DISCOVERED'
+    assert attempted['outcome'] == expected_outcome
+    assert attempted['reason'] == 'DOHOD_DETAIL_INITIALIZATION_FAILED'
+    assert attempted['requested'] is False
+    assert attempted['sends'] == attempted['attempts'] == 0
+    for pending in report['pages'][failed_index + 1:]:
+        assert pending['stage'] == 'DISCOVERED' and pending['outcome'] == 'NOT_RUN'
+        assert pending['reason'] == 'PRIOR_PAGE_FAILED' and pending['requested'] is False
+    if failed_index:
         retained = report['pages'][0]
         assert retained['stage'] == retained['outcome'] == 'ACCEPTED'
         assert retained['reason'] is None and retained['accepted'] is True
         assert retained['roles']['metrics']['rows'] == 2
-    assert [call[0] for call in calls] == [URL] + urls[:-1]
-    assert parsed == ([] if detail_number == 1 else [b'page-0'])
+    assert [call[0] for call in calls] == [URL] + urls[:failed_index]
+    assert parsed == ([] if failed_index == 0 else [b'page-0'])
+    values = events(context)
+    terminals = [value for value in values if value['event'] == 'dohod_acquisition_failed']
+    assert len(terminals) == int(with_context)
+    if with_context:
+        terminal = terminals[0]
+        ref = 'dohod-page-' + hashlib.sha256(failed_url.encode('ascii')).hexdigest()
+        assert terminal['page'] == ref and terminal['outcome'] == expected_outcome
+        assert terminal['retries'] is None
+        record = terminal['error']
+        assert record['page'] == ref and record['code'] == 'DOHOD_DETAIL_INITIALIZATION_FAILED'
+        assert record['exception_type'] == error_type.__name__
+        assert record['endpoint'] is None and record['attempt'] is None
+        assert record['null_reasons']['endpoint'] == 'RAW_ENDPOINT_NOT_EMITTED'
+        assert 'request_phase=' not in terminal['message']
+        for value in values:
+            if value['event'] in ('dohod_page_coverage', 'dohod_coverage_summary'):
+                assert_coverage_event_shape(value)
+    output = capsys.readouterr()
+    # Raw primary chain намеренно сохранена; redaction относится к diagnostics.
+    projection = json.dumps(values, ensure_ascii=False) + output.out + output.err
+    for marker in (PRIVATE_MARKER, CANARY, PATH_MARKER, failed_url):
+        assert marker not in projection
     assert written == waits == []
 
 

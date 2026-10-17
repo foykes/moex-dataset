@@ -182,7 +182,11 @@ def _dohod_event(logging_context, level, event, message, *, error=None, state=No
     if error is not None:
         fields['error'] = error
     if state is not None:
-        fields['duration_ms'] = max(0, (_network_clock() - state['started']) * 1000)
+        if state.get('failure_kind') == 'initialization':
+            fields['page'] = state['page_ref']
+            fields['duration_ms'] = max(0, (state['last_checked'] - state['started']) * 1000)
+        else:
+            fields['duration_ms'] = max(0, (_network_clock() - state['started']) * 1000)
         if state['attempt']:
             fields['retries'] = {'attempt': state['attempt'], 'limit': 3}
     try:
@@ -228,7 +232,7 @@ def _retry_event(logging_context, error, state):
         return False
 
 
-def _safe_error_record(logging_context, state):
+def _safe_error_record(logging_context, state, error):
     # Новые C3 failures не пропускаем через make_error(raw): его args/stack
     # и legacy endpoint не являются безопасной проекцией semantic report.
     import run_logging
@@ -239,6 +243,10 @@ def _safe_error_record(logging_context, state):
     record.update(run_id=logging_context['run_id'], page=state.get('page_ref'),
                   attempt=state['attempt'] or None,
                   exception_type='RuntimeError' if code == 'LOGGING_INCOMPLETE' else 'ValueError')
+    if state.get('failure_kind') == 'initialization':
+        record['exception_type'] = ('KeyboardInterrupt' if isinstance(error, KeyboardInterrupt) else
+            'RuntimeError' if isinstance(error, RuntimeError) else
+            'Exception' if isinstance(error, Exception) else 'BaseException')
     record['null_reasons'] = {name: 'NOT_AVAILABLE_OR_NOT_APPLICABLE'
                               for name in run_logging.ERROR_NULLABLE if record[name] is None}
     record['null_reasons']['endpoint'] = 'RAW_ENDPOINT_NOT_EMITTED'
@@ -250,10 +258,11 @@ def _failure(logging_context, error, state, *, export=False, coverage_report=Non
         return
     try:
         if state.get('failure_kind', 'legacy') != 'legacy':
-            record = _safe_error_record(logging_context, state)
+            record = _safe_error_record(logging_context, state, error)
             _dohod_event(logging_context, 'ERROR', 'dohod_acquisition_failed',
                 'Проверка данных доход.ру прервана: ' + record['code'],
-                error=record, state=state, outcome='FAILED')
+                error=record, state=state,
+                outcome='FAILED' if isinstance(error, Exception) else 'INTERRUPTED')
             return
         code = 'DOHOD_EXPORT_FAILED' if export else 'DOHOD_SOURCE_REQUEST_FAILED'
         if not export and state.get('reason') == 'BUDGET_EXHAUSTED':
@@ -826,7 +835,7 @@ def _finish_coverage(report, state, error=None):
                                    'INCOMPLETE' if report['expected'] else 'NOT_VERIFIED')
     report['execution_outcome'] = ('RETURNED' if error is None else
                                     'FAILED' if isinstance(error, Exception) else 'INTERRUPTED')
-    report['late_group_input_status'] = ('PASS' if error is None and complete
+    report['late_group_input_status'] = ('PENDING_FINAL_BUDGET_CHECK' if error is None and complete
         and report['payments_coverage'] == 'PRESENT_FOR_ALL' else
         'BLOCKED_NOT_VERIFIED' if error is None and complete else 'BLOCKED_FAILED')
     report['finalized'] = True
@@ -847,6 +856,8 @@ def _prepare_pages_result(url, source_deadline, logging_context, *, coverage_sin
         _finish_coverage(report, state)
         _coverage_batch(logging_context, report, state)
         _check_budget(source_deadline, state=state)
+        if report['late_group_input_status'] == 'PENDING_FINAL_BUDGET_CHECK':
+            report['late_group_input_status'] = 'PASS'
         report['elapsed_ms'] = max(0, (state['last_checked'] - report['started']) * 1000)
         return frames, report
     except BaseException as error:
@@ -860,7 +871,7 @@ def _prepare_pages_result(url, source_deadline, logging_context, *, coverage_sin
             report['diagnostics_status'] = 'INCOMPLETE'
         if report['coverage_delivery_attempted'] and report['diagnostics_status'] == 'PENDING':
             report['diagnostics_status'] = 'INCOMPLETE'
-        if isinstance(error, Exception):
+        if isinstance(error, Exception) or primary_state.get('failure_kind') == 'initialization':
             _failure(logging_context, error, primary_state, coverage_report=report)
         raise
 
@@ -927,6 +938,14 @@ def _page_frames(url, source_deadline, logging_context, state, report):
     profiles_seen = {}
     for page in report['pages']:
         url = page['url']
+        # Привязываем текущую страницу до clock: сбой её инициализации не
+        # наследует endpoint, attempts или coverage предыдущей страницы.
+        last_checked = state['last_checked']
+        state.clear()
+        state.update(started=last_checked, last_checked=last_checked, endpoint=None,
+            attempt=0, sends=0, category='SOURCE', reason='DOHOD_DETAIL_INITIALIZATION_FAILED',
+            phase='', failure_kind='initialization', failure_code='DOHOD_DETAIL_INITIALIZATION_FAILED',
+            page_record=page, page_ref=page['ref'])
         next_state = _operation_state(url)
         state.clear()
         state.update(next_state)
