@@ -870,3 +870,100 @@ def test_clock_failure_during_detail_state_initialization_keeps_finalized_sink(
     assert [call[0] for call in calls] == [URL] + urls[:-1]
     assert parsed == ([] if detail_number == 1 else [b'page-0'])
     assert written == waits == []
+
+
+@pytest.mark.parametrize('gate_delivery', ['healthy', 'refused-receipt', 'raised-private-error'])
+def test_main_missing_payments_gate_events_failure_privacy_and_previous_boundary(
+        monkeypatch, model, tmp_path, context, capsys, gate_delivery):
+    module, _, waits = model
+    targets, originals, hashes = seed_previous(tmp_path)
+    detail_body = ('<html>' + PRIVATE_MARKER + ' ' + CANARY + ' ' + PATH_MARKER
+                   + '</html>').encode('utf-8')
+    calls = source(monkeypatch, module, [(URL, reply(b'overview')),
+        (URL, reply(DISCOVERY)), (DETAIL, reply(detail_body))])
+    parse_map(monkeypatch, module, {b'overview': [overview_frame()],
+        detail_body: detail_frames(payments=False)})
+    written = writers(monkeypatch, module, tmp_path, action=lambda number, method, name:
+        (targets / name).write_bytes(('updated:' + name).encode('utf-8')))
+    real_emit = run_logging.emit_event
+    attempts = []
+    real_semantic_error = module._semantic_error
+    real_prepare_result = module._prepare_pages_result
+    primary_errors, collected_reports = [], []
+    def semantic_error(state, code, *, page_ref=None):
+        error = real_semantic_error(state, code, page_ref=page_ref)
+        if code == 'DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED':
+            primary_errors.append(error)
+        return error
+    def prepare_result(*args, **kwargs):
+        result = real_prepare_result(*args, **kwargs)
+        collected_reports.append(result[1])
+        return result
+    monkeypatch.setattr(module, '_semantic_error', semantic_error)
+    monkeypatch.setattr(module, '_prepare_pages_result', prepare_result)
+    def emit(session, level, event, message, fields=None):
+        attempts.append((level, event))
+        if event == 'dohod_late_group_blocked':
+            if gate_delivery == 'refused-receipt':
+                return {'accepted': False, 'confirmed': False}
+            if gate_delivery == 'raised-private-error':
+                raise OSError(PRIVATE_MARKER + ' ' + CANARY + ' ' + PATH_MARKER + ' ' + DETAIL)
+        return real_emit(session, level, event, message, fields)
+    monkeypatch.setattr(run_logging, 'emit_event', emit)
+    with pytest.raises(ValueError, match='DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED') as caught:
+        module.main(URL, logging_context=context)
+    assert len(primary_errors) == 1 and caught.value is primary_errors[0]
+    assert caught.value.args == ('DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED',)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert len(collected_reports) == 1
+    report = collected_reports[0]
+    assert report['finalized'] is True and report['execution_outcome'] == 'RETURNED'
+    assert report['observed_coverage'] == 'COMPLETE_OBSERVED'
+    assert report['source_coverage'] == 'NOT_VERIFIED'
+    assert report['payments_coverage'] == 'NOT_VERIFIED'
+    assert report['late_group_input_status'] == 'BLOCKED_NOT_VERIFIED'
+    assert report['diagnostics_status'] == ('CONFIRMED' if gate_delivery == 'healthy' else 'INCOMPLETE')
+    assert attempts == [('INFO', 'dohod_request_received')] * 3 + [
+        ('INFO', 'dohod_page_coverage'), ('INFO', 'dohod_coverage_summary'),
+        ('INFO', 'dohod_late_group_blocked'), ('ERROR', 'dohod_acquisition_failed')]
+    values = events(context)
+    expected_events = ['dohod_request_received'] * 3 + [
+        'dohod_page_coverage', 'dohod_coverage_summary']
+    if gate_delivery == 'healthy':
+        expected_events.append('dohod_late_group_blocked')
+    expected_events.append('dohod_acquisition_failed')
+    assert [value['event'] for value in values] == expected_events
+    coverage = [value for value in values if value['event'] in (
+        'dohod_page_coverage', 'dohod_coverage_summary')]
+    assert len(coverage) == 2
+    assert coverage[0]['outcome'] == 'ACCEPTED'
+    assert coverage[1]['outcome'] == 'COMPLETE_OBSERVED'
+    assert 'payments=NOT_VERIFIED' in coverage[1]['message']
+    assert 'late_group_input=BLOCKED_NOT_VERIFIED' in coverage[1]['message']
+    for value in coverage:
+        assert_coverage_event_shape(value)
+    gate = [value for value in values if value['event'] == 'dohod_late_group_blocked']
+    if gate_delivery == 'healthy':
+        assert len(gate) == 1 and gate[0]['outcome'] == 'BLOCKED_NOT_VERIFIED'
+        assert gate[0]['error'] is None
+    terminal = values[-1]
+    assert terminal['event'] == 'dohod_acquisition_failed' and terminal['level'] == 'ERROR'
+    record = terminal['error']
+    assert record['code'] == 'DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED'
+    assert record['endpoint'] is None
+    assert record['null_reasons']['endpoint'] == 'RAW_ENDPOINT_NOT_EMITTED'
+    assert record['final'] is True and record['retryable'] is False
+    output = capsys.readouterr()
+    safe_projection = json.dumps(coverage + gate + [terminal], ensure_ascii=False)
+    safe_projection += ''.join(traceback.format_exception(caught.value)) + output.out + output.err
+    for marker in (PRIVATE_MARKER, CANARY, PATH_MARKER, DETAIL, URL):
+        assert marker not in safe_projection
+    assert_writers(written, FILES[:3])
+    for _, name in FILES[:3]:
+        actual = (targets / name).read_bytes()
+        assert actual == ('updated:' + name).encode('utf-8')
+        assert hashlib.sha256(actual).hexdigest() != hashes[name]
+    for _, name in FILES[3:]:
+        actual = (targets / name).read_bytes()
+        assert actual == originals[name] and hashlib.sha256(actual).hexdigest() == hashes[name]
+    assert [call[0] for call in calls] == [URL, URL, DETAIL] and waits == []
