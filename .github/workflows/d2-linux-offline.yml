@@ -1,0 +1,317 @@
+name: LNX-03 Linux application admission
+
+on:
+  push:
+    branches: [codex/lnx-03-d2-bootstrap]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lnx03-application-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  linux-bootstrap:
+    name: Linux application admission (explicit exact-SHA grant)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MDS_LNX03_ADMISSION_GRANT: ${{ vars.MDS_LNX03_ADMISSION_GRANT }}
+      MDS_LNX03_SETUP_GRANT: ${{ vars.MDS_LNX03_SETUP_GRANT }}
+      MDS_LNX03_SUPERVISED_NETNS_GRANT: ${{ vars.MDS_LNX03_SUPERVISED_NETNS_GRANT }}
+      TASK_EVENT: ${{ github.event_name }}
+      TASK_EVENT_SHA: ${{ github.sha }}
+      TASK_EVENT_REF: ${{ github.ref }}
+      TASK_REPOSITORY: ${{ github.repository }}
+      TASK_ACTOR: ${{ github.actor }}
+      TASK_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+      TASK_WORKFLOW: .github/workflows/d2-linux-offline.yml
+      TASK_JOB: linux-bootstrap
+      TASK_RUN_NUMBER: ${{ github.run_number }}
+      TASK_RUN_ATTEMPT: ${{ github.run_attempt }}
+      TASK_RUN_ID: ${{ github.run_id }}
+      TASK_DELETED: ${{ github.event.deleted || false }}
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_CONFIG_FILE: /dev/null
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      # Attempt 1 discovers an API run identity and always refuses before checkout.
+      # Only an externally granted exact attempt 2 can reach source or SETUP work.
+      - name: Require distinct LNX-03 admission and network SETUP authority
+        env:
+          TASK_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I -S -B -X utf8 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          def require(value):
+              if not value:
+                  raise ValueError()
+
+          def pairs(items):
+              result = {}
+              for key, value in items:
+                  require(key not in result)
+                  result[key] = value
+              return result
+
+          def grant(name, capability=None):
+              raw = os.environ.get(name, "")
+              require(0 < len(raw) <= 16384)
+              value = json.loads(raw, object_pairs_hook=pairs)
+              keys = {"approved", "consumer", "repository", "sha", "base", "event", "ref",
+                      "actor", "triggering_actor", "workflow", "job", "run_number", "run_id", "attempt", "ticket_id"}
+              if capability is not None:
+                  keys.add("capability")
+              require(isinstance(value, dict) and set(value) == keys)
+              require(value["approved"] is True and value["consumer"] == "linux-bootstrap")
+              require(all(isinstance(value[key], str) for key in keys - {"approved", "run_number", "attempt"}))
+              require(re.fullmatch("[0-9a-f]{40}", value["sha"]) is not None)
+              require(re.fullmatch("[0-9a-f]{40}", value["base"]) is not None)
+              require(re.fullmatch("[0-9a-f]{64}", value["ticket_id"]) is not None)
+              require(type(value["run_number"]) is int and value["run_number"] > 0)
+              require(re.fullmatch("[1-9][0-9]*", value["run_id"]) is not None)
+              require(type(value["attempt"]) is int and value["attempt"] == 2)
+              if capability is not None:
+                  require(value.pop("capability") == capability)
+              return value
+
+          try:
+              require(os.environ.get("GITHUB_ACTIONS") == "true")
+              require(os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted")
+              require(os.environ.get("TASK_RUNNER_ENVIRONMENT") == "github-hosted")
+              require(os.environ.get("ImageOS") == "ubuntu24")
+              require(os.environ.get("TASK_DELETED") == "false")
+              require(os.environ.get("GITHUB_RUN_ATTEMPT") == os.environ.get("TASK_RUN_ATTEMPT") == "2")
+              value = grant("MDS_LNX03_ADMISSION_GRANT")
+              expected = {
+                  "repository": ("GITHUB_REPOSITORY", "TASK_REPOSITORY", "foykes/moex-dataset"),
+                  "sha": ("GITHUB_SHA", "TASK_EVENT_SHA", value["sha"]),
+                  "event": ("GITHUB_EVENT_NAME", "TASK_EVENT", value["event"]),
+                  "ref": ("GITHUB_REF", "TASK_EVENT_REF", value["ref"]),
+                  "actor": ("GITHUB_ACTOR", "TASK_ACTOR", "foykes"),
+                  "triggering_actor": ("GITHUB_TRIGGERING_ACTOR", "TASK_TRIGGERING_ACTOR", "foykes"),
+                  "job": ("GITHUB_JOB", "TASK_JOB", "linux-bootstrap"),
+              }
+              for key, (native, mirror, fixed) in expected.items():
+                  require(value[key] == fixed == os.environ.get(native) == os.environ.get(mirror))
+              require(value["workflow"] == os.environ.get("TASK_WORKFLOW") == ".github/workflows/d2-linux-offline.yml")
+              require(os.environ.get("GITHUB_WORKFLOW_SHA") == value["sha"])
+              require(os.environ.get("GITHUB_WORKFLOW_REF") == value["repository"] + "/" + value["workflow"] + "@" + value["ref"])
+              require(str(value["run_number"]) == os.environ.get("GITHUB_RUN_NUMBER") == os.environ.get("TASK_RUN_NUMBER"))
+              require(str(value["attempt"]) == os.environ.get("GITHUB_RUN_ATTEMPT") == os.environ.get("TASK_RUN_ATTEMPT"))
+              require(re.fullmatch("[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", "")) is not None)
+              require(value["run_id"] == os.environ.get("GITHUB_RUN_ID") == os.environ.get("TASK_RUN_ID"))
+              if value["event"] == "push":
+                  require(value["ref"] == "refs/heads/codex/lnx-03-d2-bootstrap")
+              elif value["event"] == "workflow_dispatch":
+                  require(value["ref"] == "refs/heads/main" and value["base"] == value["sha"])
+              else:
+                  require(False)
+              require(grant("MDS_LNX03_SETUP_GRANT", "network-setup") == value)
+              if os.environ.get("MDS_LNX03_SUPERVISED_NETNS_GRANT", ""):
+                  require(grant("MDS_LNX03_SUPERVISED_NETNS_GRANT", "supervised-netns") == value)
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as stream:
+                  stream.write("TASK_APPROVED_SHA=" + value["sha"] + "\n")
+                  stream.write("TASK_APPROVED_BASE=" + value["base"] + "\n")
+                  stream.write("TASK_RUNNER_ENVIRONMENT=github-hosted\n")
+          except BaseException:
+              print("LNX03_AUTHORITY_REFUSED")
+              sys.exit(1)
+          print("LNX03_AUTHORITY_ACCEPTED")
+          PY
+
+      - name: Checkout only the approved source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Admit exact source, immutable base and compatible main snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -c core.hooksPath=/dev/null fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main >/dev/null 2>&1
+          /usr/bin/python3 -I -S -B -X utf8 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          allowed = {
+              ".github/lnx02/verify_env.py", ".github/workflows/d2-linux-offline.yml",
+              "tools/offline_linux.py", "tools/offline_guard_linux.py",
+              "tests/linux_bootstrap/conftest.py", "tests/linux_bootstrap/native_worker.py",
+              "tests/linux_bootstrap/test_environment_contract.py",
+              "tests/linux_bootstrap/test_admission.py", "tests/linux_bootstrap/test_spawn_contract.py",
+              "docs/d2_linux_ci.md", "docs/testing.md", "docs/coordination.md",
+          }
+          protected = allowed | {
+              "run_logging.py", "requirements/linux-cp314-runtime.lock",
+              "requirements/linux-cp314-test.lock", "requirements/linux-cp314-dev.lock",
+              "requirements/windows-cp314-runtime.lock", "requirements/windows-cp314-test.lock",
+              "requirements/windows-cp314-dev.lock", "requirements/runtime.in",
+              "requirements/test.in", "requirements/dev.in",
+          }
+
+          def require(value):
+              if not value:
+                  raise ValueError()
+
+          def git(arguments, success=True):
+              result = subprocess.run(
+                  ["git", "-c", "core.hooksPath=/dev/null", "-C", os.environ["GITHUB_WORKSPACE"]] + arguments,
+                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  check=False, timeout=30)
+              require(not success or result.returncode == 0)
+              return result
+
+          def sha(arguments):
+              value = git(arguments).stdout.decode("ascii").strip()
+              require(re.fullmatch("[0-9a-f]{40}", value) is not None)
+              return value
+
+          try:
+              head, base = os.environ["TASK_APPROVED_SHA"], os.environ["TASK_APPROVED_BASE"]
+              require(re.fullmatch("[0-9a-f]{40}", head) is not None)
+              require(re.fullmatch("[0-9a-f]{40}", base) is not None)
+              require(sha(["rev-parse", "HEAD"]) == head)
+              require(not git(["status", "--porcelain"]).stdout)
+              require(sha(["rev-parse", "--verify", base + "^{commit}"]) == base)
+              require(git(["merge-base", "--is-ancestor", base, head], False).returncode == 0)
+              fields = git(["diff", "--name-status", "--no-renames", "-z", base, head]).stdout.split(b"\0")
+              require(fields[-1] == b"")
+              fields = fields[:-1]
+              require(len(fields) % 2 == 0)
+              for index in range(0, len(fields), 2):
+                  require(fields[index] in {b"A", b"M"})
+                  require(fields[index + 1].decode("utf-8") in allowed)
+              main = sha(["rev-parse", "refs/remotes/origin/main"])
+              require(git(["merge-base", "--is-ancestor", base, main], False).returncode == 0)
+              drift = git(["diff", "--name-only", "--no-renames", "-z", base, main]).stdout
+              changed = {name.decode("utf-8") for name in drift.split(b"\0") if name}
+              require(not changed & protected)
+          except BaseException:
+              print("LNX03_SOURCE_REFUSED")
+              sys.exit(1)
+          print(json.dumps({"status": "PASS", "scope": "SOURCE_ADMISSION",
+                            "source_sha": head, "base_sha": base, "observed_main_sha": main}, sort_keys=True))
+          PY
+
+      - name: Require ready cached ordinary GIL CPython 3.14.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_cache="$RUNNER_TOOL_CACHE/Python/3.14.8/x64"
+          test -d "$task_cache"
+          test -f "$RUNNER_TOOL_CACHE/Python/3.14.8/x64.complete"
+          test -x "$task_cache/bin/python3.14"
+          printf 'TASK_CACHED_PYTHON=%s\n' "$task_cache/bin/python3.14" >> "$GITHUB_ENV"
+
+      # The complete cache gate prevents the action's cold-cache installer/pip update.
+      - name: Select the already checked interpreter
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.14.8"
+          architecture: x64
+          check-latest: false
+          freethreaded: false
+
+      - name: Recheck interpreter and create owned evidence staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(realpath "$(command -v python)")" = "$(realpath "$TASK_CACHED_PYTHON")"
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py identity
+          umask 077
+          task_run_root="$(mktemp -d "$RUNNER_TEMP/lnx03-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.XXXXXXXX")"
+          printf 'TASK_RUN_ROOT=%s\nTASK_ARTIFACT_ROOT=%s\n' \
+            "$task_run_root" "$task_run_root/artifact" >> "$GITHUB_ENV"
+
+      - name: SETUP and run the closed offline Linux application consumer
+        id: consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TASK_APPROVED_SHA"
+          test -z "$(git status --porcelain)"
+          set +e
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py linux-bootstrap \
+            --repo-root "$GITHUB_WORKSPACE" --output "$TASK_ARTIFACT_ROOT" \
+            --expected-sha "$TASK_APPROVED_SHA" --expected-base "$TASK_APPROVED_BASE"
+          task_exit=$?
+          set -e
+          printf 'exit_code=%s\n' "$task_exit" >> "$GITHUB_OUTPUT"
+          exit "$task_exit"
+
+      - name: Admit only the closed sanitized evidence bundle
+        id: artifact_guard
+        if: ${{ always() && env.TASK_ARTIFACT_ROOT != '' }}
+        env:
+          TASK_CONSUMER_EXIT: ${{ steps.consumer.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 .github/lnx02/verify_env.py audit-linux-bootstrap \
+            --output "$TASK_ARTIFACT_ROOT" --expected-sha "$TASK_APPROVED_SHA" \
+            --expected-base "$TASK_APPROVED_BASE"
+          "$TASK_CACHED_PYTHON" -I -S -B -X utf8 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          try:
+              value = os.environ.get("TASK_CONSUMER_EXIT", "")
+              if re.fullmatch("0|[1-9][0-9]{0,2}", value) is None or int(value) > 255:
+                  raise ValueError()
+              with open(os.path.join(os.environ["TASK_ARTIFACT_ROOT"], "result.json"), encoding="utf-8") as stream:
+                  status = json.load(stream)["status"]
+              expected = {"PASS"} if value == "0" else {"FAIL", "INCOMPLETE"}
+              if status not in expected:
+                  raise ValueError()
+          except BaseException:
+              print("LNX03_CONSUMER_EXIT_EVIDENCE_MISMATCH")
+              sys.exit(1)
+          print("LNX03_CONSUMER_EXIT_EVIDENCE_ACCEPTED")
+          PY
+          {
+            echo 'paths<<LNX03_CLOSED_ARTIFACT_PATHS'
+            printf '%s\n' "$TASK_ARTIFACT_ROOT/result.json" "$TASK_ARTIFACT_ROOT/manifest.json"
+            echo 'LNX03_CLOSED_ARTIFACT_PATHS'
+          } >> "$GITHUB_OUTPUT"
+
+      # Artifact transport occurs after the isolated offline workload has settled.
+      - name: Preserve sanitized exact-SHA evidence
+        if: ${{ always() && steps.artifact_guard.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lnx03-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.artifact_guard.outputs.paths }}
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 7
+
+      - name: Require actual successful consumer exit
+        if: ${{ always() }}
+        env:
+          TASK_CONSUMER_EXIT: ${{ steps.consumer.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test "$TASK_CONSUMER_EXIT" != 0; then
+            echo 'LNX03_CONSUMER_NOT_SUCCESSFUL'
+            exit 1
+          fi

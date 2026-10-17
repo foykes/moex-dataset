@@ -1,6 +1,6 @@
-"""LNX-02 only: admitted setup, immutable Linux locks and guarded offline replay.
+"""Legacy LNX-02 replay and the separately admitted closed LNX-03 consumer.
 
-This is not an application launcher, a generic sandbox or a lock update service.
+This is not an arbitrary application launcher, sandbox or lock update service.
 All managed Python entries use -I -S -B and install the hook before third-party
 imports. Native code is contained by a new isolated network namespace as well.
 """
@@ -3473,6 +3473,1455 @@ def self_test(repo):
             "failed": len(failed), "guard": GUARD.evidence()}, 1 if failed else 0
 
 
+# LNX-03 has its own authority and result family. Legacy LNX-02 entrypoints,
+# grants and schemas above remain closed and do not delegate to this consumer.
+LNX03_PATHS = (
+    '.github/lnx02/verify_env.py', '.github/workflows/d2-linux-offline.yml',
+    'tools/offline_linux.py', 'tools/offline_guard_linux.py',
+    'tests/linux_bootstrap/conftest.py', 'tests/linux_bootstrap/native_worker.py',
+    'tests/linux_bootstrap/test_environment_contract.py',
+    'tests/linux_bootstrap/test_admission.py', 'tests/linux_bootstrap/test_spawn_contract.py',
+    'docs/d2_linux_ci.md', 'docs/testing.md', 'docs/coordination.md',
+)
+# This is the approved path contract, independent of a caller-supplied list.
+LNX03_PATHS_SHA256 = '9e50e51b0e02ee70afcffcd97bf0e54ec08c402198b9e29326cc110e4c239ac6'
+LNX03_DEPENDENCY_PATHS = LNX03_PATHS + (
+    'run_logging.py',
+    'requirements/linux-cp314-runtime.lock',
+    'requirements/linux-cp314-test.lock',
+    'requirements/linux-cp314-dev.lock',
+    'requirements/windows-cp314-runtime.lock',
+    'requirements/windows-cp314-test.lock',
+    'requirements/windows-cp314-dev.lock',
+    'requirements/runtime.in', 'requirements/test.in', 'requirements/dev.in',
+)
+LNX03_GRANT_KEYS = frozenset({
+    'approved', 'consumer', 'repository', 'sha', 'base', 'event', 'ref',
+    'actor', 'triggering_actor', 'workflow', 'job', 'run_number', 'attempt', 'ticket_id',
+    'run_id',
+})
+LNX03_RESULT_KEYS = frozenset({
+    'schema_version', 'consumer', 'scope', 'status', 'failure_code', 'source',
+    'authority', 'environment', 'setup', 'isolation', 'cases', 'cleanup',
+})
+LNX03_ENV_KEYS = (
+    'MDS_LNX03_ADMISSION_GRANT', 'MDS_LNX03_SETUP_GRANT',
+    'MDS_LNX03_SUPERVISED_NETNS_GRANT', 'GITHUB_RUN_ID', 'GITHUB_RUN_NUMBER',
+    'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA',
+    'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'TASK_WORKFLOW', 'TASK_JOB',
+    'TASK_RUN_NUMBER', 'TASK_RUN_ATTEMPT', 'TASK_RUN_ID',
+)
+
+
+def lnx03_grant_json(value):
+    def unique(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise PolicyError('lnx03-duplicate-grant-key')
+            result[key] = item
+        return result
+    if type(value) is not str or len(value) > 16384:
+        raise PolicyError('lnx03-grant-missing')
+    try:
+        result = json.loads(value, object_pairs_hook=unique)
+    except (ValueError, TypeError):
+        raise PolicyError('lnx03-grant-json-invalid') from None
+    if type(result) is not dict:
+        raise PolicyError('lnx03-grant-object-required')
+    return result
+
+
+def lnx03_capability(env, grant, name, capability):
+    value = lnx03_grant_json(env.get(name))
+    if set(value) != LNX03_GRANT_KEYS | {'capability'}:
+        raise PolicyError('lnx03-capability-fields-invalid')
+    if value != dict(grant, capability=capability):
+        raise PolicyError('lnx03-capability-not-authorized')
+
+
+def lnx03_validate_grant(env, sha, base, require_setup=True):
+    grant = lnx03_grant_json(env.get('MDS_LNX03_ADMISSION_GRANT'))
+    if set(grant) != LNX03_GRANT_KEYS:
+        raise PolicyError('lnx03-grant-fields-invalid')
+    if (grant['approved'] is not True or grant['consumer'] != 'linux-bootstrap'
+            or not SHA.fullmatch(sha) or not SHA.fullmatch(base)
+            or grant['sha'] != sha or grant['base'] != base
+            or grant['repository'] != 'foykes/moex-dataset'
+            or grant['actor'] != 'foykes' or grant['triggering_actor'] != 'foykes'
+            or grant['workflow'] != '.github/workflows/d2-linux-offline.yml'
+            or grant['job'] != 'linux-bootstrap'
+            or type(grant['run_number']) is not int or grant['run_number'] <= 0
+            or type(grant['attempt']) is not int or grant['attempt'] != 2
+            or type(grant['run_id']) is not str or not re.fullmatch(r'[1-9][0-9]*', grant['run_id'])
+            or type(grant['ticket_id']) is not str or not HEX.fullmatch(grant['ticket_id'])):
+        raise PolicyError('lnx03-authority-invalid')
+    expected = {
+        'GITHUB_REPOSITORY': grant['repository'], 'GITHUB_SHA': sha,
+        'GITHUB_EVENT_NAME': grant['event'], 'GITHUB_REF': grant['ref'],
+        'GITHUB_ACTOR': grant['actor'], 'GITHUB_TRIGGERING_ACTOR': grant['triggering_actor'],
+        'GITHUB_RUN_NUMBER': str(grant['run_number']), 'GITHUB_RUN_ATTEMPT': '2',
+        'GITHUB_RUN_ID': grant['run_id'],
+        'GITHUB_JOB': grant['job'], 'GITHUB_WORKFLOW_SHA': sha,
+        'GITHUB_WORKFLOW_REF': grant['repository'] + '/' + grant['workflow'] + '@' + grant['ref'],
+        'RUNNER_ENVIRONMENT': 'github-hosted', 'TASK_RUNNER_ENVIRONMENT': 'github-hosted',
+        'TASK_DELETED': 'false', 'GITHUB_ACTIONS': 'true', 'ImageOS': 'ubuntu24',
+    }
+    if any(env.get(key) != value for key, value in expected.items()):
+        raise PolicyError('lnx03-event-identity-mismatch')
+    mirrors = {
+        'TASK_EVENT': 'GITHUB_EVENT_NAME', 'TASK_EVENT_SHA': 'GITHUB_SHA',
+        'TASK_EVENT_REF': 'GITHUB_REF', 'TASK_REPOSITORY': 'GITHUB_REPOSITORY',
+        'TASK_ACTOR': 'GITHUB_ACTOR', 'TASK_TRIGGERING_ACTOR': 'GITHUB_TRIGGERING_ACTOR',
+        'TASK_JOB': 'GITHUB_JOB', 'TASK_RUN_NUMBER': 'GITHUB_RUN_NUMBER',
+        'TASK_RUN_ATTEMPT': 'GITHUB_RUN_ATTEMPT', 'TASK_RUN_ID': 'GITHUB_RUN_ID',
+    }
+    run_id = env.get('GITHUB_RUN_ID', '')
+    if (not re.fullmatch(r'[1-9][0-9]*', run_id)
+            or any(env.get(key) != env.get(value) for key, value in mirrors.items())
+            or env.get('TASK_WORKFLOW') != grant['workflow']):
+        raise PolicyError('lnx03-event-mirror-mismatch')
+    if grant['event'] == 'push':
+        if grant['ref'] != 'refs/heads/codex/lnx-03-d2-bootstrap':
+            raise PolicyError('lnx03-push-ref-not-authorized')
+    elif grant['event'] == 'workflow_dispatch':
+        if grant['ref'] != 'refs/heads/main' or sha != base:
+            raise PolicyError('lnx03-dispatch-not-authorized')
+    else:
+        raise PolicyError('lnx03-event-not-authorized')
+    if require_setup:
+        lnx03_capability(env, grant, 'MDS_LNX03_SETUP_GRANT', 'network-setup')
+    return dict(grant)
+
+
+def lnx03_claim(claim_root, grant):
+    root = real_components(Path(claim_root).absolute(), directory=True)
+    if not root.is_dir() or set(grant) != LNX03_GRANT_KEYS:
+        raise PolicyError('lnx03-claim-root-or-identity-invalid')
+    if (hasattr(os, 'getuid') and
+            (root.lstat().st_uid != os.getuid() or stat.S_IMODE(root.lstat().st_mode) != 0o700)):
+        raise PolicyError('lnx03-claim-root-not-private-owned')
+    if type(grant['ticket_id']) is not str or not HEX.fullmatch(grant['ticket_id']):
+        raise PolicyError('lnx03-ticket-id-invalid')
+    path = root / (grant['ticket_id'] + '.json')
+    try:
+        write_new(root, path, json_bytes(grant))
+    except OSError:
+        raise PolicyError('lnx03-ticket-already-claimed-or-unavailable') from None
+    return digest(path)
+
+
+def lnx03_source_identity(repo, sha, base, observed_main=None):
+    """Bind a clean tested commit to its immutable approved base and scope.
+
+    The fetched main observation is checked once before SETUP. Later source
+    validation deliberately has no dependency on a moving remote reference.
+    Legacy LNX-02 source_identity keeps its original current-main rule.
+    """
+    if (type(sha) is not str or not SHA.fullmatch(sha)
+            or type(base) is not str or not SHA.fullmatch(base)):
+        raise PolicyError('lnx03-source-identity-invalid')
+    canonical = json.dumps(LNX03_PATHS, ensure_ascii=True, separators=(',', ':')).encode('ascii')
+    if (len(LNX03_PATHS) != 12 or len(set(LNX03_PATHS)) != 12
+            or hashlib.sha256(canonical).hexdigest() != LNX03_PATHS_SHA256):
+        raise PolicyError('lnx03-approved-path-contract-changed')
+    if git_read(repo, ['rev-parse', 'HEAD']).stdout.decode('ascii').strip() != sha:
+        raise PolicyError('lnx03-source-head-drift')
+    if git_read(repo, ['cat-file', '-e', base + '^{commit}'], True).returncode:
+        raise PolicyError('lnx03-approved-base-missing')
+    if git_read(repo, ['merge-base', '--is-ancestor', base, sha], True).returncode:
+        raise PolicyError('lnx03-base-is-not-source-ancestor')
+    if git_read(repo, ['status', '--porcelain=v1', '--untracked-files=all']).stdout:
+        raise PolicyError('lnx03-source-is-dirty')
+    changes = git_read(repo, ['diff', '--name-status', '--no-renames', '-z', base, sha, '--']).stdout
+    records = changes.split(b'\0')
+    if records[-1] != b'' or (len(records) - 1) % 2:
+        raise PolicyError('lnx03-source-diff-invalid')
+    for index in range(0, len(records) - 1, 2):
+        try:
+            name = records[index + 1].decode('utf-8')
+        except UnicodeError:
+            raise PolicyError('lnx03-source-diff-invalid') from None
+        if records[index] not in {b'A', b'M'} or name not in LNX03_PATHS:
+            raise PolicyError('lnx03-source-outside-approved-paths')
+    if observed_main is None:
+        return
+    if type(observed_main) is not str or not SHA.fullmatch(observed_main):
+        raise PolicyError('lnx03-main-observation-invalid')
+    if git_read(repo, ['merge-base', '--is-ancestor', base, observed_main], True).returncode:
+        raise PolicyError('lnx03-main-is-not-base-descendant')
+    drift = git_read(repo, ['diff', '--name-only', '--no-renames', '-z', base, observed_main, '--']).stdout
+    if drift and not drift.endswith(b'\0'):
+        raise PolicyError('lnx03-main-drift-invalid')
+    try:
+        drift_names = {name.decode('utf-8') for name in drift.split(b'\0') if name}
+    except UnicodeError:
+        raise PolicyError('lnx03-main-drift-invalid') from None
+    if drift_names.intersection(LNX03_DEPENDENCY_PATHS):
+        raise PolicyError('lnx03-main-dependent-interface-drift')
+
+
+def lnx03_source_manifest(repo):
+    names = LNX03_PATHS + ('run_logging.py',) + tuple(
+        'requirements/' + LOCK_NAMES[profile] for profile in PROFILES)
+    return {name: digest(contained(repo, repo / name)) for name in names}
+
+
+def lnx03_fingerprint(root):
+    root = real_components(Path(root).absolute(), directory=True)
+    values = {}
+    for folder, directories, files in os.walk(root, followlinks=False):
+        for name in directories:
+            real_components(Path(folder) / name, directory=True)
+        for name in files:
+            path = Path(folder) / name
+            regular(path)
+            values[path.relative_to(root).as_posix()] = digest(path)
+    return hashlib.sha256(json_bytes(values)).hexdigest()
+
+
+LNX03_STAGE_FIELDS = frozenset({
+    'kind', 'status', 'format', 'helper_sha256', 'identity', 'namespace', 'guard',
+    'failure_code', 'negative_probes', 'observations', 'launcher_started',
+    'child_result_available', 'exit_code', 'signal', 'timed_out', 'termination_confirmed',
+    'parent_namespace_unchanged', 'pid', 'pidfd_bound', 'duration_seconds', 'stdout', 'stderr',
+    'launch_failure_code', 'launch_errno', 'isolation_mode', 'worker_started',
+    'worker_pidfd_bound', 'worker_termination_confirmed', 'supervisor_binary_sha256',
+    'registered_fixture_cleanup',
+})
+LNX03_PRIMITIVE_FIELDS = LNX03_STAGE_FIELDS | {
+    'argv_template', 'system_binary_sha256', 'payload_binary_sha256',
+}
+
+
+def lnx03_validate_identity(value, helper_sha):
+    fields = {'os', 'os_version', 'architecture', 'python', 'implementation', 'gil_enabled',
+              'glibc', 'python_build', 'soabi', 'py_gil_disabled', 'runner_image_os',
+              'runner_image_version', 'python_executable_name', 'python_executable_sha256',
+              'helper_sha256', 'provisioning_boundary'}
+    if type(value) is not dict or set(value) != fields:
+        raise PolicyError('lnx03-identity-fields-invalid')
+    return validate_native_identity_evidence(value, helper_sha)
+
+
+def lnx03_validate_inventory(value):
+    if type(value) is not dict:
+        raise PolicyError('lnx03-inventory-fields-invalid')
+    expected = {name: record[0] for name, record in parse_lock(
+        (Path(__file__).absolute().parents[2] / 'requirements' / LOCK_NAMES['dev']).read_text(encoding='utf-8')).items()}
+    expected['pip'] = PIP_VERSION
+    if set(value) - set(expected) or any(type(version) is not str or version != expected[name]
+                                        for name, version in value.items()):
+        raise PolicyError('lnx03-inventory-fields-invalid')
+
+
+def lnx03_validate_application_observations(value, source_sha, complete):
+    if type(value) is not dict or set(value) - {'process', 'tests'}:
+        raise PolicyError('lnx03-application-observations-fields-invalid')
+    process = value.get('process')
+    if process is not None:
+        if (type(process) is not dict or set(process) - {
+                'started', 'pid', 'pidfd_bound', 'exit_code', 'timed_out', 'termination_confirmed'}
+                or any(type(process[key]) is not bool for key in (
+                    'started', 'pidfd_bound', 'timed_out', 'termination_confirmed') if key in process)
+                or 'pid' in process and process['pid'] is not None
+                   and (type(process['pid']) is not int or process['pid'] <= 1)
+                or 'exit_code' in process and process['exit_code'] is not None
+                   and type(process['exit_code']) is not int):
+            raise PolicyError('lnx03-application-process-fields-invalid')
+    tests = value.get('tests')
+    if tests is not None:
+        fields = {'schema_version', 'status', 'source_sha', 'collected', 'passed', 'failed',
+                  'deselected', 'exit_code', 'native_cases', 'failure_code'}
+        if (type(tests) is not dict or set(tests) != fields
+                or tests['schema_version'] != 'lnx03-runner-result-v1' or tests['source_sha'] != source_sha
+                or tests['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}
+                or any(type(tests[key]) is not int or tests[key] < 0
+                       for key in ('collected', 'passed', 'failed', 'deselected'))
+                or type(tests['exit_code']) is not int
+                or tests['status'] == 'PASS' and (tests['exit_code'] != 0 or tests['failure_code'] is not None)
+                or tests['status'] != 'PASS' and (tests['exit_code'] == 0
+                   or type(tests['failure_code']) is not str
+                   or not re.fullmatch(r'[a-z0-9-]{1,100}', tests['failure_code']))):
+            raise PolicyError('lnx03-application-tests-fields-invalid')
+        # A successful outer report validates the identical cases once below.
+        # Failed exports still validate every actually observed nested case.
+        if not complete:
+            lnx03_validate_native_cases(tests['native_cases'], require_complete=False)
+
+
+def lnx03_validate_stage(stage, helper_sha, source_sha, mode, complete=False, primitive=False):
+    allowed = LNX03_PRIMITIVE_FIELDS if primitive else LNX03_STAGE_FIELDS
+    kinds = {'rootless-primitive'} if primitive else {'preflight', 'bootstrap', 'install', 'check', 'application'}
+    if (type(stage) is not dict or set(stage) - allowed or not {'kind', 'status'} <= set(stage)
+            or stage['kind'] not in kinds or stage['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}):
+        raise PolicyError('lnx03-stage-fields-invalid')
+    if 'format' in stage and stage['format'] != 'lnx03-worker-result-v1':
+        raise PolicyError('lnx03-stage-format-invalid')
+    if 'helper_sha256' in stage and stage['helper_sha256'] != helper_sha:
+        raise PolicyError('lnx03-stage-helper-invalid')
+    for key in ('launcher_started', 'child_result_available', 'timed_out', 'termination_confirmed',
+                'pidfd_bound', 'worker_started', 'worker_pidfd_bound', 'worker_termination_confirmed'):
+        if key in stage and type(stage[key]) is not bool:
+            raise PolicyError('lnx03-stage-boolean-invalid')
+    for key in ('exit_code', 'signal', 'pid', 'launch_errno'):
+        if key in stage and stage[key] is not None and type(stage[key]) is not int:
+            raise PolicyError('lnx03-stage-integer-invalid')
+    if ('parent_namespace_unchanged' in stage and type(stage['parent_namespace_unchanged']) is not bool
+            and stage['parent_namespace_unchanged'] != 'NOT ESTABLISHED'):
+        raise PolicyError('lnx03-stage-parent-namespace-invalid')
+    if 'duration_seconds' in stage and (type(stage['duration_seconds']) not in {int, float}
+            or not math.isfinite(stage['duration_seconds']) or not 0 <= stage['duration_seconds'] <= 1800):
+        raise PolicyError('lnx03-stage-duration-invalid')
+    if 'isolation_mode' in stage and stage['isolation_mode'] not in {'rootless_user_net', 'supervised_net'}:
+        raise PolicyError('lnx03-stage-isolation-invalid')
+    for key in ('failure_code', 'launch_failure_code'):
+        if key in stage and stage[key] is not None and (type(stage[key]) is not str or not known_policy_code(stage[key])):
+            raise PolicyError('lnx03-stage-failure-code-invalid')
+    for key in ('stdout', 'stderr'):
+        if key not in stage:
+            continue
+        stream = stage[key]
+        if (type(stream) is not dict or set(stream) != {'size_bytes', 'sha256', 'classification', 'safe_summary'}
+                or stream.get('classification') not in STREAM_SUMMARIES
+                or stream.get('safe_summary') != STREAM_SUMMARIES[stream['classification']]
+                or stream != unavailable_stream() and (type(stream['size_bytes']) is not int
+                   or stream['size_bytes'] < 0 or type(stream['sha256']) is not str or not HEX.fullmatch(stream['sha256']))):
+            raise PolicyError('lnx03-stage-stream-fields-invalid')
+    for key in ('system_binary_sha256', 'payload_binary_sha256'):
+        if key in stage and (type(stage[key]) is not str or not HEX.fullmatch(stage[key])):
+            raise PolicyError('lnx03-stage-binary-hash-invalid')
+    if 'argv_template' in stage and stage['argv_template'] != ['unshare', '--user', '--map-current-user', '--net', '--', 'true']:
+        raise PolicyError('lnx03-primitive-command-invalid')
+    if 'supervisor_binary_sha256' in stage:
+        binaries = stage['supervisor_binary_sha256']
+        if (type(binaries) is not dict or set(binaries) != {'sudo', 'unshare', 'setpriv', 'env'}
+                or any(type(value) is not str or not HEX.fullmatch(value) for value in binaries.values())):
+            raise PolicyError('lnx03-stage-supervisor-hash-invalid')
+    if stage.get('identity') is not None:
+        lnx03_validate_identity(stage['identity'], helper_sha)
+    if stage.get('namespace') is not None:
+        validate_namespace_evidence(stage['namespace'], mode)
+        if ('ipv6_null_route_count' in stage['namespace']
+                and (type(stage['namespace']['ipv6_null_route_count']) is not int
+                     or not 0 <= stage['namespace']['ipv6_null_route_count'] <= 16)):
+            raise PolicyError('lnx03-stage-ipv6-count-invalid')
+    if stage.get('guard') is not None:
+        guard = stage['guard']
+        events = {'socket.__new__', 'socket.getaddrinfo', 'socket.connect', 'socket.bind', 'socket.sendto',
+                  'socket.gethostbyname', 'socket.gethostbyaddr', 'socket.getnameinfo', 'socket.sethostname',
+                  'socket.sendmsg', 'subprocess.Popen', 'urllib.Request', 'os.system', 'os.exec', 'os.fork',
+                  'os.forkpty', 'os.spawn', 'os.posix_spawn', 'pty.spawn'}
+        if (type(guard) is not dict or set(guard) != {'registered_before_third_party', 'pid', 'expected_denials', 'unexpected_denials'}
+                or type(guard['registered_before_third_party']) is not bool
+                or type(guard['pid']) is not int or guard['pid'] <= 1
+                or any(type(guard[key]) is not dict or set(guard[key]) - events
+                   or any(type(count) is not int or count < 0 for count in guard[key].values())
+                   for key in ('expected_denials', 'unexpected_denials'))):
+            raise PolicyError('lnx03-stage-guard-fields-invalid')
+    if stage.get('negative_probes') is not None:
+        probes = stage['negative_probes']
+        if (type(probes) is not dict or set(probes) != {'pid', 'dns_denied_before_resolver', 'child_denied_before_launch', 'requests_fixture'}
+                or type(probes['pid']) is not int or probes['pid'] <= 1
+                or any(type(probes[key]) is not bool for key in probes if key != 'pid')):
+            raise PolicyError('lnx03-stage-negative-probes-fields-invalid')
+    if 'registered_fixture_cleanup' in stage:
+        cleanup = stage['registered_fixture_cleanup']
+        if (type(cleanup) is not dict or set(cleanup) != {'schema', 'scope', 'status', 'pidfd_confirmed',
+                'already_absent', 'unsettled', 'identity_refusals', 'reaped_by_controller'}
+                or cleanup['schema'] != 'lnx03-emergency-settlement-v1' or cleanup['scope'] != 'REGISTERED_FIXTURES_ONLY'
+                or cleanup['status'] not in {'REGISTERED_EXITED', 'INCOMPLETE'} or cleanup['reaped_by_controller'] is not False
+                or any(type(cleanup[key]) is not int or cleanup[key] < 0
+                       for key in ('pidfd_confirmed', 'already_absent', 'unsettled', 'identity_refusals'))):
+            raise PolicyError('lnx03-stage-emergency-cleanup-fields-invalid')
+    observations = stage.get('observations', {})
+    fields = {'rootless-primitive': set(), 'preflight': set(), 'bootstrap': {'pip', 'pip_operation'},
+              'install': {'pip', 'pip_operation'}, 'check': {'pip', 'pip_operation', 'inventory', 'synthetic'},
+              'application': {'process', 'tests'}}[stage['kind']]
+    if type(observations) is not dict or set(observations) - fields:
+        raise PolicyError('lnx03-stage-observations-fields-invalid')
+    if stage['kind'] == 'application':
+        lnx03_validate_application_observations(observations, source_sha, complete)
+    if 'pip' in observations and observations['pip'] != {
+            'version': PIP_VERSION, 'verified_bootstrap_sha256': PIP_SHA256,
+            'fixed_user_agent_without_child_probes': True}:
+        raise PolicyError('lnx03-stage-pip-fields-invalid')
+    if 'pip_operation' in observations:
+        operation = observations['pip_operation']
+        if (type(operation) is not dict or set(operation) - {'exit_code', 'pid', 'runpy_same_pid', 'exception_type'}
+                or 'exit_code' not in operation or operation['exit_code'] is not None and type(operation['exit_code']) is not int
+                or 'pid' in operation and (type(operation['pid']) is not int or operation['pid'] <= 1)
+                or 'runpy_same_pid' in operation and type(operation['runpy_same_pid']) is not bool
+                or 'exception_type' in operation and operation['exception_type'] not in PUBLIC_EXCEPTION_TYPES):
+            raise PolicyError('lnx03-stage-pip-operation-fields-invalid')
+    if 'inventory' in observations:
+        lnx03_validate_inventory(observations['inventory'])
+    if 'synthetic' in observations:
+        synthetic = observations['synthetic']
+        if (type(synthetic) is not dict or set(synthetic) != {'numpy', 'pandas', 'ta_lib', 'ta_native',
+                'numpy_synthetic', 'ta_sma_synthetic', 'csv_synthetic', 'xlsx_synthetic', 'project_modules_imported'}
+                or synthetic['numpy'] != '2.3.4' or synthetic['pandas'] != '2.3.3' or synthetic['ta_lib'] != '0.6.8'
+                or type(synthetic['ta_native']) is not str or not re.fullmatch(r'[0-9]+(?:[.][0-9]+){1,3}', synthetic['ta_native'])
+                or any(synthetic[key] != 'PASS' for key in ('numpy_synthetic', 'ta_sma_synthetic', 'csv_synthetic', 'xlsx_synthetic'))
+                or synthetic['project_modules_imported'] != []):
+            raise PolicyError('lnx03-stage-synthetic-fields-invalid')
+
+
+def lnx03_project_stage(stage, primitive=False):
+    # Runtime export intentionally omits internal readiness/topology records.
+    # The audit path never projects input: unexpected fields are rejected.
+    fields = LNX03_PRIMITIVE_FIELDS if primitive else LNX03_STAGE_FIELDS
+    return {key: copy.deepcopy(value) for key, value in stage.items() if key in fields}
+
+
+def lnx03_validate_result(report):
+    if type(report) is not dict or set(report) != LNX03_RESULT_KEYS:
+        raise PolicyError('lnx03-result-fields-invalid')
+    if (report['schema_version'] != 'lnx03-linux-bootstrap-v1'
+            or report['consumer'] != 'linux-bootstrap' or report['scope'] != 'APPLICATION_ADMISSION'
+            or type(report['status']) is not str or report['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}):
+        raise PolicyError('lnx03-result-scope-invalid')
+    source = report['source']
+    if (type(source) is not dict or set(source) != {'sha', 'base', 'helper_sha256', 'files_sha256'}
+            or type(source['sha']) is not str or not SHA.fullmatch(source['sha'])
+            or type(source['base']) is not str or not SHA.fullmatch(source['base'])
+            or type(source['helper_sha256']) is not str or not HEX.fullmatch(source['helper_sha256'])
+            or type(source['files_sha256']) is not dict
+            or set(source['files_sha256']) != set(LNX03_PATHS) | {'run_logging.py'} | {
+                'requirements/' + LOCK_NAMES[profile] for profile in PROFILES}
+            or source['files_sha256'].get('.github/lnx02/verify_env.py') != source['helper_sha256']
+            or any(type(key) is not str or type(value) is not str or not HEX.fullmatch(value)
+                   for key, value in source['files_sha256'].items())):
+        raise PolicyError('lnx03-result-source-invalid')
+    authority = report['authority']
+    if (type(authority) is not dict or set(authority) != LNX03_GRANT_KEYS
+            or authority['sha'] != source['sha'] or authority['base'] != source['base']
+            or authority['consumer'] != 'linux-bootstrap' or authority['approved'] is not True
+            or authority['repository'] != 'foykes/moex-dataset'
+            or authority['actor'] != 'foykes' or authority['triggering_actor'] != 'foykes'
+            or authority['workflow'] != '.github/workflows/d2-linux-offline.yml'
+            or authority['job'] != 'linux-bootstrap'
+            or authority['attempt'] != 2 or type(authority['attempt']) is not int
+            or type(authority['run_number']) is not int or authority['run_number'] <= 0
+            or type(authority['run_id']) is not str or not re.fullmatch(r'[1-9][0-9]*', authority['run_id'])
+            or type(authority['ticket_id']) is not str or not HEX.fullmatch(authority['ticket_id'])):
+        raise PolicyError('lnx03-result-authority-invalid')
+    if authority['event'] == 'push':
+        if authority['ref'] != 'refs/heads/codex/lnx-03-d2-bootstrap':
+            raise PolicyError('lnx03-result-event-invalid')
+    elif authority['event'] == 'workflow_dispatch':
+        if authority['ref'] != 'refs/heads/main' or source['sha'] != source['base']:
+            raise PolicyError('lnx03-result-event-invalid')
+    else:
+        raise PolicyError('lnx03-result-event-invalid')
+    shapes = {
+        'environment': {'identity', 'fingerprint_before', 'fingerprint_after', 'inventory', 'pip_check_exit'},
+        'setup': {'authorized', 'completed', 'wheel_count', 'stages'},
+        'isolation': {'mode', 'primitive', 'preflight'},
+        'cleanup': {'state', 'owned_deleted'},
+    }
+    for name, keys in shapes.items():
+        if type(report[name]) is not dict or set(report[name]) != keys:
+            raise PolicyError('lnx03-result-section-invalid')
+    if type(report['cases']) is not list or type(report['setup']['stages']) is not list:
+        raise PolicyError('lnx03-result-observations-invalid')
+    if (type(report['setup']['wheel_count']) is not int or not 0 <= report['setup']['wheel_count'] <= 82
+            or type(report['setup']['authorized']) is not bool or type(report['setup']['completed']) is not bool
+            or type(report['cleanup']['state']) is not str
+            or report['cleanup']['state'] not in {'NOT_CREATED', 'SETTLED', 'INCOMPLETE', 'UNSETTLED'}
+            or type(report['cleanup']['owned_deleted']) is not bool):
+        raise PolicyError('lnx03-result-state-invalid')
+    environment, isolation = report['environment'], report['isolation']
+    if isolation['mode'] not in {None, 'rootless_user_net', 'supervised_net'}:
+        raise PolicyError('lnx03-result-isolation-mode-invalid')
+    if environment['identity'] is not None:
+        lnx03_validate_identity(environment['identity'], source['helper_sha256'])
+    for key in ('fingerprint_before', 'fingerprint_after'):
+        if environment[key] is not None and (type(environment[key]) is not str or not HEX.fullmatch(environment[key])):
+            raise PolicyError('lnx03-result-fingerprint-invalid')
+    if environment['inventory'] is not None:
+        lnx03_validate_inventory(environment['inventory'])
+    if environment['pip_check_exit'] is not None and type(environment['pip_check_exit']) is not int:
+        raise PolicyError('lnx03-result-pip-exit-invalid')
+    if isolation['primitive'] is not None:
+        lnx03_validate_stage(isolation['primitive'], source['helper_sha256'], source['sha'],
+                             isolation['mode'], primitive=True)
+    if len(report['setup']['stages']) > 5:
+        raise PolicyError('lnx03-result-stage-count-invalid')
+    for stage in report['setup']['stages']:
+        lnx03_validate_stage(stage, source['helper_sha256'], source['sha'], isolation['mode'],
+                             complete=report['status'] == 'PASS')
+    if isolation['preflight'] is not None and (not report['setup']['stages']
+            or isolation['preflight'] != report['setup']['stages'][0]
+            or report['setup']['stages'][0]['kind'] != 'preflight'):
+        raise PolicyError('lnx03-result-preflight-binding-invalid')
+    if report['status'] == 'PASS':
+        environment, setup = report['environment'], report['setup']
+        if (report['failure_code'] is not None or setup['authorized'] is not True
+                or setup['completed'] is not True or setup['wheel_count'] != 82
+                or report['cleanup'] != {'state': 'SETTLED', 'owned_deleted': True}
+                or type(environment['pip_check_exit']) is not int or environment['pip_check_exit'] != 0
+                or type(environment['fingerprint_before']) is not str or not HEX.fullmatch(environment['fingerprint_before'])
+                or type(environment['fingerprint_after']) is not str or not HEX.fullmatch(environment['fingerprint_after'])
+                or environment['fingerprint_before'] != environment['fingerprint_after']
+                or type(environment['inventory']) is not dict or len(environment['inventory']) != 83
+                or environment['inventory'].get('pip') != PIP_VERSION
+                or environment['identity'] is None
+                or report['isolation']['mode'] not in {'rootless_user_net', 'supervised_net'}
+                or not report['isolation']['preflight'] or not report['cases']):
+            raise PolicyError('lnx03-success-evidence-incomplete')
+        expected_inventory = {name: record[0] for name, record in parse_lock(
+            (Path(__file__).absolute().parents[2] / 'requirements' / LOCK_NAMES['dev']).read_text(encoding='utf-8')).items()}
+        if environment['inventory'] != dict(expected_inventory, pip=PIP_VERSION):
+            raise PolicyError('lnx03-result-inventory-lock-mismatch')
+        preflight = report['isolation']['preflight']
+        if preflight.get('status') != 'PASS' or preflight.get('exit_code') != 0:
+            raise PolicyError('lnx03-preflight-not-successful')
+        if (len(setup['stages']) != 5 or [stage.get('kind') if type(stage) is dict else None
+                for stage in setup['stages']] != ['preflight', 'bootstrap', 'install', 'check', 'application']):
+            raise PolicyError('lnx03-success-stage-set-invalid')
+        for stage in setup['stages']:
+            if (type(stage) is not dict or stage.get('status') != 'PASS'
+                    or type(stage.get('exit_code')) is not int or stage['exit_code'] != 0
+                    or stage.get('termination_confirmed') is not True
+                    or stage.get('timed_out') is not False
+                    or report['isolation']['mode'] == 'supervised_net'
+                       and stage.get('worker_termination_confirmed') is not True):
+                raise PolicyError('lnx03-setup-stage-not-settled')
+        if preflight != setup['stages'][0]:
+            raise PolicyError('lnx03-preflight-stage-disagrees')
+        check = setup['stages'][3].get('observations')
+        if (type(check) is not dict or check.get('inventory') != environment['inventory']
+                or type(check.get('pip_operation')) is not dict
+                or type(check['pip_operation'].get('exit_code')) is not int
+                or check['pip_operation']['exit_code'] != 0):
+            raise PolicyError('lnx03-check-stage-disagrees')
+        application = setup['stages'][4].get('observations')
+        if type(application) is not dict or set(application) != {'process', 'tests'}:
+            raise PolicyError('lnx03-application-evidence-missing')
+        process, tests = application['process'], application['tests']
+        if (type(process) is not dict or process.get('started') is not True
+                or process.get('pidfd_bound') is not True or process.get('termination_confirmed') is not True
+                or process.get('timed_out') is not False
+                or type(process.get('exit_code')) is not int or process['exit_code'] != 0
+                or type(tests) is not dict or set(tests) != {'schema_version', 'status', 'source_sha',
+                   'collected', 'passed', 'failed', 'deselected', 'exit_code', 'native_cases', 'failure_code'}
+                or tests['schema_version'] != 'lnx03-runner-result-v1' or tests['source_sha'] != source['sha']
+                or tests['status'] != 'PASS' or tests['failure_code'] is not None
+                or any(type(tests[name]) is not int for name in ('collected', 'passed', 'failed', 'deselected', 'exit_code'))
+                or tests['exit_code'] != 0 or tests['failed'] != 0 or tests['deselected'] != 0
+                or tests['collected'] <= 13 or tests['passed'] != tests['collected']
+                or tests['native_cases'] != report['cases']):
+            raise PolicyError('lnx03-application-result-disagrees')
+        lnx03_validate_native_cases(report['cases'])
+    elif type(report['failure_code']) is not str or not re.fullmatch(r'[a-z0-9-]{1,100}', report['failure_code']):
+        raise PolicyError('lnx03-failure-code-required')
+    elif report['cases']:
+        lnx03_validate_native_cases(report['cases'], require_complete=False)
+    sanitized(report)
+    data = json_bytes(report)
+    if (b'LNX03_NATIVE_PRIVATE_CANARY_7fe94d31' in data
+            or re.search(rb'(?i)(https?://|file://|Traceback [(]most recent)', data)):
+        raise PolicyError('lnx03-export-private-evidence-refused')
+    return report
+
+
+def lnx03_validate_native_cases(cases, require_complete=True):
+    names = ('success', 'child_error', 'exit23', 'hang', 'bootstrap_replay_failure',
+             'bootstrap_import_failure', 'bootstrap_unpickle_failure', 'bootstrap_pipe_failure',
+             'foreign_fd', 'listener_failure', 'ack_failure', 'auxiliary_settlement', 'canary_positive_control')
+    fields = {'schema', 'case', 'status', 'failure_code', 'application_exit', 'deadline_seconds',
+              'deadline_detected', 'cleanup_requested', 'all_workers_settled', 'two_workers_registered',
+              'worker_records', 'logging', 'auxiliary', 'source_attestation', 'console_canary_absent'}
+    worker_fields = {'role', 'pid', 'pidfd_bound', 'session_owned', 'exitcode', 'reaped',
+                     'events', 'foreign_fd_absent', 'stdio_redirected'}
+    sources = {'context.py', 'connection.py', 'reduction.py', 'queues.py', 'synchronize.py',
+               'sharedctypes.py', 'heap.py', 'resource_tracker.py', 'spawn.py', 'popen_spawn_posix.py', 'util.py'}
+    allowed_events = {'ENTRY', 'STDIO_BOUND', 'FOREIGN_FD_ABSENT', 'FOREIGN_FD_REFUSED', 'PREPARATION_BOUNDARY',
+                      'PREPARATION_OK', 'UNPICKLE_BOUNDARY', 'UNPICKLE_OK', 'WORKER_WRAPPER',
+                      'WORKER_ERROR', 'EXIT23_FLUSH_CONFIRMED', 'EXIT23', 'HANG', 'FINAL_CONFIRMED', 'FINAL_UNCONFIRMED',
+                      'BOOTSTRAP_IMPORT_BOUNDARY', 'BOOTSTRAP_PIPE_WRITE_REFUSED', 'CANARY_REJECTED',
+                      'TRACKER_ENTRY', 'AUXILIARY_EOF', 'SESSION_OWNED', 'PDEATH_BOUND', 'GUARD_DENIALS_CONFIRMED'}
+    observed_names = [value.get('case') if type(value) is dict else None for value in cases] if type(cases) is list else []
+    if (type(cases) is not list or len(cases) > len(names)
+            or any(type(name) is not str or name not in names for name in observed_names)
+            or len(set(observed_names)) != len(observed_names)
+            or require_complete and observed_names != list(names)):
+        raise PolicyError('lnx03-native-case-set-invalid')
+    for case in cases:
+        name = case['case']
+        if not require_complete and case.get('status') in {'FAIL', 'INCOMPLETE'}:
+            lnx03_validate_partial_native_case(case, fields, worker_fields, sources, allowed_events)
+            continue
+        if (set(case) != fields or case['schema'] != 'lnx03-native-case-v1' or case['status'] != 'PASS'
+                or case['failure_code'] is not None or type(case['application_exit']) is not int
+                or type(case['deadline_seconds']) is not int or case['deadline_seconds'] != 15
+                or any(type(case[key]) is not bool for key in ('deadline_detected', 'cleanup_requested'))
+                or any(case[key] is not True for key in ('all_workers_settled', 'two_workers_registered', 'console_canary_absent'))
+                or type(case['source_attestation']) is not dict or set(case['source_attestation']) != sources
+                or any(type(value) is not str or not HEX.fullmatch(value) for value in case['source_attestation'].values())):
+            raise PolicyError('lnx03-native-case-shape-invalid')
+        workers = case['worker_records']
+        if (type(workers) is not list or len(workers) != 2 or any(type(value) is not dict for value in workers)
+                or {value.get('role') for value in workers} != {'google', 'ftp'}):
+            raise PolicyError('lnx03-native-worker-set-invalid')
+        for worker in workers:
+            if (set(worker) != worker_fields or type(worker['pid']) is not int or worker['pid'] <= 1
+                    or type(worker['exitcode']) is not int
+                    or any(worker[key] is not True for key in ('pidfd_bound', 'session_owned', 'reaped', 'foreign_fd_absent', 'stdio_redirected'))
+                    or type(worker['events']) is not list or len(worker['events']) > 64
+                    or any(type(event) is not str or event not in allowed_events for event in worker['events'])
+                    or 'GUARD_DENIALS_CONFIRMED' not in worker['events']):
+                raise PolicyError('lnx03-native-worker-evidence-invalid')
+        if len({worker['pid'] for worker in workers}) != 2:
+            raise PolicyError('lnx03-native-worker-identity-reused')
+        auxiliary = case['auxiliary']
+        if (type(auxiliary) is not dict or set(auxiliary) != {'owned', 'pid', 'pidfd_bound', 'settled', 'reaped', 'exitcode'}
+                or any(auxiliary[key] is not True for key in ('owned', 'pidfd_bound', 'settled', 'reaped'))
+                or type(auxiliary['pid']) is not int or auxiliary['pid'] <= 1
+                or auxiliary['pid'] in {worker['pid'] for worker in workers}
+                or type(auxiliary['exitcode']) is not int or auxiliary['exitcode'] != 0):
+            raise PolicyError('lnx03-native-auxiliary-unsettled')
+        logging = case['logging']
+        if (type(logging) is not dict or set(logging) != {'delivery_outcome', 'storage_sealed', 'exit_status', 'worker_final_count'}
+                or logging['delivery_outcome'] not in {'COMPLETE', 'INCOMPLETE'}
+                or type(logging['storage_sealed']) is not bool or type(logging['exit_status']) is not int
+                or type(logging['worker_final_count']) is not int or not 0 <= logging['worker_final_count'] <= 2):
+            raise PolicyError('lnx03-native-logging-evidence-invalid')
+        successful = name in {'success', 'foreign_fd', 'auxiliary_settlement'}
+        if successful:
+            if (case['application_exit'] != 0 or any(worker['exitcode'] != 0 for worker in workers)
+                    or logging != {'delivery_outcome': 'COMPLETE', 'storage_sealed': True,
+                                   'exit_status': 0, 'worker_final_count': 2}):
+                raise PolicyError('lnx03-native-success-incomplete')
+            for worker in workers:
+                events = worker['events']
+                for first, second in (('PREPARATION_OK', 'UNPICKLE_BOUNDARY'),
+                                      ('UNPICKLE_OK', 'WORKER_WRAPPER'), ('WORKER_WRAPPER', 'FINAL_CONFIRMED')):
+                    if first not in events or second not in events or events.index(first) >= events.index(second):
+                        raise PolicyError('lnx03-native-phase-order-invalid')
+        elif case['application_exit'] != 1:
+            raise PolicyError('lnx03-native-negative-exit-invalid')
+        if name == 'exit23':
+            failed = [worker for worker in workers if worker['exitcode'] == 23]
+            if (len(failed) != 1 or logging['worker_final_count'] >= 2):
+                raise PolicyError('lnx03-native-exit23-boundary-missing')
+            events = failed[0]['events']
+            if (any(event in events for event in ('FINAL_CONFIRMED', 'FINAL_UNCONFIRMED'))
+                    or any(event not in events for event in ('WORKER_WRAPPER', 'EXIT23_FLUSH_CONFIRMED', 'EXIT23'))
+                    or not events.index('WORKER_WRAPPER') < events.index('EXIT23_FLUSH_CONFIRMED') < events.index('EXIT23')):
+                raise PolicyError('lnx03-native-exit23-boundary-missing')
+        if name == 'child_error' and not any(worker['exitcode'] != 0 and 'WORKER_ERROR' in worker['events'] for worker in workers):
+            raise PolicyError('lnx03-native-error-boundary-missing')
+        if name == 'hang' and (not case['deadline_detected'] or not case['cleanup_requested']
+                or any('HANG' not in worker['events'] or worker['exitcode'] == 0 for worker in workers)):
+            raise PolicyError('lnx03-native-deadline-boundary-missing')
+        boundaries = {'bootstrap_replay_failure': 'PREPARATION_BOUNDARY',
+                      'bootstrap_import_failure': 'BOOTSTRAP_IMPORT_BOUNDARY',
+                      'bootstrap_unpickle_failure': 'UNPICKLE_BOUNDARY'}
+        if name in boundaries:
+            failed = [worker for worker in workers if worker['exitcode'] != 0]
+            if (not failed or not any(boundaries[name] in worker['events'] for worker in failed)
+                    or any('WORKER_WRAPPER' in worker['events'] for worker in failed)
+                    or logging['worker_final_count'] >= 2):
+                raise PolicyError('lnx03-native-bootstrap-boundary-missing')
+        if name == 'bootstrap_pipe_failure' and (not case['cleanup_requested']
+                or not any('BOOTSTRAP_PIPE_WRITE_REFUSED' in worker['events'] for worker in workers)
+                or not any(worker['exitcode'] != 0 for worker in workers)):
+            raise PolicyError('lnx03-native-pipe-boundary-missing')
+        if name in {'listener_failure', 'ack_failure'} and (logging['delivery_outcome'] != 'INCOMPLETE'
+                or logging['exit_status'] == 0 or not any('WORKER_WRAPPER' in worker['events'] for worker in workers)):
+            raise PolicyError('lnx03-native-logging-boundary-missing')
+        if name == 'foreign_fd' and not any('FOREIGN_FD_REFUSED' in worker['events'] for worker in workers):
+            raise PolicyError('lnx03-native-foreign-fd-oracle-missing')
+        if name == 'canary_positive_control' and not any('CANARY_REJECTED' in worker['events'] for worker in workers):
+            raise PolicyError('lnx03-native-canary-oracle-missing')
+    return cases
+
+
+def lnx03_validate_partial_native_case(case, fields, worker_fields, sources, events):
+    # Preserve failed observations without promoting a partially observed case
+    # to admission. Unknown values remain None; no missing worker is invented.
+    if (set(case) != fields or case['schema'] != 'lnx03-native-case-v1'
+            or type(case['failure_code']) is not str or not re.fullmatch(r'LNX03_[A-Z_]{1,80}', case['failure_code'])
+            or type(case['application_exit']) is not int or case['application_exit'] == 0
+            or type(case['deadline_seconds']) is not int or case['deadline_seconds'] != 15
+            or any(type(case[key]) is not bool for key in ('deadline_detected', 'cleanup_requested',
+                'all_workers_settled', 'two_workers_registered', 'console_canary_absent'))
+            or type(case['source_attestation']) is not dict or set(case['source_attestation']) != sources
+            or any(type(value) is not str or not HEX.fullmatch(value) for value in case['source_attestation'].values())
+            or type(case['worker_records']) is not list or len(case['worker_records']) > 2):
+        raise PolicyError('lnx03-partial-native-case-invalid')
+    for worker in case['worker_records']:
+        if (type(worker) is not dict or set(worker) != worker_fields or worker['role'] not in ('google', 'ftp')
+                or type(worker['pid']) is not int or worker['pid'] <= 1
+                or worker['exitcode'] is not None and type(worker['exitcode']) is not int
+                or any(type(worker[key]) is not bool for key in ('pidfd_bound', 'session_owned', 'reaped', 'foreign_fd_absent', 'stdio_redirected'))
+                or type(worker['events']) is not list or len(worker['events']) > 64
+                or any(type(event) is not str or event not in events for event in worker['events'])):
+            raise PolicyError('lnx03-partial-native-worker-invalid')
+    auxiliary = case['auxiliary']
+    if (type(auxiliary) is not dict or set(auxiliary) != {'owned', 'pid', 'pidfd_bound', 'settled', 'reaped', 'exitcode'}
+            or any(type(auxiliary[key]) is not bool for key in ('owned', 'pidfd_bound', 'settled', 'reaped'))
+            or auxiliary['pid'] is not None and (type(auxiliary['pid']) is not int or auxiliary['pid'] <= 1)
+            or auxiliary['exitcode'] is not None and type(auxiliary['exitcode']) is not int):
+        raise PolicyError('lnx03-partial-native-auxiliary-invalid')
+    logging = case['logging']
+    if (type(logging) is not dict or set(logging) != {'delivery_outcome', 'storage_sealed', 'exit_status', 'worker_final_count'}
+            or logging['delivery_outcome'] not in ('COMPLETE', 'INCOMPLETE')
+            or type(logging['storage_sealed']) is not bool or type(logging['exit_status']) is not int
+            or type(logging['worker_final_count']) is not int or not 0 <= logging['worker_final_count'] <= 2):
+        raise PolicyError('lnx03-partial-native-logging-invalid')
+
+
+def lnx03_audit(args):
+    flags()
+    root = real_components(Path(args.output).absolute(), directory=True)
+    if {path.name for path in root.iterdir()} != {'result.json', 'manifest.json'}:
+        raise PolicyError('lnx03-bundle-files-invalid')
+    report = read_json(root / 'result.json')
+    lnx03_validate_result(report)
+    if report['source']['sha'] != args.expected_sha or report['source']['base'] != args.expected_base:
+        raise PolicyError('lnx03-bundle-source-mismatch')
+    if read_json(root / 'manifest.json') != {'result.json': digest(root / 'result.json')}:
+        raise PolicyError('lnx03-bundle-manifest-invalid')
+    return {'status': 'PASS', 'scope': 'BUNDLE_VALIDATION', 'consumer_status': report['status']}
+
+
+def lnx03_clean_environment(root):
+    environment = {
+        'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
+        'HOME': str(root / 'home'), 'TMPDIR': str(root / 'tmp'),
+        'PIP_CONFIG_FILE': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
+        'PYTHONNOUSERSITE': '1', 'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
+    }
+    for key in LNX03_ENV_KEYS + GITHUB_NAMES + ('ImageOS', 'ImageVersion'):
+        if key in os.environ and not key.startswith('MDS_LNX02_'):
+            environment[key] = os.environ[key]
+    return environment
+
+
+def lnx03_owned(root, nonce):
+    root = owned(root, nonce)
+    if (read_json(root / OWNER) != {'nonce': nonce, 'purpose': 'LNX-03'}
+            or not root.name.startswith('lnx03-')
+            or stat.S_IMODE(root.lstat().st_mode) != 0o700):
+        raise PolicyError('lnx03-scratch-identity-invalid')
+    return root
+
+
+def lnx03_new_scratch(temp_root):
+    parent = real_components(Path(temp_root).absolute(), directory=True)
+    if not parent.is_dir():
+        raise PolicyError('lnx03-temporary-parent-missing')
+    root = Path(tempfile.mkdtemp(prefix='lnx03-', dir=parent))
+    os.chmod(root, 0o700)
+    nonce = uuid.uuid4().hex
+    write_new(root, root / OWNER, json_bytes({'nonce': nonce, 'purpose': 'LNX-03'}))
+    for name in ('jobs', 'logs', 'tmp', 'home', 'bootstrap', 'wheelhouse', 'locks', 'fixtures'):
+        (root / name).mkdir(mode=0o700)
+    (root / 'fixtures' / 'native').mkdir(mode=0o700)
+    return root, nonce
+
+
+def lnx03_claim_root(temp_root, authority):
+    parent = real_components(Path(temp_root).absolute(), directory=True)
+    for name in ('lnx03-claims', authority['run_id'], authority['job'], str(authority['attempt'])):
+        parent = contained(temp_root, parent / name)
+        try:
+            parent.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        real_components(parent, directory=True)
+        if (parent.lstat().st_uid != os.getuid()
+                or stat.S_IMODE(parent.lstat().st_mode) != 0o700):
+            raise PolicyError('lnx03-claim-directory-invalid')
+    return parent
+
+
+def lnx03_launch(command, root, job_name, parent_namespaces, timeout=600):
+    outcome = {'launcher_started': False, 'child_result_available': False,
+               'exit_code': None, 'signal': None, 'timed_out': False,
+               'termination_confirmed': False, 'parent_namespace_unchanged': False,
+               'pidfd_bound': False}
+    child = descriptor = None
+    started = time.monotonic()
+    stdout_path, stderr_path = (root / 'logs' / (job_name + suffix)
+                               for suffix in ('.stdout', '.stderr'))
+    try:
+        if GUARD.process is not None:
+            raise PolicyError('lnx03-nested-controller-launch')
+        GUARD.process = tuple(command)
+        with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
+            os.chmod(stdout_path, 0o600)
+            os.chmod(stderr_path, 0o600)
+            child = subprocess.Popen(command, executable=command[0], cwd=str(root),
+                                     env=lnx03_clean_environment(root), stdin=subprocess.DEVNULL,
+                                     stdout=stdout, stderr=stderr, close_fds=True,
+                                     start_new_session=True)
+            outcome.update(launcher_started=True, pid=child.pid)
+            descriptor = os.pidfd_open(child.pid, 0)
+            outcome['pidfd_bound'] = True
+            try:
+                child.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                outcome['timed_out'] = True
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                if not pidfd_exited(descriptor, 5):
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                if pidfd_exited(descriptor, 5):
+                    child.wait(timeout=1)
+            outcome['termination_confirmed'] = (child.poll() is not None
+                                                 and pidfd_exited(descriptor, 0))
+    except BaseException as error:
+        outcome['launch_failure_code'] = public_failure(error)['failure_code']
+        if child is not None and descriptor is not None:
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                if pidfd_exited(descriptor, 5):
+                    child.wait(timeout=1)
+                    outcome['termination_confirmed'] = True
+            except BaseException:
+                pass
+        elif child is not None:
+            try:
+                child.kill()
+                child.wait(timeout=5)
+                outcome['termination_confirmed'] = child.returncode is not None
+            except BaseException:
+                pass
+    finally:
+        GUARD.process = None
+        if descriptor is not None:
+            os.close(descriptor)
+    if child is not None:
+        outcome['exit_code'] = child.poll()
+        if outcome['exit_code'] is not None and outcome['exit_code'] < 0:
+            outcome['signal'] = -outcome['exit_code']
+    for name, path in (('stdout', stdout_path), ('stderr', stderr_path)):
+        try:
+            if path.exists() and regular(path).st_size > MAX_ARTIFACT:
+                raise PolicyError('lnx03-stream-size-limit')
+            outcome[name] = stream_evidence(path.read_bytes() if path.exists() else b'',
+                                           command[0] == '/usr/bin/unshare', outcome['exit_code'])
+        except BaseException:
+            outcome[name] = unavailable_stream()
+            outcome.setdefault('launch_failure_code', 'lnx03-stream-unavailable')
+    outcome['duration_seconds'] = round(time.monotonic() - started, 3)
+    outcome['parent_namespace_unchanged'] = network_ids() == parent_namespaces
+    return outcome
+
+
+def lnx03_choose_isolation(root, authority, helper_sha):
+    unshare_sha = trusted_system_binary('/usr/bin/unshare')
+    true_sha = trusted_system_binary('/bin/true')
+    primitive = lnx03_launch(['/usr/bin/unshare', '--user', '--map-current-user', '--net', '--', '/bin/true'],
+                             root, '0-primitive', network_ids(), timeout=15)
+    primitive.update(kind='rootless-primitive', helper_sha256=helper_sha, status='FAIL',
+                     argv_template=['unshare', '--user', '--map-current-user', '--net', '--', 'true'],
+                     system_binary_sha256=unshare_sha, payload_binary_sha256=true_sha)
+    if (primitive['launcher_started'] and primitive['exit_code'] == 0
+            and not primitive['timed_out'] and primitive['termination_confirmed']
+            and primitive['parent_namespace_unchanged'] is True
+            and not primitive.get('launch_failure_code')):
+        primitive['status'] = 'PASS'
+        return 'rootless_user_net', primitive
+    primitive['failure_code'] = 'lnx03-rootless-primitive-failed'
+    if rootless_permission_denied(primitive):
+        lnx03_capability(os.environ, {key: authority[key] for key in LNX03_GRANT_KEYS},
+                         'MDS_LNX03_SUPERVISED_NETNS_GRANT', 'supervised-netns')
+        return 'supervised_net', primitive
+    raise StageError('lnx03-rootless-primitive-failed', primitive)
+
+
+def lnx03_supervised_worker_ready(root, job):
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+    signal.alarm(610)
+    proof = supervised_privilege_proof(job["parent"]["ids"])
+    namespace = namespace_proof(job["parent"], "supervised_net")
+    ready = {"format": "lnx03-ready-v1", "pid": os.getpid(), "start_ticks": process_start_ticks(os.getpid()),
+             "helper_sha256": job["helper_sha256"], "job_sha256": job["sealed_job_sha256"],
+             "privilege": proof, "namespace": namespace, "alarm_seconds": 610,
+             "parent_pid": os.getppid(),
+             "alarm": {"handler_default": signal.getsignal(signal.SIGALRM) == signal.SIG_DFL,
+                       "unblocked": signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, set()),
+                       "remaining_seconds": signal.getitimer(signal.ITIMER_REAL)[0], "configured_seconds": 610}}
+    atomic_handshake(root, Path(job["ready"]), ready)
+    deadline = time.monotonic() + 15
+    admission = Path(job["admission"])
+    while time.monotonic() < deadline:
+        if admission.exists():
+            value = read_json(contained(root, admission))
+            if value != {"format": "lnx03-admission-v1", "job_sha256": job["sealed_job_sha256"],
+                         "pid": ready["pid"], "start_ticks": ready["start_ticks"]}:
+                raise PolicyError("supervised-admission-mismatch")
+            if os.getppid() != ready["parent_pid"]:
+                raise PolicyError("supervised-parent-changed-before-admission")
+            validate_privilege_snapshot(privilege_snapshot(), job["parent"]["ids"])
+            return ready
+        time.sleep(0.05)
+    raise PolicyError("supervised-admission-timeout")
+
+
+def lnx03_supervised_command(command, root, ids):
+    if len(ids) != 3 or ids[0] != ids[1] or any(type(value) is not int or value <= 0 for value in ids):
+        raise PolicyError("supervised-runner-must-be-nonzero-user")
+    records = {Path(name).name: trusted_system_binary(name) for name in ("/usr/bin/sudo", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/env")}
+    environment = lnx03_clean_environment(root)
+    argv = ["/usr/bin/sudo", "-n", "--", "/usr/bin/unshare", "--net", "--", "/usr/bin/setpriv",
+            "--reuid=" + str(ids[0]), "--regid=" + str(ids[2]), "--clear-groups", "--inh-caps=-all",
+            "--ambient-caps=-all", "--bounding-set=-all", "--no-new-privs", "--pdeathsig=KILL", "--",
+            "/usr/bin/env", "-i"] + [key + "=" + environment[key] for key in sorted(environment)] + command
+    return argv, records
+
+
+def lnx03_supervised_launch(command, root, job_name, job, job_sha, timeout=600):
+    outcome = {"launcher_started": False, "child_result_available": False, "exit_code": None, "signal": None,
+               "timed_out": False, "termination_confirmed": False, "parent_namespace_unchanged": "NOT ESTABLISHED",
+               "worker_started": False, "worker_pidfd_bound": False, "worker_termination_confirmed": False,
+               "isolation_mode": "supervised_net"}
+    argv, binaries = lnx03_supervised_command(command, root, job["parent"]["ids"])
+    outcome["supervisor_binary_sha256"] = binaries
+    started = time.monotonic()
+    child = pidfd = None
+    stdout_path, stderr_path = (root / "logs" / (job_name + suffix) for suffix in (".stdout", ".stderr"))
+    try:
+        if GUARD.process is not None:
+            raise PolicyError("nested-controller-process-admission")
+        GUARD.process = tuple(argv)
+        with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+            os.chmod(stdout_path, 0o600)
+            os.chmod(stderr_path, 0o600)
+            child = subprocess.Popen(argv, executable=argv[0], cwd=str(root), env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
+            outcome["launcher_started"] = True
+            ready_path = Path(job["ready"])
+            deadline = time.monotonic() + 20
+            while not ready_path.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not ready_path.exists():
+                # Even a finished sudo monitor cannot prove no unknown grandchild remains.
+                raise PolicyError("supervised-worker-ready-unavailable")
+            outcome["worker_started"] = True
+            ready = read_json(contained(root, ready_path))
+            lnx03_validate_ready(ready, job, job_sha)
+            pid = ready["pid"]
+            bind_worker_process(pid, ready, command, job["parent"]["ids"])
+            topology = worker_topology(pid, child.pid, os.getpid(), ready)
+            pidfd = os.pidfd_open(pid, 0)
+            bind_worker_process(pid, ready, command, job["parent"]["ids"])
+            if worker_topology(pid, child.pid, os.getpid(), ready) != topology:
+                raise PolicyError("supervised-worker-parent-identity-changed")
+            outcome["worker_pidfd_bound"] = True
+            outcome["worker_readiness"] = ready
+            outcome["worker_topology"] = topology
+            atomic_handshake(root, Path(job["admission"]), {"format": "lnx03-admission-v1", "job_sha256": job_sha,
+                             "pid": pid, "start_ticks": ready["start_ticks"]})
+            try:
+                child.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                outcome["timed_out"] = True
+                raise PolicyError("supervised-worker-timeout") from None
+            outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 10)
+            if not outcome["worker_termination_confirmed"]:
+                raise PolicyError("supervised-worker-termination-not-confirmed")
+    except BaseException as error:
+        outcome["launch_failure_code"] = public_failure(error)["failure_code"]
+        if isinstance(error, OSError):
+            outcome["launch_errno"] = error.errno
+        if pidfd is not None and outcome["worker_pidfd_bound"]:
+            try:
+                signal.pidfd_send_signal(pidfd, 9)
+                outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 10)
+            except BaseException:
+                try:
+                    outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 0)
+                except BaseException:
+                    outcome["worker_termination_confirmed"] = False
+        if child is not None:
+            try:
+                child.wait(timeout=10)
+            except BaseException:
+                pass
+    finally:
+        GUARD.process = None
+        if pidfd is not None:
+            try:
+                os.close(pidfd)
+            except BaseException as error:
+                outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    if child is not None:
+        try:
+            outcome["exit_code"] = child.poll()
+        except BaseException as error:
+            outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+        outcome["termination_confirmed"] = outcome["exit_code"] is not None
+    if outcome["exit_code"] is not None and outcome["exit_code"] < 0:
+        outcome["signal"] = -outcome["exit_code"]
+    for name, path in (("stdout", stdout_path), ("stderr", stderr_path)):
+        try:
+            if path.exists() and regular(path).st_size > MAX_ARTIFACT:
+                raise PolicyError("supervised-stream-size-limit")
+            outcome[name] = stream_evidence(path.read_bytes() if path.exists() else b"")
+        except BaseException as error:
+            outcome[name] = unavailable_stream()
+            outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    outcome["duration_seconds"] = round(time.monotonic() - started, 3)
+    try:
+        outcome["parent_namespace_unchanged"] = network_ids() == job["parent"]["namespaces"]
+    except BaseException as error:
+        outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    return outcome
+
+
+def lnx03_validate_ready(ready, job, job_sha):
+    if (not isinstance(ready, dict) or set(ready) != {"format", "pid", "start_ticks", "helper_sha256", "job_sha256", "privilege", "namespace", "alarm_seconds", "parent_pid", "alarm"}
+            or ready.get("format") != "lnx03-ready-v1" or type(ready.get("pid")) is not int or ready["pid"] <= 0
+            or type(ready.get("start_ticks")) is not int or ready["start_ticks"] <= 0
+            or type(ready.get("parent_pid")) is not int or ready["parent_pid"] <= 1
+            or ready.get("helper_sha256") != job["helper_sha256"] or ready.get("job_sha256") != job_sha
+            or ready.get("alarm_seconds") != 610):
+        raise PolicyError("supervised-worker-ready-invalid")
+    alarm = ready["alarm"]
+    if (not isinstance(alarm, dict) or set(alarm) != {"handler_default", "unblocked", "remaining_seconds", "configured_seconds"}
+            or alarm.get("handler_default") is not True or alarm.get("unblocked") is not True
+            or alarm.get("configured_seconds") != 610 or type(alarm.get("remaining_seconds")) not in {int, float}
+            or not math.isfinite(alarm["remaining_seconds"]) or not 0 < alarm["remaining_seconds"] <= 610):
+        raise PolicyError("supervised-kernel-alarm-proof-invalid")
+    validate_privilege_proof(ready["privilege"], job["parent"]["ids"])
+    validate_namespace_evidence(ready["namespace"], "supervised_net")
+
+
+def lnx03_worker_launch(root, nonce, python, kind, fields, sequence, authority, repo,
+                        sources, isolation_mode, primitive):
+    lnx03_owned(root, nonce)
+    if kind not in {'preflight', 'bootstrap', 'install', 'check', 'application'}:
+        raise PolicyError('lnx03-worker-kind-refused')
+    job_name = str(sequence) + '-' + kind
+    path = root / 'jobs' / (job_name + '.json')
+    result_path = root / 'jobs' / (job_name + '-result.json')
+    parent = {'ids': [os.getuid(), os.geteuid(), os.getgid()], 'namespaces': network_ids()}
+    job = {'format': 'lnx03-worker-v1', 'root': str(root), 'nonce': nonce, 'kind': kind,
+           'result': str(result_path), 'helper_sha256': digest(Path(__file__).absolute()),
+           'parent': parent, 'isolation_mode': isolation_mode, 'rootless_primitive': primitive,
+           'authority': authority, 'repo': str(repo), 'source_files_sha256': sources}
+    if isolation_mode == 'supervised_net':
+        lnx03_capability(os.environ, {key: authority[key] for key in LNX03_GRANT_KEYS},
+                         'MDS_LNX03_SUPERVISED_NETNS_GRANT', 'supervised-netns')
+        if not rootless_permission_denied(primitive):
+            raise PolicyError('lnx03-supervised-denial-proof-missing')
+        job['ready'] = str(root / 'jobs' / (job_name + '-ready.json'))
+        job['admission'] = str(root / 'jobs' / (job_name + '-admission.json'))
+    job.update(fields)
+    write_new(root, path, json_bytes(job))
+    command = [str(python), '-I', '-S', '-B', '-X', 'utf8', str(Path(__file__).absolute()),
+               'linux-bootstrap-worker', '--job', str(path), '--job-sha256', digest(path)]
+    if isolation_mode == 'supervised_net':
+        launch = lnx03_supervised_launch(command, root, job_name, job, digest(path))
+    else:
+        trusted_system_binary('/usr/bin/unshare')
+        command = ['/usr/bin/unshare', '--user', '--map-current-user', '--net', '--'] + command
+        launch = lnx03_launch(command, root, job_name, parent['namespaces'])
+    launch.update(kind=kind, isolation_mode=isolation_mode, helper_sha256=job['helper_sha256'], status='FAIL')
+    launch['child_result_available'] = result_path.exists()
+    if (launch.get('parent_namespace_unchanged') is not True or launch.get('timed_out') is True
+            or not launch.get('launcher_started') or not launch.get('termination_confirmed')
+            or isolation_mode == 'supervised_net' and not launch.get('worker_termination_confirmed')
+            or launch.get('launch_failure_code')):
+        raise StageError('lnx03-worker-launch-or-settlement-failed', launch)
+    if not result_path.exists():
+        raise StageError('lnx03-worker-result-missing', launch)
+    outcome = read_json(result_path)
+    required = {'format', 'kind', 'helper_sha256', 'status', 'identity', 'namespace', 'guard',
+                'failure_code', 'negative_probes', 'observations'}
+    if (type(outcome) is not dict or set(outcome) != required
+            or outcome['format'] != 'lnx03-worker-result-v1' or outcome['kind'] != kind
+            or outcome['helper_sha256'] != job['helper_sha256']):
+        raise StageError('lnx03-worker-result-identity-invalid', launch)
+    outcome.update({name: value for name, value in launch.items()
+                    if name not in {'kind', 'helper_sha256', 'status'}})
+    if outcome['status'] != 'PASS' or launch['exit_code'] != 0:
+        raise StageError('lnx03-worker-operation-failed', outcome)
+    validate_native_identity_evidence(outcome['identity'], job['helper_sha256'])
+    validate_namespace_evidence(outcome['namespace'], isolation_mode)
+    if (type(outcome['guard']) is not dict or outcome['guard'].get('unexpected_denials')
+            or outcome['guard'].get('registered_before_third_party') is not True
+            or outcome['negative_probes'].get('pid') != outcome['guard'].get('pid')):
+        raise StageError('lnx03-worker-guard-evidence-invalid', launch)
+    return outcome
+
+
+def lnx03_runner(root, job):
+    repo = real_components(Path(job['repo']), directory=True)
+    if lnx03_source_manifest(repo) != job['source_files_sha256']:
+        raise PolicyError('lnx03-runner-source-changed')
+    regular(Path(sys.executable))
+    command = [sys.executable, '-I', '-S', '-B', '-X', 'utf8', str(repo / 'tools' / 'offline_linux.py'),
+               '--lane', 'linux-bootstrap']
+    ticket = {'schema_version': 'lnx03-runner-ticket-v1', 'root': str(root), 'nonce': job['nonce'],
+              'repo': str(repo), 'parent_pid': os.getpid(), 'source_sha': job['authority']['sha'],
+              'source_files_sha256': job['source_files_sha256'], 'authority': job['authority'],
+              'result': job['tests_result'], 'native_root': job['native_root']}
+    environment = lnx03_clean_environment(root)
+    ticket_path = root / 'jobs' / 'application-ticket.json'
+    write_new(root, ticket_path, json_bytes(ticket))
+    environment['MDS_LNX03_RUN_TICKET'] = str(ticket_path)
+    environment['MDS_LNX03_RUN_TICKET_SHA256'] = digest(ticket_path)
+    child = descriptor = None
+    outcome = {'started': False, 'pid': None, 'pidfd_bound': False, 'exit_code': None,
+               'timed_out': False, 'termination_confirmed': False}
+    try:
+        if GUARD.process is not None:
+            raise PolicyError('lnx03-nested-runner-launch')
+        GUARD.process = tuple(command)
+        child = subprocess.Popen(command, executable=command[0], cwd=str(repo), env=environment,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+        outcome.update(started=True, pid=child.pid)
+        descriptor = os.pidfd_open(child.pid, 0)
+        outcome['pidfd_bound'] = True
+        try:
+            child.wait(timeout=540)
+        except subprocess.TimeoutExpired:
+            outcome['timed_out'] = True
+            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            if not pidfd_exited(descriptor, 5):
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            if pidfd_exited(descriptor, 5):
+                child.wait(timeout=1)
+        outcome['exit_code'] = child.poll()
+        outcome['termination_confirmed'] = child.returncode is not None and pidfd_exited(descriptor, 0)
+    finally:
+        GUARD.process = None
+        if child is not None and child.poll() is None:
+            try:
+                if descriptor is not None:
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    if pidfd_exited(descriptor, 5):
+                        child.wait(timeout=1)
+                else:
+                    child.kill()
+                    child.wait(timeout=5)
+            except BaseException:
+                pass
+            outcome['exit_code'] = child.poll()
+            outcome['termination_confirmed'] = child.returncode is not None
+        if descriptor is not None:
+            os.close(descriptor)
+    tests_path = contained(root, Path(job['tests_result']))
+    if not outcome['termination_confirmed'] or not tests_path.exists():
+        raise PolicyError('lnx03-runner-exit-or-result-incomplete')
+    tests = read_json(tests_path)
+    required = {'schema_version', 'status', 'source_sha', 'collected', 'passed', 'failed',
+                'deselected', 'exit_code', 'native_cases', 'failure_code'}
+    if (type(tests) is not dict or set(tests) != required
+            or tests['schema_version'] != 'lnx03-runner-result-v1'
+            or tests['source_sha'] != job['authority']['sha']
+            or tests['exit_code'] != outcome['exit_code']):
+        raise PolicyError('lnx03-runner-result-identity-invalid')
+    for name in ('collected', 'passed', 'failed', 'deselected'):
+        if type(tests[name]) is not int or tests[name] < 0:
+            raise PolicyError('lnx03-runner-count-invalid')
+    if type(tests['status']) is not str or tests['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}:
+        raise PolicyError('lnx03-runner-status-invalid')
+    if tests['status'] != 'PASS':
+        if type(tests['exit_code']) is not int or tests['exit_code'] == 0:
+            raise PolicyError('lnx03-runner-failed-exit-invalid')
+        lnx03_validate_native_cases(tests['native_cases'], require_complete=False)
+        return {'process': outcome, 'tests': tests}
+    if (tests['exit_code'] != 0 or tests['failed'] != 0
+            or tests['deselected'] != 0 or tests['collected'] <= 0
+            or tests['passed'] != tests['collected'] or not tests['native_cases']):
+        raise PolicyError('lnx03-runner-tests-incomplete')
+    lnx03_validate_native_cases(tests['native_cases'])
+    return {'process': outcome, 'tests': tests}
+
+
+def lnx03_worker(args):
+    flags()
+    path = real_components(Path(args.job).absolute())
+    if digest(path) != args.job_sha256:
+        raise PolicyError('lnx03-worker-job-digest-mismatch')
+    job = read_json(path)
+    if type(job) is not dict:
+        raise PolicyError('lnx03-worker-job-object-required')
+    root = lnx03_owned(Path(job['root']), job['nonce'])
+    if path.parent != root / 'jobs':
+        raise PolicyError('lnx03-worker-job-outside-slot')
+    base_keys = {'format', 'root', 'nonce', 'kind', 'result', 'helper_sha256', 'parent',
+                 'isolation_mode', 'rootless_primitive', 'authority', 'repo', 'source_files_sha256'}
+    kind_keys = {'preflight': set(), 'bootstrap': {'bootstrap_lock'},
+                 'install': {'lock', 'wheelhouse', 'report', 'versions'}, 'check': {'versions'},
+                 'application': {'versions', 'tests_result', 'native_root'}}
+    kind = job.get('kind')
+    if kind not in kind_keys:
+        raise PolicyError('lnx03-worker-kind-refused')
+    keys = base_keys | kind_keys[kind]
+    if job.get('isolation_mode') == 'supervised_net':
+        keys |= {'ready', 'admission'}
+    if (set(job) != keys or job['format'] != 'lnx03-worker-v1'
+            or digest(Path(__file__).absolute()) != job['helper_sha256']):
+        raise PolicyError('lnx03-worker-job-fields-invalid')
+    result_path = contained(root, Path(job['result']))
+    if result_path.parent != root / 'jobs':
+        raise PolicyError('lnx03-worker-result-outside-slot')
+    outcome = {'format': 'lnx03-worker-result-v1', 'kind': kind, 'helper_sha256': job['helper_sha256'],
+               'status': 'FAIL', 'identity': None, 'namespace': None, 'guard': None,
+               'failure_code': None, 'negative_probes': None, 'observations': {}}
+    code = 1
+    try:
+        authority = lnx03_validate_grant(os.environ, job['authority']['sha'], job['authority']['base'])
+        if authority != job['authority']:
+            raise PolicyError('lnx03-worker-authority-mismatch')
+        repo = real_components(Path(job['repo']), directory=True)
+        if lnx03_source_manifest(repo) != job['source_files_sha256']:
+            raise PolicyError('lnx03-worker-source-mismatch')
+        outcome['identity'] = identity()
+        mode = job['isolation_mode']
+        if mode == 'supervised_net':
+            lnx03_capability(os.environ, {key: authority[key] for key in LNX03_GRANT_KEYS},
+                             'MDS_LNX03_SUPERVISED_NETNS_GRANT', 'supervised-netns')
+            if (not rootless_permission_denied(job['rootless_primitive'])
+                    or job['rootless_primitive']['system_binary_sha256'] != trusted_system_binary('/usr/bin/unshare')):
+                raise PolicyError('lnx03-supervised-denial-proof-missing')
+            job['sealed_job_sha256'] = args.job_sha256
+            ready = lnx03_supervised_worker_ready(root, job)
+            outcome['namespace'] = ready['namespace']
+        else:
+            outcome['namespace'] = namespace_proof(job['parent'], mode)
+        if kind == 'preflight':
+            outcome['negative_probes'] = negative_probes()
+        else:
+            pip_identity = pip_load(root, bootstrap=kind == 'bootstrap')
+            if kind != 'application':
+                outcome['observations']['pip'] = pip_identity
+            outcome['negative_probes'] = negative_probes(use_requests=True)
+            if kind == 'bootstrap':
+                outcome['observations']['pip_operation'] = pip_run([
+                    'install', '--ignore-installed', '--no-deps', '--no-index', '--require-hashes',
+                    '--only-binary=:all:', '--no-compile', '--find-links', str(root / 'bootstrap'),
+                    '-r', str(job_file(root, job, 'bootstrap_lock'))])
+            elif kind == 'install':
+                if installed_inventory() != {'pip': PIP_VERSION}:
+                    raise PolicyError('lnx03-install-environment-not-fresh')
+                report_path = contained(root, Path(job['report']))
+                if report_path.exists():
+                    raise PolicyError('lnx03-install-report-not-fresh')
+                outcome['observations']['pip_operation'] = pip_run([
+                    'install', '--only-binary=:all:', '--no-compile', '--require-hashes',
+                    '--no-index', '--find-links', str(job_file(root, job, 'wheelhouse', True)),
+                    '--report', str(report_path), '-r', str(job_file(root, job, 'lock'))])
+            elif kind == 'check':
+                outcome['observations']['pip_operation'] = pip_run(['check'])
+                inventory = installed_inventory()
+                if inventory != dict(job['versions'], pip=PIP_VERSION):
+                    raise PolicyError('lnx03-installed-inventory-mismatch')
+                outcome['observations']['inventory'] = inventory
+                outcome['observations']['synthetic'] = native_smoke(root, 'dev', 'replay')
+            elif kind == 'application':
+                if installed_inventory() != dict(job['versions'], pip=PIP_VERSION):
+                    raise PolicyError('lnx03-application-inventory-mismatch')
+                outcome['observations'] = lnx03_runner(root, job)
+                if outcome['observations']['tests']['status'] != 'PASS':
+                    raise PolicyError('lnx03-application-tests-failed')
+        if GUARD.unexpected:
+            raise PolicyError('lnx03-worker-unexpected-audit-denial')
+        outcome['status'] = 'PASS'
+        code = 0
+    except BaseException as error:
+        if isinstance(error, PipOperationError):
+            outcome['observations']['pip_operation'] = error.operation
+        outcome['failure_code'] = public_failure(error)['failure_code']
+    outcome['guard'] = GUARD.evidence()
+    write_new(root, result_path, json_bytes(outcome))
+    return code
+
+
+def lnx03_pipeline(args):
+    # A separate authority family is checked before claim, directories or traffic.
+    authority = lnx03_validate_grant(os.environ, args.expected_sha, args.expected_base)
+    flags()
+    repo = real_components(Path(args.repo_root).absolute(), directory=True)
+    native_identity = identity()
+    if sys.prefix != sys.base_prefix:
+        raise PolicyError('lnx03-controller-requires-base-interpreter')
+    observed_main = git_read(repo, ['rev-parse', 'refs/remotes/origin/main']).stdout.decode('ascii').strip()
+    lnx03_source_identity(repo, args.expected_sha, args.expected_base, observed_main=observed_main)
+    sources = lnx03_source_manifest(repo)
+    legacy_sources = source_manifest(repo, 'verify')
+    if sources['.github/lnx02/verify_env.py'] != native_identity['helper_sha256']:
+        raise PolicyError('lnx03-executing-helper-not-source')
+    temp_root = real_components(Path(os.environ['RUNNER_TEMP']).absolute(), directory=True)
+    lnx03_claim(lnx03_claim_root(temp_root, authority), authority)
+    output = prepare_output(args.output)
+    report = {
+        'schema_version': 'lnx03-linux-bootstrap-v1', 'consumer': 'linux-bootstrap',
+        'scope': 'APPLICATION_ADMISSION', 'status': 'INCOMPLETE',
+        'failure_code': 'lnx03-native-not-executed',
+        'source': {'sha': args.expected_sha, 'base': args.expected_base,
+                   'helper_sha256': native_identity['helper_sha256'], 'files_sha256': sources},
+        'authority': authority,
+        'environment': {'identity': native_identity, 'fingerprint_before': None,
+                        'fingerprint_after': None, 'inventory': None, 'pip_check_exit': None},
+        'setup': {'authorized': True, 'completed': False, 'wheel_count': 0, 'stages': []},
+        'isolation': {'mode': None, 'primitive': None, 'preflight': None},
+        'cases': [], 'cleanup': {'state': 'NOT_CREATED', 'owned_deleted': False},
+    }
+    root = nonce = None
+    sequence = 0
+    app_attempted = app_validated = False
+    try:
+        expected = expected_profiles(repo)['dev']
+        source_lock = repo / 'requirements' / LOCK_NAMES['dev']
+        lock_payload = source_lock.read_bytes()
+        records = parse_lock(lock_payload.decode('utf-8'))
+        validate_versions(records, expected)
+        if len(records) != 82 or 'pip' in records:
+            raise PolicyError('lnx03-dev-lock-closure-invalid')
+        root, nonce = lnx03_new_scratch(temp_root)
+        try:
+            mode, primitive = lnx03_choose_isolation(root, authority, native_identity['helper_sha256'])
+        except StageError as error:
+            report['isolation']['primitive'] = error.outcome
+            raise
+        report['isolation'].update(mode=mode, primitive=primitive)
+
+        def stage(python, kind, fields=None):
+            nonlocal sequence
+            sequence += 1
+            try:
+                outcome = lnx03_worker_launch(root, nonce, python, kind, dict(fields or {}), sequence,
+                                              authority, repo, sources, mode, primitive)
+            except StageError as error:
+                report['setup']['stages'].append(error.outcome)
+                raise
+            report['setup']['stages'].append(outcome)
+            return outcome
+
+        report['isolation']['preflight'] = stage(sys.executable, 'preflight')
+        # First package network operation: exact new SETUP grant was already checked.
+        pip_record = public_wheel(release_metadata('pip', PIP_VERSION), 'pip', PIP_VERSION,
+                                  sha256=PIP_SHA256, filename=PIP_FILENAME)
+        fetch_wheel(root, root / 'bootstrap', pip_record)
+        bootstrap_lock = root / 'bootstrap' / 'pip.lock'
+        write_new(root, bootstrap_lock,
+                  ('pip==' + PIP_VERSION + ' --hash=sha256:' + PIP_SHA256 + '\n').encode('ascii'))
+        selected = {}
+        for name, (version, sha256) in records.items():
+            record = public_wheel(release_metadata(name, version), name, version, sha256=sha256)
+            fetch_wheel(root, root / 'wheelhouse', record)
+            selected[record['filename']] = record['sha256']
+        if {path.name: digest(path) for path in (root / 'wheelhouse').iterdir()} != selected:
+            raise PolicyError('lnx03-wheelhouse-not-closed')
+        report['setup']['wheel_count'] = len(selected)
+        lock = root / 'locks' / LOCK_NAMES['dev']
+        write_new(root, lock, lock_payload)
+        environment = root / 'dev-replay'
+        if environment.exists():
+            raise PolicyError('lnx03-replay-environment-not-fresh')
+        venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
+        alias = environment / 'lib64'
+        if alias.is_symlink():
+            if os.readlink(alias) != 'lib' or not (environment / 'lib').is_dir():
+                raise PolicyError('lnx03-venv-directory-alias-invalid')
+            alias.unlink()
+        elif alias.exists():
+            raise PolicyError('lnx03-venv-lib64-invalid')
+        python = environment / 'bin' / 'python3.14'
+        if digest(python) != native_identity['python_executable_sha256']:
+            raise PolicyError('lnx03-replay-python-digest-mismatch')
+        stage(python, 'bootstrap', {'bootstrap_lock': str(bootstrap_lock)})
+        install_report = root / 'jobs' / 'dev-install.json'
+        stage(python, 'install', {'lock': str(lock), 'wheelhouse': str(root / 'wheelhouse'),
+                                 'report': str(install_report), 'versions': expected})
+        installed, installed_wheels = parse_report(read_json(install_report), expected, local=True)
+        if installed != records or {item['filename'] for item in installed_wheels.values()} != set(selected):
+            raise PolicyError('lnx03-install-report-lock-mismatch')
+        check = stage(python, 'check', {'versions': expected})
+        report['environment']['inventory'] = check['observations']['inventory']
+        report['environment']['pip_check_exit'] = check['observations']['pip_operation']['exit_code']
+        report['setup']['completed'] = True
+        before = lnx03_fingerprint(environment)
+        wheel_fingerprint = lnx03_fingerprint(root / 'wheelhouse')
+        report['environment']['fingerprint_before'] = before
+        app_attempted = True
+        application = stage(python, 'application', {'versions': expected,
+                            'tests_result': str(root / 'jobs' / 'application-tests.json'),
+                            'native_root': str(root / 'fixtures' / 'native')})
+        tests = application['observations']['tests']
+        lnx03_validate_native_cases(tests['native_cases'])
+        report['cases'] = tests['native_cases']
+        app_validated = True
+        report['environment']['fingerprint_after'] = lnx03_fingerprint(environment)
+        if (report['environment']['fingerprint_after'] != before
+                or lnx03_fingerprint(root / 'wheelhouse') != wheel_fingerprint):
+            raise PolicyError('lnx03-offline-environment-mutated')
+        lnx03_source_identity(repo, args.expected_sha, args.expected_base)
+        if lnx03_source_manifest(repo) != sources or source_manifest(repo, 'verify') != legacy_sources:
+            raise PolicyError('lnx03-source-mutated')
+        if GUARD.unexpected:
+            raise PolicyError('lnx03-controller-unexpected-audit-denial')
+        report.update(status='PASS', failure_code=None)
+    except BaseException as error:
+        # Only a source-known code crosses the evidence boundary, never an exception payload.
+        if isinstance(error, StageError):
+            observations = error.outcome.get('observations')
+            if type(observations) is dict and type(observations.get('tests')) is dict:
+                actual_cases = observations['tests'].get('native_cases')
+                try:
+                    lnx03_validate_native_cases(actual_cases, require_complete=False)
+                    report['cases'] = actual_cases
+                except PolicyError:
+                    pass
+        report['failure_code'] = public_failure(error)['failure_code'].lower()
+        report['status'] = 'INCOMPLETE' if not app_validated else 'FAIL'
+    finally:
+        if root is not None:
+            settled = all(stage.get('termination_confirmed') is True
+                          and (stage.get('isolation_mode') != 'supervised_net'
+                               or stage.get('worker_termination_confirmed') is True)
+                          for stage in report['setup']['stages'])
+            primitive_outcome = report['isolation']['primitive']
+            if (type(primitive_outcome) is dict and primitive_outcome.get('launcher_started')
+                    and primitive_outcome.get('termination_confirmed') is not True):
+                settled = False
+            if app_attempted and not app_validated:
+                # Emergency inventory can settle registered grandchildren, but cannot
+                # prove an unregistered birth never happened. Preserve scratch either way.
+                try:
+                    if lnx03_source_manifest(repo) != sources:
+                        raise PolicyError('lnx03-cleanup-source-changed')
+                    module = runpy.run_path(str(repo / 'tools' / 'offline_guard_linux.py'),
+                                            run_name='lnx03_fixed_emergency_cleanup')
+                    emergency = module['settle_native_root'](root / 'fixtures' / 'native')
+                    if report['setup']['stages']:
+                        report['setup']['stages'][-1]['registered_fixture_cleanup'] = emergency
+                except BaseException:
+                    pass
+                settled = False
+            if settled:
+                try:
+                    lnx03_owned(root, nonce)
+                    cleanup(root, nonce)
+                    report['cleanup'] = {'state': 'SETTLED', 'owned_deleted': True}
+                except BaseException:
+                    report['cleanup'] = {'state': 'INCOMPLETE', 'owned_deleted': False}
+                    report.update(status='INCOMPLETE', failure_code='lnx03-cleanup-incomplete')
+            else:
+                report['cleanup'] = {'state': 'UNSETTLED', 'owned_deleted': False}
+                report.update(status='INCOMPLETE', failure_code='lnx03-settlement-not-proven')
+        report['setup']['stages'] = [lnx03_project_stage(stage) for stage in report['setup']['stages']]
+        if report['isolation']['primitive'] is not None:
+            report['isolation']['primitive'] = lnx03_project_stage(report['isolation']['primitive'], primitive=True)
+        if report['isolation']['preflight'] is not None:
+            report['isolation']['preflight'] = lnx03_project_stage(report['isolation']['preflight'])
+        lnx03_validate_result(report)
+        write_new(output, output / 'result.json', json_bytes(report))
+        write_new(output, output / 'manifest.json', json_bytes({'result.json': digest(output / 'result.json')}))
+    return report, 0 if report['status'] == 'PASS' else 1
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         raise PolicyError("invalid-cli")
@@ -3508,6 +4957,18 @@ def main():
     fixture = commands.add_parser("diagnostic-fixture", help=argparse.SUPPRESS)
     fixture.add_argument("--job", required=True)
     fixture.add_argument("--job-sha256", required=True)
+    application = commands.add_parser('linux-bootstrap')
+    application.add_argument('--repo-root', required=True)
+    application.add_argument('--output', required=True)
+    application.add_argument('--expected-sha', required=True)
+    application.add_argument('--expected-base', required=True)
+    application_worker = commands.add_parser('linux-bootstrap-worker', help=argparse.SUPPRESS)
+    application_worker.add_argument('--job', required=True)
+    application_worker.add_argument('--job-sha256', required=True)
+    application_audit = commands.add_parser('audit-linux-bootstrap')
+    application_audit.add_argument('--output', required=True)
+    application_audit.add_argument('--expected-sha', required=True)
+    application_audit.add_argument('--expected-base', required=True)
     try:
         args = parser.parse_args()
         if args.command == "identity":
@@ -3527,6 +4988,14 @@ def main():
             return worker(args)
         elif args.command == "diagnostic-fixture":
             return diagnostic_fixture(args)
+        elif args.command == 'linux-bootstrap':
+            report, code = lnx03_pipeline(args)
+            result = {'status': report['status'], 'scope': report['scope'],
+                      'source_sha': report['source']['sha'], 'failure_code': report['failure_code']}
+        elif args.command == 'linux-bootstrap-worker':
+            return lnx03_worker(args)
+        elif args.command == 'audit-linux-bootstrap':
+            result, code = lnx03_audit(args), 0
         else:
             result, code = audit_output(args), 0
     except SystemExit as error:
