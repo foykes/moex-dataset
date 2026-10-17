@@ -461,17 +461,29 @@ def _raw_groups(inventory, findings, states, selected, metadata, evidence):
     return groups, blocked
 
 
+def _received_count(counts, measured):
+    received = counts.get('rows_received') if isinstance(counts, dict) else None
+    if type(received) is not int:
+        return 'NOT_VERIFIED', 'SOURCE_ROWS_RECEIVED_NOT_AVAILABLE'
+    if received < 0 or received != measured:
+        return 'INCOMPLETE', 'SOURCE_ROWS_RECEIVED_MISMATCH'
+    return 'COMPLETE', 'SOURCE_ROWS_RECEIVED_MATCHES'
+
+
 def _coverage(metadata, evidence, records, inventory):
     membership = evidence.get('source_membership')
     checks = []
-    if not isinstance(membership, list):
-        return {'status': 'NOT_VERIFIED', 'checks': [
-            _check('SOURCE_MEMBERSHIP', 'NOT_VERIFIED', 'INDEPENDENT_MEMBERSHIP_NOT_AVAILABLE')]}
     by_record = {}
-    for item in membership:
+    for item in membership if isinstance(membership, list) else []:
         by_record.setdefault(item.get('identity_record_id'), []).append(item)
     outcomes = []
+    verified_received = []
     for identifier, record in records.items():
+        received = [item['row'].get('raw_key', {}) for item in inventory
+                    if item['locator'][0] == identifier]
+        count_status, count_reason = _received_count(record.get('counts'), len(received))
+        if count_status == 'COMPLETE':
+            verified_received.append(record['counts']['rows_received'])
         proof = by_record.get(identifier, [])
         expected = record.get('coverage_evidence', {})
         status, reason = 'COMPLETE', 'INDEPENDENT_SOURCE_MEMBERSHIP_MATCHES'
@@ -484,8 +496,6 @@ def _coverage(metadata, evidence, records, inventory):
             if not isinstance(keys, list):
                 status, reason = 'NOT_VERIFIED', 'INDEPENDENT_MEMBERSHIP_NOT_AVAILABLE'
             else:
-                received = [item['row'].get('raw_key', {}) for item in inventory
-                            if item['locator'][0] == identifier]
                 expected_keys = Counter(tuple(_frozen(value) for value in _key_values(key)) for key in keys)
                 received_keys = Counter(tuple(_frozen(value) for value in _key_values(key)) for key in received)
                 if (not _same(proof.get('identity'), record.get('identity'))
@@ -496,8 +506,22 @@ def _coverage(metadata, evidence, records, inventory):
                         or expected.get('expected_rows') != len(keys)
                         or expected_keys != received_keys):
                     status, reason = 'INCOMPLETE', 'EXPECTED_SOURCE_MEMBERSHIP_MISMATCH'
+        # Неизвестное измерение не отменяет уже установленное противоречие.
+        if (status != 'INCOMPLETE' and count_status == 'INCOMPLETE'
+                or status == 'COMPLETE' and count_status == 'NOT_VERIFIED'):
+            status, reason = count_status, count_reason
         outcomes.append(status)
         checks.append({'identity_record_id': identifier, 'status': status, 'reason': reason})
+    # Проверяем заявленный raw total, не выводим его из candidate/accepted rows.
+    total_status, total_reason = _received_count(metadata.get('counts'), len(inventory))
+    if total_status == 'COMPLETE':
+        if not records or len(verified_received) != len(records):
+            total_status, total_reason = 'NOT_VERIFIED', 'RECORD_SOURCE_ROWS_RECEIVED_NOT_VERIFIED'
+        elif metadata['counts']['rows_received'] != sum(verified_received):
+            total_status, total_reason = 'INCOMPLETE', 'SOURCE_ROWS_RECEIVED_MISMATCH'
+    outcomes.append(total_status)
+    checks.append({'identity_record_id': None, 'status': total_status,
+                   'reason': 'AGGREGATE_' + total_reason})
     if any(identifier not in records for identifier in by_record):
         outcomes.append('INCOMPLETE')
         checks.append({'identity_record_id': None, 'status': 'INCOMPLETE', 'reason': 'FOREIGN_MEMBERSHIP_RECORD'})

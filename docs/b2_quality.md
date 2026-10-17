@@ -176,6 +176,27 @@ required temporal evidence still prevents verified admission.
 | `coverage_assessment` | Independent expected source-key membership, never inferred from accepted counts, MIN/MAX or a clean projection. Unknown membership is NOT_VERIFIED; a known missing expected key is INCOMPLETE. |
 | Source verification | Fixture/archive-fragment integrity is separate from original source-byte authenticity, which remains NOT_VERIFIED where those bytes are absent. |
 
+Coverage also reconciles the existing acquisition `rows_received` declarations:
+
+| Declaration | Required comparison |
+| --- | --- |
+| Each identity record's `counts.rows_received` | Matches the measured retained raw occurrences for that scoped identity/interval and the independently evidenced expected membership count. |
+| Dataset `metadata.counts.rows_received` | Matches the measured total scoped raw corpus and the record-level acquisition counts; an aggregate match cannot hide compensating record-level errors. |
+
+Counts use strict integers. Missing/null/unsupported count values or containers
+are NOT_VERIFIED; a known integer mismatch or negative count is INCOMPLETE.
+Known independent membership or count contradictions take precedence over
+unknown evidence: INCOMPLETE wins over NOT_VERIFIED. No early absence of one
+proof may hide a separately established contradiction.
+
+The helper does not fill, infer or repair these declarations from candidate
+length, accepted rows, quarantine counts or a clean projection. It does not
+infer pages, instrument completeness or missing source membership. In E19,
+received raw rows remain four while the candidate has three; after quarantine,
+acquisition counts still refer to all received variants. Regressions vary
+record/aggregate declarations independently of retained rows, keys and values,
+including compensating record errors, unknown counts and contradiction priority.
+
 `accepted_rows` measures verified eligible candidate rows; `quarantined_rows`
 measures candidate rows with established quarantine reasons. These counts do
 not silently include all unselected raw occurrences. Missing durable quarantine

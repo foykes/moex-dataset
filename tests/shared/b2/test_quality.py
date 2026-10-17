@@ -889,6 +889,109 @@ def test_coverage_is_independent_of_row_acceptance(candidate, cases, membership)
     assert case['metadata']['coverage_status'] == 'COMPLETE'
 
 
+def _assert_e19_source_count_gate(candidate, cases, case, expected, *, membership_may_differ=False):
+    # Counts differ, and explicit priority cases may change membership evidence.
+    # Captured raw4, original candidate3 and frozen producer selection stay literal.
+    if membership_may_differ:
+        actual_evidence = {key: value for key, value in case['retained_evidence'].items()
+                           if key != 'source_membership'}
+        fixed_evidence = {key: value for key, value in cases['e19']['retained_evidence'].items()
+                          if key != 'source_membership'}
+        assert actual_evidence == fixed_evidence
+    else:
+        assert case['retained_evidence'] == cases['e19']['retained_evidence']
+    assert case['metadata']['row_bindings'] == cases['e19']['metadata']['row_bindings']
+    before = copy.deepcopy(case)
+    receipts_before = json.dumps([before['metadata']['counts']] +
+        [record['counts'] for record in before['metadata']['identity_records']], sort_keys=True)
+    report = _assess(candidate, case)
+    assert report['raw_assessment']['rows_checked'] == 4
+    assert report['raw_assessment']['selected_raw_rows'] == 3
+    assert report['raw_assessment']['unselected_raw_rows'] == 1
+    assert report['raw_assessment']['status'] == 'PASS'
+    assert report['quality_result']['rows_checked'] == 3
+    assert report['coverage_assessment']['status'] == expected
+    assert case['metadata']['coverage_status'] == 'COMPLETE'
+    if expected == 'COMPLETE':
+        assert report['eligibility']['status'] == 'PASS'
+        assert report['quality_result']['accepted_rows'] == 3
+    else:
+        status = 'FAIL' if expected == 'INCOMPLETE' else 'NOT_VERIFIED'
+        assert report['eligibility']['status'] == status
+        assert all(group['candidate_ordinals'] == [] for group in report['eligibility']['groups'])
+        assert report['quality_result']['status'] == status
+        assert report['quality_result']['accepted_rows'] is None
+    assert case == before
+    receipts_after = json.dumps([case['metadata']['counts']] +
+        [record['counts'] for record in case['metadata']['identity_records']], sort_keys=True)
+    assert receipts_after == receipts_before
+
+
+def test_e19_received_counts_describe_raw_four_not_candidate_three(candidate, cases):
+    case = copy.deepcopy(cases['e19'])
+    assert case['metadata']['counts']['rows_received'] == 4
+    assert case['metadata']['counts']['rows_accepted'] == 3
+    assert [record['counts']['rows_received'] for record in case['metadata']['identity_records']] == [2, 2]
+    _assert_e19_source_count_gate(candidate, cases, case, 'COMPLETE')
+
+
+@pytest.mark.parametrize('scope,received', [('record', 0), ('record', 1), ('record', 3), ('record', -1),
+                                          ('aggregate', 0), ('aggregate', 3), ('aggregate', 5), ('aggregate', -1)])
+def test_known_received_count_disagreement_cannot_be_replaced_by_inventory_length(candidate, cases, scope, received):
+    case = copy.deepcopy(cases['e19'])
+    counts = case['metadata']['counts'] if scope == 'aggregate' else case['metadata']['identity_records'][0]['counts']
+    counts['rows_received'] = received
+    _assert_e19_source_count_gate(candidate, cases, case, 'INCOMPLETE')
+
+
+@pytest.mark.parametrize('scope', ['record', 'aggregate'])
+@pytest.mark.parametrize('representation', ['absent', 'null', 'boolean_true', 'boolean_false', 'float', 'string'])
+def test_unmeasured_or_unsupported_received_count_is_not_inferred_from_other_populations(candidate, cases, scope, representation):
+    case = copy.deepcopy(cases['e19'])
+    counts = case['metadata']['counts'] if scope == 'aggregate' else case['metadata']['identity_records'][0]['counts']
+    original = counts['rows_received']
+    if representation == 'absent':
+        counts.pop('rows_received')
+    else:
+        counts['rows_received'] = {'null': None, 'boolean_true': True, 'boolean_false': False,
+                                  'float': float(original), 'string': str(original)}[representation]
+    _assert_e19_source_count_gate(candidate, cases, case, 'NOT_VERIFIED')
+
+
+@pytest.mark.parametrize('received', [(1, 3), (3, 1)])
+def test_per_record_count_errors_do_not_cancel_when_their_sum_matches_raw_total(candidate, cases, received):
+    case = copy.deepcopy(cases['e19'])
+    for record, observed in zip(case['metadata']['identity_records'], received):
+        record['counts']['rows_received'] = observed
+    assert sum(received) == case['metadata']['counts']['rows_received'] == 4
+    _assert_e19_source_count_gate(candidate, cases, case, 'INCOMPLETE')
+
+
+def test_known_per_record_count_contradiction_wins_over_unknown_aggregate_count(candidate, cases):
+    case = copy.deepcopy(cases['e19'])
+    case['metadata']['identity_records'][0]['counts']['rows_received'] = 1
+    case['metadata']['counts']['rows_received'] = None
+    _assert_e19_source_count_gate(candidate, cases, case, 'INCOMPLETE')
+
+
+@pytest.mark.parametrize('priority_case', ['known_count_without_membership',
+                                        'known_membership_with_unknown_count',
+                                        'known_aggregate_with_unknown_record'])
+def test_coverage_count_priority_preserves_known_contradictions_when_other_evidence_is_unknown(candidate, cases, priority_case):
+    case = copy.deepcopy(cases['e19'])
+    if priority_case == 'known_count_without_membership':
+        case['metadata']['identity_records'][0]['counts']['rows_received'] = 1
+        case['retained_evidence'].pop('source_membership')
+    elif priority_case == 'known_membership_with_unknown_count':
+        case['metadata']['identity_records'][0]['counts']['rows_received'] = None
+        case['retained_evidence']['source_membership'][0]['expected_raw_keys'][0]['begin'] = '2024-01-09 10:00:00'
+    else:
+        case['metadata']['identity_records'][0]['counts']['rows_received'] = None
+        case['metadata']['counts']['rows_received'] = 3
+    _assert_e19_source_count_gate(candidate, cases, case, 'INCOMPLETE',
+        membership_may_differ=priority_case != 'known_aggregate_with_unknown_record')
+
+
 def _wilder(closes, period=14):
     values = np.asarray(closes, dtype=float)
     expected = np.full(len(values), np.nan)
