@@ -56,6 +56,13 @@ Linux-admission work does not establish production containment or source quality
 Exact candidate/tested identities belong in the implementation handoff; an old
 merge CI result is not a check of this slice.
 
+The review-fix preflight observed main
+`e8fb38c7151fe53ef58d8baaaaaf14ef6be938f2`: PR #108 adds six disjoint B2 paths.
+The source and characterization dependencies are unchanged. The existing
+feature branch retains its original base; compatible drift does not require a
+rebase. Actual main, ancestry and path compatibility are rechecked before
+integration.
+
 | Source | Frozen blob |
 |---|---|
 | Active `dividends.py` | `e66e1effa4d113518d1ef99180176562f42e65d8` |
@@ -128,8 +135,10 @@ Failed observations remain failures, rather than being weakened to uncertainty.
 
 The standard JSON envelope identifies `mds.c2.release_policy_cases`, version 1,
 policy `C2-03C-01/BLOCK_V1`, origin SYNTHETIC_ONLY, mandatory checks, closed export
-profiles and explicit cases. Each case has an ID, scenario mode, complete input
-and independently authored `expected: {contract_error, result}`. Contract-error
+profiles, `selection_encoding=MDS_SYNTHETIC_JSON_V1`, independently authored
+`retained_selections` and explicit cases. Each
+case has an ID, scenario mode, `retained_selection_id`, complete input and
+independently authored `expected: {contract_error, result}`. Contract-error
 cases require `result=null`; evaluated cases have `contract_error=null`.
 Unknown/missing keys, duplicate JSON
 keys/IDs, NaN/Infinity constants, invalid types/enums and dangling non-null refs
@@ -169,11 +178,51 @@ Inputs separately retain collection/instrument scope, explicit coverage
 Membership proof is distinct from the ordinary coverage/source status evidence;
 matching received and expected lists without independent proof is insufficient.
 Quality retains `rows_checked`, `accepted_rows`, `quarantined_rows` and nominal
-assessment/decision facts. Inputs also retain evidence, canonical ordered schema
-and row bindings, required export records, logging/supervision and full safe
+assessment/decision facts. Inputs also retain evidence, canonical ordered schema,
+literal five-cell rows and row bindings, required export records,
+logging/supervision and full safe
 errors with an explicit primary reference. Expected decisions are not inputs to
 the reducer. This is a pure test-local evaluator, not an importable production
 contract or a replacement implementation of F0 helpers.
+
+### Independent retained selection
+
+Each retained selection declares its context and candidate release identity,
+ordered source locators and literal rows in the five public column positions.
+The three selections contain zero, one and two rows. Cells are standard JSON
+primitives, with finite numbers and UTF-8-encodable strings, not values recovered
+from a digest. The
+manifest loader freezes this independently authored basis before any scenario
+input is copied or mutated. The case-level `retained_selection_id` remains
+outside mutable `input`; the evaluator receives the selected frozen basis
+separately. The immutable registry uses a read-only mapping of tuples. It must
+not reconstruct trusted rows or expected lineage from the candidate being checked.
+
+Canonical checks compare actual candidate rows and both binding arrays with
+that retained basis. They also recompute deterministic, domain-tagged JSON-v1
+SHA-256 digests for each row, ordered content and ordered bindings, using the
+following encoding. For each digest, serialize `[tag, payload]` with Python
+`json.dumps(..., ensure_ascii=False, allow_nan=False, separators=(',', ':'))`,
+encode the result as UTF-8 and take its SHA-256 hexadecimal digest.
+
+| Digest | Tag | Payload |
+|---|---|---|
+| Row | `mds.c2.synthetic-row/v1` | `[COLUMNS, row]` |
+| Ordered content | `mds.c2.synthetic-content/v1` | `[COLUMNS, rows]` |
+| Ordered bindings | `mds.c2.synthetic-bindings/v1` | `[[response_id, row_ordinal, row_fingerprint], ...]` |
+
+`COLUMNS` is the fixed ordered five-column list. Declared digest strings alone do not
+prove content. A common-mode mutation of both caller binding arrays, changed
+row content, forged digest or stale digest cannot justify PASS. Context and
+candidate identity must also match the selection. Identical rows keep distinct
+source ordinals and positions; this comparison performs no deduplication.
+
+The original placeholder digests made from repeated `1`, `2` and `4` characters
+are replaced with independently calculated synthetic row/content/binding
+digests. The retained rows, digest inputs and expected decisions are authored
+independently of the evaluator; no golden generator updates its outputs. These
+literal synthetic rows neither add a production column nor establish real MOEX
+lineage, official semantics or capture of raw source evidence.
 
 `DIVIDEND_V1` requires CSV and XLSX. `SYNTHETIC_GOOGLE_CAPACITY_V1` adds an injected
 hypothetical Google obligation solely to test capacity policy. Required export
@@ -206,11 +255,13 @@ cases, not the full F0 per-target shape or a deployed interface.
 Expected outputs are fixed independently: no automatic golden update or expected
 generation from the reducer. The fixture and executable validator define exact
 field spellings; this prose does not introduce a second runtime schema.
-The 52 independently authored oracles cover obligation-specific proof, count consistency,
-artifact contradictions, independent previous quality/freshness and mixed
-generation cases, including wrong artifact/target proof and conclusive mixed
-content without mutation. This inventory is separate from the 49 V2 source
-characterization cases and is not a claim of executed tests.
+The original 52 scenario IDs and 106 test nodes are retained. Seven additional
+fixture scenarios bring the authored scenario inventory to 59. Targeted tests
+cover the review counterexamples, row/content/digest drift and retry history,
+alongside obligation-specific proof, count consistency, artifact contradictions,
+independent previous quality/freshness and mixed generations. Exact collected
+and executed inventories belong in the clean-HEAD handoff. This inventory is
+separate from the 49 V2 source characterization cases.
 
 ## Reduction rules and counterexamples
 
@@ -231,6 +282,10 @@ VALID_EMPTY denotes successful empty collection; coverage remains independent.
 | Valid empty versus source/missing-block failure | Separate collection facts; neither permits the required nonempty release. |
 | 2111/zero/tiny/negative/unknown currency | Preserve values; source uncertainty is not a correction rule. |
 | Same-date/identical rows or different currencies | Preserve ordered row bindings and duplicates. |
+| Both mutable binding arrays agree after unapproved lineage drift | CANONICAL_BINDINGS FAIL against the independent frozen selection. |
+| Changed row content or forged/stale canonical fingerprint | No canonical PASS from a string-shaped digest; compare retained rows and recomputed digests. |
+| Nonfinal retry history followed by fully proved successful stages | Retain retry history and per-export references; terminal primary null; CURRENT_VERIFIED remains possible. |
+| Unresolved final mandatory failure | BLOCKED / 1; retained final failure and terminal primary ID. |
 | Previous matching readback, quality UNVERIFIED, freshness UNKNOWN | PRESERVED_VERIFIED content, unchanged quality/freshness; not eligible verified fallback. |
 | Mutation timeout, later conclusive previous readback | BLOCKED / 1; previous content known; timeout and primary error retained. |
 | Conclusively different required artifact/target identities | PARTIAL_REMOTE / 1, even without mutation in this attempt; compare release/snapshot/content identity, not labels alone. |
@@ -242,9 +297,11 @@ With `terminal=false`, a started mutation gives PUBLISHING with exit null;
 otherwise a pending candidate is CANDIDATE. At terminal completion unresolved
 mutated content takes precedence, then known mixed generations independently of
 whether this attempt mutated anything, then mandatory
-blockers/missing stages/failed attempts. CURRENT_VERIFIED/0 requires every
+blockers/missing stages/final failed attempts. CURRENT_VERIFIED/0 requires every
 mandatory gate, verified artifact and candidate readback at every required target.
-Known candidate content after a failed mandatory attempt does not erase failure.
+Known candidate content after a final failed mandatory attempt does not erase
+failure. A recovered nonfinal retry is diagnostic history, not a failed terminal
+mandatory stage.
 Mutation contrary to a blocked candidate remains a recorded policy violation.
 Aggregate artifact status remains NOT_RUN if any required artifact was not run,
 unless a demonstrated FAILED artifact takes precedence. Per-export observations
@@ -289,6 +346,25 @@ Safe errors retain the full common shape, closed codes, explicit primary ID and
 secondary diagnostics. They must not echo raw source strings/bodies, arbitrary
 repr, credentials, private paths or environment dumps. Diagnostic failure cannot
 replace the primary exception or manufacture successful terminal status.
+
+Error history and terminal failure are separate. A `retryable=true, final=false`
+attempt may remain in ordered input history, retained error IDs and the relevant
+export's references after successful recovery. It does not itself block a
+fully evidenced terminal success. `primary_error_id` is null when no terminal
+failure remains; a non-null primary must name a final error. Any unresolved
+final mandatory error still blocks success. A secondary DIAGNOSTIC_FAILURE may
+not replace an existing substantive final failure as the primary error. The
+primary is the first substantive final error in ordered history, or the first
+final diagnostic error when no substantive final error exists. No error record
+is deleted to make a release succeed.
+
+The independent CODE_REVIEW_CHANGES against
+`edffb173210725c5399e73ba03e9ca64ba9d1083` found common-mode binding drift and
+recovered-retry rejection. Meaningful assertions on that evaluator produced
+two failures and one passing unresolved-final counterexample before the fixes.
+The revised evaluator must pass focused regressions and then all clean-HEAD
+gates below; prior-HEAD evidence is retained separately. PR #109 stays draft
+for a second independent CODE_REVIEW. Runtime integration remains NEEDS_DECISION.
 
 Acceptance evidence is recorded separately for the actual clean candidate SHA:
 guarded F3 collection/execution and new node inventory, F2, F-LOG, all ten active

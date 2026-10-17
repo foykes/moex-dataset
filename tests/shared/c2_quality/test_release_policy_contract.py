@@ -2,9 +2,12 @@
 
 import copy
 from datetime import datetime
+import hashlib
 import json
+import math
 from pathlib import Path
 import re
+from types import MappingProxyType
 
 import pytest
 
@@ -17,7 +20,8 @@ PROFILES = {'DIVIDEND_V1': ['CSV', 'XLSX'],
             'SYNTHETIC_GOOGLE_CAPACITY_V1': ['CSV', 'XLSX', 'GOOGLE']}
 FORMATS = {'CSV': 'csv', 'XLSX': 'xlsx', 'GOOGLE': 'google_sheets'}
 COLUMNS = ['ISIN', 'TRADE_CODE', 'dt', 'value', 'currency']
-CONTEXT = {'run_id', 'snapshot_id', 'dataset_id', 'as_of'}
+CONTEXT_FIELDS = ('run_id', 'snapshot_id', 'dataset_id', 'as_of')
+CONTEXT = set(CONTEXT_FIELDS)
 STAGE_KEYS = {'context', 'status', 'evidence_ref', 'reason'}
 COLLECTION = {'NOT_RUN', 'COMPLETE', 'VALID_EMPTY', 'NOT_AVAILABLE_APPROVED_SOURCE',
               'INCOMPLETE', 'FAILED'}
@@ -36,7 +40,8 @@ CONTRACT_CODES = {'SCHEMA', 'ENUM', 'SAFE_ALIAS', 'COUNT', 'CONTEXT', 'FINGERPRI
                   'CHECK_INVENTORY', 'QUALITY_STATE', 'EVIDENCE_INVENTORY', 'EXPORT_INVENTORY',
                   'CAPACITY_PROFILE', 'PUBLICATION_STATE', 'PREVIOUS_STATE', 'ERROR_INVENTORY',
                   'REFERENCE', 'PRIMARY_ERROR', 'REDACTION', 'NULL_REASONS', 'MANIFEST',
-                  'CASE_INVENTORY', 'JSON_DUPLICATE_KEY', 'JSON_NONSTANDARD_CONSTANT', 'JSON_SYNTAX'}
+                  'CASE_INVENTORY', 'JSON_DUPLICATE_KEY', 'JSON_NONSTANDARD_CONSTANT', 'JSON_SYNTAX',
+                  'CANONICAL_ROWS', 'SELECTION_INVENTORY'}
 NULLABLE_ERROR = {'run_id', 'snapshot_id', 'dataset_id', 'instrument', 'interval', 'page',
                   'file', 'artifact_id', 'target_id', 'endpoint', 'attempt', 'exception_type'}
 SAFE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z')
@@ -127,6 +132,78 @@ def _pairs(pairs):
         _require(pair['row_fingerprint'] is not None, 'FINGERPRINT')
     identities = [(pair['response_id'], pair['row_ordinal']) for pair in pairs]
     _require(len(identities) == len(set(identities)), 'BINDINGS')
+
+
+def _rows(rows):
+    _require(type(rows) is list, 'CANONICAL_ROWS')
+    for row in rows:
+        _require(type(row) is list and len(row) == len(COLUMNS), 'CANONICAL_ROWS')
+        for cell in row:
+            _require(type(cell) in {str, int, float, bool, type(None)}, 'CANONICAL_ROWS')
+            _require(type(cell) is not float or math.isfinite(cell), 'CANONICAL_ROWS')
+            if type(cell) is str:
+                try:
+                    cell.encode('utf-8')
+                except UnicodeEncodeError:
+                    raise ContractError('CANONICAL_ROWS') from None
+
+
+def _synthetic_digest(tag, payload):
+    # This encoding measures synthetic canonical cells, never original MOEX tokens.
+    encoded = json.dumps([tag, payload], ensure_ascii=False, allow_nan=False,
+                         separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _row_digest(row):
+    return _synthetic_digest('mds.c2.synthetic-row/v1', [COLUMNS, list(row)])
+
+
+def _content_digest(rows):
+    return _synthetic_digest('mds.c2.synthetic-content/v1', [COLUMNS, [list(row) for row in rows]])
+
+
+def _binding_digest(bindings):
+    values = [[row['response_id'], row['row_ordinal'], row['row_fingerprint']] for row in bindings]
+    return _synthetic_digest('mds.c2.synthetic-bindings/v1', values)
+
+
+def _freeze_selection(record):
+    _keys(record, {'selection_id', 'context', 'candidate_release_id', 'rows'})
+    _safe(record['selection_id'])
+    _context(record['context'])
+    _safe(record['candidate_release_id'])
+    _require(type(record['rows']) is list, 'SELECTION_INVENTORY')
+    locators, rows = [], []
+    for row in record['rows']:
+        _keys(row, {'response_id', 'row_ordinal', 'values'})
+        _safe(row['response_id'])
+        _count(row['row_ordinal'], nullable=False)
+        _rows([row['values']])
+        locators.append((row['response_id'], row['row_ordinal']))
+        rows.append((row['response_id'], row['row_ordinal'], tuple(row['values'])))
+    _require(len(locators) == len(set(locators)), 'SELECTION_INVENTORY')
+    return (tuple(record['context'][name] for name in CONTEXT_FIELDS),
+            record['candidate_release_id'], tuple(rows))
+
+
+def _selection_facts(selection, value):
+    # The harness supplies this frozen basis separately from mutable candidate input.
+    _require(type(selection) is tuple and len(selection) == 3, 'SELECTION_INVENTORY')
+    _require(type(selection[0]) is tuple and len(selection[0]) == len(CONTEXT_FIELDS) and
+             type(selection[1]) is str and type(selection[2]) is tuple, 'SELECTION_INVENTORY')
+    for row in selection[2]:
+        _require(type(row) is tuple and len(row) == 3 and type(row[2]) is tuple,
+                 'SELECTION_INVENTORY')
+        _safe(row[0])
+        _count(row[1], nullable=False)
+        _rows([list(row[2])])
+    _require(selection[0] == tuple(value['context'][name] for name in CONTEXT_FIELDS) and
+             selection[1] == value['candidate_release_id'], 'CONTEXT')
+    rows = [list(row[2]) for row in selection[2]]
+    bindings = [{'response_id': row[0], 'row_ordinal': row[1], 'row_fingerprint': _row_digest(row[2])}
+                for row in selection[2]]
+    return rows, bindings
 
 
 def _validate_errors(errors, context):
@@ -230,7 +307,7 @@ def _validate_input(value, mode):
     evidence_ids = [item['evidence_id'] for item in value['evidence']]
     _ids(evidence_ids, 'EVIDENCE_INVENTORY')
     canonical = value['canonical']
-    _keys(canonical, {'context', 'columns', 'row_count', 'content_fingerprint',
+    _keys(canonical, {'context', 'columns', 'rows', 'row_count', 'content_fingerprint',
                       'binding_fingerprint', 'source_bindings', 'ordered_bindings'})
     _context(canonical['context'], context)
     _require(type(canonical['columns']) is list and
@@ -240,6 +317,8 @@ def _validate_input(value, mode):
     _digest(canonical['binding_fingerprint'])
     _pairs(canonical['source_bindings'])
     _pairs(canonical['ordered_bindings'])
+    if canonical['rows'] is not None:
+        _rows(canonical['rows'])
     _enum(value['profile_id'], PROFILES)
     _ids(value['required_export_ids'], 'EXPORT_INVENTORY', nonempty=True)
     _require(value['required_export_ids'] == PROFILES[value['profile_id']], 'EXPORT_INVENTORY')
@@ -258,7 +337,12 @@ def _validate_input(value, mode):
     error_ids = {item['error_id'] for item in value['errors']}
     _safe(value['primary_error_id'], nullable=True)
     _require(value['primary_error_id'] is None or value['primary_error_id'] in error_ids, 'REFERENCE')
-    _require(bool(error_ids) == (value['primary_error_id'] is not None), 'PRIMARY_ERROR')
+    final_errors = [error for error in value['errors'] if error['final']]
+    _require(bool(final_errors) == (value['primary_error_id'] is not None), 'PRIMARY_ERROR')
+    if final_errors:
+        substantive = [error for error in final_errors if error['code'] != 'DIAGNOSTIC_FAILURE']
+        eligible = substantive or final_errors
+        _require(value['primary_error_id'] == eligible[0]['error_id'], 'PRIMARY_ERROR')
     for export in value['exports']:
         _require(set(export['error_ids']) <= error_ids, 'REFERENCE')
     refs = []
@@ -359,11 +443,12 @@ def _effective_collection(value, evidence, mode):
     return 'VALID_EMPTY' if all(status == 'VALID_EMPTY' for status in statuses) else 'COMPLETE'
 
 
-def _candidate(value, evidence, mode, collection):
+def _candidate(value, evidence, mode, collection, selection):
     quality = value['quality']
     if not quality['assessment_run']:
         return {'quality_status': 'NOT_RUN', 'decision': 'NOT_ASSESSED', 'blocking_check_ids': []}
     canonical = value['canonical']
+    selected_rows, selected_bindings = _selection_facts(selection, value)
     coverage = value['coverage']
     check_statuses = {}
     for check in quality['checks']:
@@ -400,7 +485,15 @@ def _candidate(value, evidence, mode, collection):
             source_measured = bool(instrument_counts) and all(count is not None for count in instrument_counts)
             sufficient = (sufficient and canonical['row_count'] is not None and
                           canonical['content_fingerprint'] is not None and
-                          measured and source_measured)
+                          measured and source_measured and canonical['rows'] is not None)
+            if canonical['rows'] is not None:
+                observed_content = _content_digest(canonical['rows'])
+                if (observed_content != _content_digest(selected_rows) or
+                        (canonical['content_fingerprint'] is not None and
+                         canonical['content_fingerprint'] != observed_content)):
+                    status = 'FAIL'
+                if canonical['row_count'] is not None and canonical['row_count'] != len(canonical['rows']):
+                    status = 'FAIL'
             if canonical['row_count'] is not None and canonical['row_count'] != len(canonical['ordered_bindings']):
                 status = 'FAIL'
             if measured and (counts[0] != counts[1] + counts[2] or counts[2] != 0 or
@@ -410,8 +503,19 @@ def _candidate(value, evidence, mode, collection):
                 if counts[0] != sum(instrument_counts):
                     status = 'FAIL'
         if check_id == 'CANONICAL_BINDINGS':
-            sufficient = sufficient and canonical['binding_fingerprint'] is not None
-            if canonical['source_bindings'] != canonical['ordered_bindings']:
+            sufficient = (sufficient and canonical['binding_fingerprint'] is not None and
+                          canonical['rows'] is not None)
+            if (canonical['source_bindings'] != selected_bindings or
+                    canonical['ordered_bindings'] != selected_bindings):
+                status = 'FAIL'
+            if canonical['binding_fingerprint'] is not None and (
+                    canonical['binding_fingerprint'] != _binding_digest(selected_bindings) or
+                    canonical['binding_fingerprint'] != _binding_digest(canonical['ordered_bindings'])):
+                status = 'FAIL'
+            if canonical['rows'] is not None and (
+                    len(canonical['rows']) != len(selected_bindings) or
+                    [_row_digest(row) for row in canonical['rows']] !=
+                    [row['row_fingerprint'] for row in selected_bindings]):
                 status = 'FAIL'
         if check_id == 'REQUIRED_NONEMPTY':
             if canonical['row_count'] == 0 or collection == 'VALID_EMPTY':
@@ -526,7 +630,8 @@ def _project_export(export, value, evidence, mode):
               'error_ids': list(export['error_ids'])}
     ready = (preflight == 'PASS' and artifact == 'VERIFIED' and preparation == 'SUCCEEDED' and
              proof('preparation') and publication == 'ACKNOWLEDGED' and mutation and
-             readback_status == 'VERIFIED' and generation == 'CANDIDATE' and not export['error_ids'])
+             readback_status == 'VERIFIED' and generation == 'CANDIDATE' and
+             not any(error['final'] and error['error_id'] in export['error_ids'] for error in value['errors']))
     # These are canonical-content fingerprints, not representation-specific ZIP/CSV byte hashes.
     identity = observed_identity if generation in {'CANDIDATE', 'PREVIOUS', 'OTHER'} else generation
     return result, ready, identity
@@ -542,12 +647,13 @@ def _aggregate(statuses, empty, success, failure, uncertain=None):
     return uncertain if uncertain is not None else empty
 
 
-def _reduce(value, mode):
+def _reduce(value, mode, selection):
     """Pure evaluator: receives facts, never expected outputs or ambient runtime state."""
     _validate_input(value, mode)
+    _selection_facts(selection, value)
     evidence = {item['evidence_id']: item for item in value['evidence']}
     collection = _effective_collection(value, evidence, mode)
-    candidate = _candidate(value, evidence, mode, collection)
+    candidate = _candidate(value, evidence, mode, collection, selection)
     projected = [_project_export(item, value, evidence, mode) for item in value['exports']]
     targets = [item[0] for item in projected]
     stages = {'collection': collection, 'validation': candidate['quality_status'],
@@ -564,6 +670,7 @@ def _reduce(value, mode):
                  _proof(value[name]['evidence_ref'], name.upper(), evidence, mode)
                  for name in ('logging', 'supervision'))
     errors = [error['error_id'] for error in value['errors']]
+    final_error_ids = {error['error_id'] for error in value['errors'] if error['final']}
     mutation = any(item['publication']['mutation'] for item in value['exports'])
     violations = []
     if mutation:
@@ -586,7 +693,7 @@ def _reduce(value, mode):
         status, exit_status = 'REMOTE_UNKNOWN', 1
     elif mixed:
         status, exit_status = 'PARTIAL_REMOTE', 1
-    elif admitted and safety and all_ready and not errors and not violations:
+    elif admitted and safety and all_ready and not final_error_ids and not violations:
         status, exit_status = 'CURRENT_VERIFIED', 0
     else:
         status, exit_status = 'BLOCKED', 1
@@ -596,7 +703,8 @@ def _reduce(value, mode):
         proven_failure = (facts['preflight'] in {'FAIL', 'NOT_VERIFIED'} or
                           facts['artifact'] == 'FAILED' or facts['preparation'] == 'FAILED' or
                           facts['publication'] in {'FAILED', 'UNKNOWN'} or
-                          facts['readback'] in {'FAILED', 'MISMATCH', 'UNKNOWN'} or item['error_ids'])
+                          facts['readback'] in {'FAILED', 'MISMATCH', 'UNKNOWN'} or
+                          final_error_ids.intersection(item['error_ids']))
         if (value['terminal'] and (not projection[1] or not admitted)) or proven_failure:
             failed.append(item['export_id'])
     return {'context': copy.deepcopy(value['context']), 'evaluation_scope': 'SYNTHETIC_ONLY',
@@ -692,24 +800,36 @@ def _validate_expected(expected):
 def _manifest():
     manifest = _parse(FIXTURE.read_text(encoding='utf-8'))
     _keys(manifest, {'schema_id', 'schema_version', 'policy_id', 'origin', 'mandatory_check_ids',
-                     'policy_profiles', 'cases'})
+                     'policy_profiles', 'selection_encoding', 'retained_selections', 'cases'})
     _require(manifest['schema_id'] == 'mds.c2.release_policy_cases' and
              type(manifest['schema_version']) is int and manifest['schema_version'] == 1 and
              manifest['policy_id'] == 'C2-03C-01/BLOCK_V1' and
              manifest['origin'] == 'SYNTHETIC_ONLY', 'MANIFEST')
     _require(manifest['mandatory_check_ids'] == CHECKS, 'CHECK_INVENTORY')
     _require(manifest['policy_profiles'] == PROFILES, 'EXPORT_INVENTORY')
+    _require(manifest['selection_encoding'] == 'MDS_SYNTHETIC_JSON_V1', 'MANIFEST')
+    _require(type(manifest['retained_selections']) is list and manifest['retained_selections'],
+             'SELECTION_INVENTORY')
+    for selection in manifest['retained_selections']:
+        _freeze_selection(selection)
+    selection_ids = [item['selection_id'] for item in manifest['retained_selections']]
+    _ids(selection_ids, 'SELECTION_INVENTORY')
     _require(type(manifest['cases']) is list and manifest['cases'], 'CASE_INVENTORY')
     for case in manifest['cases']:
-        _keys(case, {'case_id', 'scenario_mode', 'input', 'expected'})
+        _keys(case, {'case_id', 'scenario_mode', 'retained_selection_id', 'input', 'expected'})
         _safe(case['case_id'])
         _enum(case['scenario_mode'], {'HYPOTHETICAL', 'EVIDENCE_BOUNDARY'})
+        _safe(case['retained_selection_id'])
+        _require(case['retained_selection_id'] in selection_ids, 'REFERENCE')
         _validate_expected(case['expected'])
     _ids([case['case_id'] for case in manifest['cases']], 'CASE_INVENTORY', nonempty=True)
     return manifest
 
 
-CASES = _manifest()['cases']
+MANIFEST = _manifest()
+CASES = MANIFEST['cases']
+SELECTIONS = MappingProxyType({record['selection_id']: _freeze_selection(record)
+                              for record in MANIFEST['retained_selections']})
 
 
 @pytest.mark.parametrize('case', CASES, ids=[case['case_id'] for case in CASES])
@@ -718,10 +838,10 @@ def test_release_policy_cases(case):
     original = copy.deepcopy(case['input'])
     if expected['contract_error'] is not None:
         with pytest.raises(ContractError, match='^' + re.escape(expected['contract_error']) + '$'):
-            _reduce(case['input'], case['scenario_mode'])
+            _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
         assert expected['result'] is None
     else:
-        actual = _reduce(case['input'], case['scenario_mode'])
+        actual = _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
         assert actual == expected['result']
         assert actual['evaluation_scope'] == 'SYNTHETIC_ONLY'
         assert actual['official_source_status'] == 'NOT_VERIFIED'
@@ -786,7 +906,7 @@ def test_contract_faults_are_not_quality_refusals(fault, code):
     elif fault == 'csv_sheet_limit':
         value['exports'][0]['preflight']['limit_kind'] = 'SHEET_ROWS'
     with pytest.raises(ContractError, match='^' + code + '$'):
-        _reduce(value, case['scenario_mode'])
+        _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
 
 
 @pytest.mark.parametrize('fault,check_id,status', [
@@ -836,7 +956,7 @@ def test_required_basis_and_measured_counts(fault, check_id, status):
         value['collection']['instruments'][0]['row_count'] += 1
     elif fault == 'canonical_count_inconsistent':
         value['canonical']['row_count'] += 1
-    result = _reduce(value, case['scenario_mode'])
+    result = _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
     assert result['candidate']['quality_status'] == status
     assert check_id in result['candidate']['blocking_check_ids']
     assert result['candidate']['decision'] == 'BLOCK_NEW_RELEASE'
@@ -849,7 +969,7 @@ def test_verified_labels_cannot_create_official_evidence():
     for item in case['input']['evidence']:
         item['status'] = 'VERIFIED'
         item['hypothetical_assumption'] = False
-    result = _reduce(case['input'], 'EVIDENCE_BOUNDARY')
+    result = _reduce(case['input'], 'EVIDENCE_BOUNDARY', SELECTIONS[case['retained_selection_id']])
     assert result['candidate'] == {
         'quality_status': 'NOT_VERIFIED', 'decision': 'BLOCK_NEW_RELEASE',
         'blocking_check_ids': ['SOURCE_SEMANTICS', 'RAW_PROVENANCE', 'COVERAGE']}
@@ -870,7 +990,7 @@ def test_every_caller_context_dimension_is_preserved(field, location):
                 'previous_capture': value['exports'][0]['previous']['captured_for']}
     contexts[location][field] = '2026-10-16T00:00:00Z' if field == 'as_of' else 'OTHER_CONTEXT'
     with pytest.raises(ContractError, match='^CONTEXT$'):
-        _reduce(value, case['scenario_mode'])
+        _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
 
 
 @pytest.mark.parametrize('reason', [[], {}], ids=['list', 'object'])
@@ -878,14 +998,14 @@ def test_malformed_pending_reason_is_a_closed_contract_error(reason):
     case = _valid_case()
     case['input']['exports'][0]['preflight']['reason'] = reason
     with pytest.raises(ContractError, match='^REASON$'):
-        _reduce(case['input'], case['scenario_mode'])
+        _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
 
 
 def test_unsafe_diagnostic_text_is_never_echoed():
     case = copy.deepcopy(next(case for case in CASES if case['input']['errors']))
     case['input']['errors'][0]['message'] = 'RAW_SYNTHETIC_SECRET'
     with pytest.raises(ContractError) as error:
-        _reduce(case['input'], case['scenario_mode'])
+        _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
     assert error.value.args == ('REDACTION',)
 
 
@@ -911,7 +1031,7 @@ def test_export_proof_cannot_be_reused_for_another_artifact_or_target(
     proof = next(item for item in case['input']['evidence']
                  if item['evidence_id'] == export[stage]['evidence_ref'])
     proof[binding] = 'OTHER_BINDING'
-    result = _reduce(case['input'], case['scenario_mode'])
+    result = _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
     target = result['release']['per_target_outcomes'][0]
     assert target[stage] == projected_status
     assert result['release']['status'] == release_status
@@ -928,6 +1048,125 @@ def test_previous_proof_requires_the_previous_target_subject(ref_name, binding):
     proof = next(item for item in case['input']['evidence']
                  if item['evidence_id'] == previous[ref_name])
     proof[binding] = 'OTHER_BINDING'
-    result = _reduce(case['input'], case['scenario_mode'])
+    result = _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
     assert result['release']['per_target_outcomes'][0]['fallback_eligible'] is False
     assert result['release']['status'] != 'CURRENT_VERIFIED'
+
+
+def _review_success_case():
+    return copy.deepcopy(next(case for case in CASES
+                              if case['case_id'] == 'synthetic_all_required_success'))
+
+
+def _review_retry_error(value, final=False):
+    error = copy.deepcopy(next(case['input']['errors'][0] for case in CASES
+                               if case['input']['errors']))
+    error.update(error_id='RETRY_HISTORY', category='SOURCE', code='SOURCE_UNAVAILABLE',
+                 stage='collection', retryable=True, final=final,
+                 message='REDACTED SOURCE_UNAVAILABLE', artifact_id=None, target_id=None)
+    error['null_reasons'] = {name: 'NOT_AVAILABLE_OR_NOT_APPLICABLE'
+                             for name in NULLABLE_ERROR if error[name] is None}
+    return error
+
+
+def test_review_common_mode_binding_mutation_cannot_pass():
+    case = _review_success_case()
+    value = case['input']
+    for name in ('source_bindings', 'ordered_bindings'):
+        value['canonical'][name][0]['row_fingerprint'] = 'a' * 64
+    result = _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
+    assert result['candidate']['quality_status'] == 'FAIL'
+    assert 'CANONICAL_BINDINGS' in result['candidate']['blocking_check_ids']
+    assert result['release']['status'] != 'CURRENT_VERIFIED'
+
+
+def test_review_recovered_nonfinal_retry_does_not_block_verified_release():
+    case = _review_success_case()
+    value = case['input']
+    value['errors'] = [_review_retry_error(value)]
+    value['primary_error_id'] = None
+    result = _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
+    assert result['release']['status'] == 'CURRENT_VERIFIED'
+    assert result['release']['retained_error_ids'] == ['RETRY_HISTORY']
+    assert result['release']['primary_error_id'] is None
+    assert result['release']['exit_status'] == 0
+
+
+def test_review_unresolved_final_failure_blocks_verified_release():
+    case = _review_success_case()
+    value = case['input']
+    value['errors'] = [_review_retry_error(value, final=True)]
+    value['primary_error_id'] = 'RETRY_HISTORY'
+    result = _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
+    assert result['release']['status'] == 'BLOCKED'
+    assert result['release']['retained_error_ids'] == ['RETRY_HISTORY']
+    assert result['release']['primary_error_id'] == 'RETRY_HISTORY'
+    assert result['release']['exit_status'] == 1
+
+
+@pytest.mark.parametrize('column,replacement', [(3, 18), (3, '17.35'), (3, True), (4, 'USD')],
+                         ids=['amount', 'numeric-string', 'boolean', 'currency'])
+def test_review_changed_row_content_cannot_reuse_declared_fingerprints(column, replacement):
+    case = _review_success_case()
+    case['input']['canonical']['rows'][0][column] = replacement
+    result = _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
+    assert result['candidate'] == {'quality_status': 'FAIL', 'decision': 'BLOCK_NEW_RELEASE',
+        'blocking_check_ids': ['CANONICAL_CONTENT', 'CANONICAL_BINDINGS']}
+    assert result['release']['status'] == 'BLOCKED'
+
+
+def test_review_self_consistent_candidate_cannot_replace_retained_selection():
+    case = _review_success_case()
+    canonical = case['input']['canonical']
+    canonical['rows'][0][3] = 18
+    for name in ('source_bindings', 'ordered_bindings'):
+        canonical[name][0]['row_fingerprint'] = _row_digest(canonical['rows'][0])
+    canonical['content_fingerprint'] = _content_digest(canonical['rows'])
+    canonical['binding_fingerprint'] = _binding_digest(canonical['ordered_bindings'])
+    for export in case['input']['exports']:
+        export['artifact']['canonical_fingerprint'] = canonical['content_fingerprint']
+        export['artifact']['binding_fingerprint'] = canonical['binding_fingerprint']
+        export['readback']['content_fingerprint'] = canonical['content_fingerprint']
+        export['readback']['binding_fingerprint'] = canonical['binding_fingerprint']
+    result = _reduce(case['input'], case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
+    assert result['candidate']['blocking_check_ids'] == ['CANONICAL_CONTENT', 'CANONICAL_BINDINGS']
+    assert result['release']['status'] == 'BLOCKED'
+    assert result['release']['retained_error_ids'] == []
+
+
+def test_review_retained_basis_is_frozen_and_not_candidate_owned():
+    case = _review_success_case()
+    basis = SELECTIONS[case['retained_selection_id']]
+    with pytest.raises(TypeError):
+        SELECTIONS[case['retained_selection_id']] = ()
+    with pytest.raises(TypeError):
+        basis[2][0][2][3] = 18
+    case['input']['canonical']['rows'][0][3] = 18
+    assert basis[2][0][2][3] == 17.35
+
+
+@pytest.mark.parametrize('fault', ['nonfinal_primary', 'diagnostic_replaces_primary', 'missing_final_primary'])
+def test_review_terminal_primary_is_distinct_from_retry_history(fault):
+    case = _review_success_case()
+    value = case['input']
+    if fault == 'diagnostic_replaces_primary':
+        failures = copy.deepcopy(next(item['input']['errors'] for item in CASES
+                                      if item['case_id'] == 'diagnostic_failure_preserves_primary_timeout'))
+        value['errors'] = failures
+        value['primary_error_id'] = failures[-1]['error_id']
+    else:
+        value['errors'] = [_review_retry_error(value, final=fault == 'missing_final_primary')]
+        value['primary_error_id'] = 'RETRY_HISTORY' if fault == 'nonfinal_primary' else None
+    with pytest.raises(ContractError, match='^PRIMARY_ERROR$'):
+        _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
+
+
+def test_review_retry_history_does_not_excuse_unfinished_mandatory_stages():
+    case = _review_success_case()
+    value = case['input']
+    value['errors'] = [_review_retry_error(value)]
+    value['exports'][0]['preflight'].update(status='NOT_VERIFIED', reason='CAPACITY_UNKNOWN')
+    result = _reduce(value, case['scenario_mode'], SELECTIONS[case['retained_selection_id']])
+    assert result['release']['status'] == 'BLOCKED'
+    assert result['release']['retained_error_ids'] == ['RETRY_HISTORY']
+    assert result['release']['primary_error_id'] is None
