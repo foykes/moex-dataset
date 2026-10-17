@@ -63,7 +63,8 @@ def test_candle_retry_503_then_200_has_literal_rows_and_keys(monkeypatch, tmp_pa
             return super().read(amt)
 
     prepared = []
-    for status, body in ((503, b''), (200, content.encode('utf-8'))):
+    for status, body in ((503, b''), (200, content.encode('utf-8')),
+                         (200, b'candles\nopen;close;high;low;value;volume;begin;end\n')):
         headers = {'Content-Type': 'text/csv; charset=utf-8'}
         raw = RawBody(body)
         raw.headers = HTTPHeaderDict(headers)
@@ -86,11 +87,13 @@ def test_candle_retry_503_then_200_has_literal_rows_and_keys(monkeypatch, tmp_pa
                                24, max_retries=2)
     url = ('https://iss.moex.com/iss/engines/stock/markets/shares/securities/'
            'FIXTURE_SHARE/candles.csv?from=2024-02-29&till=2024-03-01&interval=24')
-    assert calls == [(url, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'},
+    assert calls == [(url + '&start=0', {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'},
                       (5, 30), True, False, True),
-                     (url, {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'},
+                     (url + '&start=0', {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'},
+                      (5, 30), True, False, True),
+                     (url + '&start=2', {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'},
                       (5, 30), True, False, True)]
-    assert sleeps == [3, 3]
+    assert sleeps == [3, 3, 3]
     assert all(item.raw.closed for item in prepared)
     assert result.columns.tolist() == ['open', 'close', 'high', 'low', 'value', 'volume',
                                        'begin', 'end', 'ticker']

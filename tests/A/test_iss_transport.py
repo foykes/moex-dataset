@@ -19,6 +19,7 @@ CANDLE_CSV = (
     '100.0;101.0;102.0;99.0;202000.0;2000;2024-02-29 00:00:00;2024-02-29 23:59:59\n'
     '101.0;103.0;104.0;100.0;309000.0;3000;2024-03-01 00:00:00;2024-03-01 23:59:59\n'
 )
+EMPTY_CSV = 'candles\nopen;close;high;low;value;volume;begin;end\n'
 CANDLE_COLUMNS = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end', 'ticker']
 CANDLE_ROWS = [
     [100.0, 101.0, 102.0, 99.0, 202000.0, 2000,
@@ -27,7 +28,7 @@ CANDLE_ROWS = [
      '2024-03-01 00:00:00', '2024-03-01 23:59:59', 'FIXTURE_SHARE'],
 ]
 HTTPS_QUERY = ('https://iss.moex.com/iss/engines/stock/markets/shares/securities/'
-               'FIXTURE_SHARE/candles.csv?from=2024-02-29&till=2024-03-01&interval=24')
+               'FIXTURE_SHARE/candles.csv?from=2024-02-29&till=2024-03-01&interval=24&start=0')
 
 
 def response(status, text=''):
@@ -74,10 +75,11 @@ def query(gathering, **kwargs):
 
 
 def test_https_verification_and_no_redirects_keep_literal_rows(gathering, monkeypatch):
-    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     result = query(gathering)
-    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
-    assert sleeps == [3]
+    assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
+                     (HTTPS_QUERY.replace('start=0', 'start=2'), {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
+    assert sleeps == [3, 3]
     assert result.columns.tolist() == CANDLE_COLUMNS
     assert result.values.tolist() == CANDLE_ROWS
     assert result.index.tolist() == [0, 1]
@@ -88,10 +90,10 @@ def test_https_verification_and_no_redirects_keep_literal_rows(gathering, monkey
 
 
 @pytest.mark.parametrize('console_level,visible', [
-    ('DEBUG', [0, 1, 2, 3, 4, 5, 6, 7]),
-    ('INFO', [0, 2, 4, 5, 7]),
-    ('WARNING', [2, 7]),
-    ('ERROR', [7]),
+    ('DEBUG', list(range(14))),
+    ('INFO', [0, 3, 5, 8, 9, 10, 13]),
+    ('WARNING', [3, 13]),
+    ('ERROR', [13]),
 ])
 def test_review_console_uses_real_flog_levels_without_duplicates(
         gathering, monkeypatch, tmp_path, capsys, console_level, visible):
@@ -102,10 +104,7 @@ def test_review_console_uses_real_flog_levels_without_duplicates(
                'A2_REAL_BODY_CANARY', 'A2_REAL_EXCEPTION_CANARY')
     primary = requests.exceptions.SSLError(markers[-1])
     original_args = primary.args
-    calls, sleeps = transport(gathering, monkeypatch, [
-        response(503, markers[4]), response(200, CANDLE_CSV),
-        primary,
-    ])
+    calls, sleeps = transport(gathering, monkeypatch, [response(503, markers[4]), response(200, CANDLE_CSV), response(200, EMPTY_CSV), primary, response(200, EMPTY_CSV)])
     monkeypatch.setattr(gathering, 'header', {'User-Agent': markers[2]})
     monkeypatch.setattr(gathering, 'get_next_header', lambda current: {'User-Agent': markers[3]})
     context = run_logging.configure_logging(tmp_path, run_id='a2-console-' + uuid.uuid4().hex,
@@ -122,15 +121,18 @@ def test_review_console_uses_real_flog_levels_without_duplicates(
             gathering.moex_query(markers[0], 'Акции', '2024-02-29', '2024-03-01', 24,
                                  logging_context=context)
         assert captured.value is primary and primary.args == original_args
-        assert len(calls) == 3 and sleeps == [3, 3]
+        assert len(calls) == 4 and sleeps == [3, 3, 3]
         assert run_logging.flush_logging(context)['confirmed'] is True
         assert run_logging.check_logging_health(context)['healthy'] is True
         persisted = (context['_run_root'] / 'events.jsonl').read_text(encoding='utf-8')
         events = [json.loads(line) for line in persisted.splitlines()]
         assert [(item['event'], item['level']) for item in events] == [
-            ('a2_query_started', 'INFO'), ('a2_query_attempt_started', 'DEBUG'),
-            ('a2_query_retry', 'WARNING'), ('a2_query_attempt_started', 'DEBUG'),
-            ('a2_query_returned', 'INFO'), ('a2_query_started', 'INFO'),
+            ('a2_query_started', 'INFO'), ('a3_page_started', 'DEBUG'),
+            ('a2_query_attempt_started', 'DEBUG'), ('a2_query_retry', 'WARNING'),
+            ('a2_query_attempt_started', 'DEBUG'), ('a3_page_returned', 'INFO'),
+            ('a3_page_started', 'DEBUG'), ('a2_query_attempt_started', 'DEBUG'),
+            ('a3_page_terminal', 'INFO'), ('a2_query_returned', 'INFO'),
+            ('a2_query_started', 'INFO'), ('a3_page_started', 'DEBUG'),
             ('a2_query_attempt_started', 'DEBUG'), ('a2_query_failed', 'ERROR'),
         ]
         output = capsys.readouterr()
@@ -152,7 +154,7 @@ def test_review_console_uses_real_flog_levels_without_duplicates(
 @pytest.mark.parametrize('primary', [RuntimeError('A2_SUCCESS_SLEEP'), KeyboardInterrupt('A2_SUCCESS_SLEEP')])
 def test_review_interrupted_success_sleep_never_reports_returned(
         gathering, monkeypatch, event_log, primary):
-    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
 
     def sleep(seconds):
         sleeps.append(seconds)
@@ -164,13 +166,13 @@ def test_review_interrupted_success_sleep_never_reports_returned(
     assert captured.value is primary and captured.value.args == ('A2_SUCCESS_SLEEP',)
     assert len(calls) == 1 and sleeps == [3]
     assert [item['event'] for item in event_log.events] == [
-        'a2_query_started', 'a2_query_attempt_started']
+        'a2_query_started', 'a3_page_started', 'a2_query_attempt_started']
     assert not any(item['event'] == 'a2_query_returned' for item in event_log.events)
 
 
 def test_review_returned_duration_includes_retry_and_completed_success_sleep(
         gathering, monkeypatch, event_log):
-    calls, sleeps = transport(gathering, monkeypatch, [response(503), response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(503), response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     elapsed = [0.0]
     original_get = gathering.requests.get
 
@@ -188,15 +190,15 @@ def test_review_returned_duration_includes_retry_and_completed_success_sleep(
     gathering.time.sleep = sleep
     result = query(gathering, logging_context=event_log.context)
     assert result.values.tolist() == CANDLE_ROWS and result.index.tolist() == [0, 1]
-    assert len(calls) == 2 and sleeps == [3, 3]
+    assert len(calls) == 3 and sleeps == [3, 3, 3]
     returned = event_log.events[-1]
     assert returned['event'] == 'a2_query_returned'
-    assert returned['duration_ms'] == 6500.0
+    assert returned['duration_ms'] == 9750.0
 
 
 def test_http_exhaustion_raises_native_last_failure(gathering, monkeypatch):
     responses = [response(503) for _ in range(5)]
-    calls, sleeps = transport(gathering, monkeypatch, responses)
+    calls, sleeps = transport(gathering, monkeypatch, [*responses, response(200, EMPTY_CSV)])
     with pytest.raises(requests.exceptions.HTTPError) as captured:
         query(gathering)
     assert captured.value.response is responses[-1]
@@ -207,7 +209,7 @@ def test_http_exhaustion_raises_native_last_failure(gathering, monkeypatch):
 def test_tls_primary_is_immediate_without_sleep(gathering, monkeypatch):
     primary = requests.exceptions.SSLError('A2_NATIVE_TLS_PRIMARY')
     original_args = primary.args
-    calls, sleeps = transport(gathering, monkeypatch, [primary] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [*[primary] * 5, response(200, EMPTY_CSV)])
     with pytest.raises(requests.exceptions.SSLError) as captured:
         query(gathering)
     assert captured.value is primary and primary.args == original_args
@@ -243,7 +245,7 @@ def test_second_annual_window_primary_prevents_partial_history(gathering, candle
 def test_redirect_response_never_requests_location(gathering, monkeypatch, status, destination):
     rejected = response(status)
     rejected.headers['Location'] = destination
-    calls, sleeps = transport(gathering, monkeypatch, [rejected] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [*[rejected] * 5, response(200, EMPTY_CSV)])
     with pytest.raises(requests.exceptions.TooManyRedirects) as captured:
         query(gathering)
     assert captured.value.args == ('A2_ISS_REDIRECT_REJECTED',)
@@ -255,7 +257,7 @@ def test_redirect_response_never_requests_location(gathering, monkeypatch, statu
 def test_native_redirect_primary_is_immediate(gathering, monkeypatch):
     primary = requests.exceptions.TooManyRedirects('A2_NATIVE_REDIRECT_PRIMARY')
     original_args = primary.args
-    calls, sleeps = transport(gathering, monkeypatch, [primary] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [*[primary] * 5, response(200, EMPTY_CSV)])
     with pytest.raises(requests.exceptions.TooManyRedirects) as captured:
         query(gathering)
     assert captured.value is primary and primary.args == original_args
@@ -265,11 +267,12 @@ def test_native_redirect_primary_is_immediate(gathering, monkeypatch):
 @pytest.mark.parametrize('failure', ['http', 'timeout'])
 def test_transient_retry_retains_rotation_delays_and_literal_result(gathering, monkeypatch, failure):
     first = response(503) if failure == 'http' else requests.exceptions.Timeout('A2_TRANSIENT')
-    calls, sleeps = transport(gathering, monkeypatch, [first, response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [first, response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     result = query(gathering)
     assert calls == [(HTTPS_QUERY, {'User-Agent': 'AGENT_A', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
-                     (HTTPS_QUERY, {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
-    assert sleeps == [3, 3]
+                     (HTTPS_QUERY, {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True),
+                     (HTTPS_QUERY.replace('start=0', 'start=2'), {'User-Agent': 'AGENT_B', 'Accept-Encoding': 'identity'}, (5, 30), True, False, True)]
+    assert sleeps == [3, 3, 3]
     assert result.columns.tolist() == CANDLE_COLUMNS
     assert result.values.tolist() == CANDLE_ROWS
     assert result.index.tolist() == [0, 1]
@@ -277,7 +280,7 @@ def test_transient_retry_retains_rotation_delays_and_literal_result(gathering, m
 
 def test_timeout_exhaustion_retains_last_native_object(gathering, monkeypatch):
     failures = [requests.exceptions.Timeout('A2_TIMEOUT_' + str(index)) for index in range(5)]
-    calls, sleeps = transport(gathering, monkeypatch, failures)
+    calls, sleeps = transport(gathering, monkeypatch, [*failures, response(200, EMPTY_CSV)])
     with pytest.raises(requests.exceptions.Timeout) as captured:
         query(gathering)
     assert captured.value is failures[-1]
@@ -290,7 +293,7 @@ def test_last_attempt_type_takes_precedence_over_earlier_failure(gathering, monk
     timeout = requests.exceptions.Timeout('A2_MIXED_TIMEOUT')
     rejected = response(503)
     outcomes = [timeout, rejected] if last == 'http' else [rejected, timeout]
-    calls, sleeps = transport(gathering, monkeypatch, outcomes)
+    calls, sleeps = transport(gathering, monkeypatch, [*outcomes, response(200, EMPTY_CSV)])
     exception_type = requests.exceptions.HTTPError if last == 'http' else requests.exceptions.Timeout
     with pytest.raises(exception_type) as captured:
         query(gathering, max_retries=2)
@@ -305,28 +308,35 @@ def test_last_attempt_type_takes_precedence_over_earlier_failure(gathering, monk
 @pytest.mark.parametrize('empty', [False, True])
 def test_closed_returned_event_reports_unvalidated_rows(gathering, monkeypatch, event_log, empty):
     content = CANDLE_CSV.splitlines(keepends=True)[:2] if empty else [CANDLE_CSV]
-    calls, sleeps = transport(gathering, monkeypatch, [response(200, ''.join(content))])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, ''.join(content)), response(200, EMPTY_CSV)])
     result = query(gathering, logging_context=event_log.context)
-    assert len(calls) == 1 and sleeps == [3]
+    assert len(calls) == (1 if empty else 2) and sleeps == [3] * (1 if empty else 2)
     if empty:
         assert result.empty and result.columns.tolist() == []
     else:
         assert result.columns.tolist() == CANDLE_COLUMNS and result.values.tolist() == CANDLE_ROWS
     events = event_log.events
     assert [(item['event'], item['level'], item['outcome'], item['retries']) for item in events] == [
-        ('a2_query_started', 'INFO', 'QUERY_STARTED', {'attempt': 0, 'limit': 5}),
+        ('a2_query_started', 'INFO', 'QUERY_STARTED', {'attempt': 0, 'limit': 5000}),
+        ('a3_page_started', 'DEBUG', 'PAGE_STARTED', {'attempt': 0, 'limit': 5}),
         ('a2_query_attempt_started', 'DEBUG', 'REQUEST_ADMISSION_STARTED', {'attempt': 0, 'limit': 5}),
+    ] + ([] if empty else [
+        ('a3_page_returned', 'INFO', 'PAGE_STAGED', {'attempt': 1, 'limit': 5}),
+        ('a3_page_started', 'DEBUG', 'PAGE_STARTED', {'attempt': 0, 'limit': 5}),
+        ('a2_query_attempt_started', 'DEBUG', 'REQUEST_ADMISSION_STARTED', {'attempt': 0, 'limit': 5}),
+    ]) + [
+        ('a3_page_terminal', 'INFO', 'OFFSET_TERMINAL_EMPTY', {'attempt': 1, 'limit': 5}),
         ('a2_query_returned', 'INFO',
          'QUERY_EMPTY_UNVALIDATED' if empty else 'QUERY_RETURNED_UNVALIDATED',
-         {'attempt': 1, 'limit': 5}),
+         {'attempt': 1 if empty else 2, 'limit': 5000}),
     ]
     assert all(item['stage'] == 'data_gathering' and item['fields'] == {} and item['error'] is None
                for item in events)
     assert events[-1]['counts'] == {
         'rows_received': 0 if empty else 2, 'rows_accepted': None, 'rows_quarantined': None,
-        'pages': None, 'instruments': None,
+        'pages': 1 if empty else 2, 'instruments': None,
         'null_reasons': {'rows_accepted': 'NOT_ASSESSED', 'rows_quarantined': 'NOT_ASSESSED',
-                         'pages': 'NOT_PAGINATION_EVIDENCE', 'instruments': 'NOT_ASSESSED'},
+                         'instruments': 'NOT_ASSESSED'},
     }
 
 
@@ -353,7 +363,7 @@ def test_closed_failure_event_uses_exact_error_contract(gathering, monkeypatch, 
         outcomes = [response(200, CANDLE_CSV)] * 5
     else:
         outcomes = [first] * 5
-    calls, sleeps = transport(gathering, monkeypatch, outcomes)
+    calls, sleeps = transport(gathering, monkeypatch, [*outcomes, response(200, EMPTY_CSV)])
     expected_type = requests.exceptions.HTTPError if kind == 'http' else type(first)
     with pytest.raises(expected_type) as captured:
         query(gathering, logging_context=event_log.context)
@@ -363,7 +373,7 @@ def test_closed_failure_event_uses_exact_error_contract(gathering, monkeypatch, 
     assert (event['event'], event['level'], event['outcome']) == ('a2_query_failed', 'ERROR', outcome)
     assert event['stage'] == 'data_gathering' and event['fields'] == {}
     expected_attempt = 1 if kind in ('tls', 'redirect', 'request', 'parse') else 5
-    assert event['retries'] == {'attempt': expected_attempt, 'limit': 5}
+    assert event['retries'] == {'attempt': expected_attempt, 'limit': 5000}
     error = event['error']
     assert (error['code'], error['category'], error['stage']) == (code, category, 'data_gathering')
     assert error['final'] is True and error['retryable'] is False
@@ -392,7 +402,7 @@ def test_closed_failure_event_uses_exact_error_contract(gathering, monkeypatch, 
 ])
 def test_invalid_retry_arguments_fail_before_network(gathering, monkeypatch, event_log,
                                                      parameter, value):
-    calls, sleeps = transport(gathering, monkeypatch, [])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, EMPTY_CSV)])
     with pytest.raises(ValueError, match='^A2_RETRY_ARGUMENTS$') as captured:
         query(gathering, logging_context=event_log.context, **{parameter: value})
     assert captured.value.args == ('A2_RETRY_ARGUMENTS',)
@@ -406,18 +416,18 @@ def test_invalid_retry_arguments_fail_before_network(gathering, monkeypatch, eve
 
 
 def test_large_attempt_limit_is_rejected_as_a_resource_cap_before_network(gathering, monkeypatch):
-    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     with pytest.raises(ValueError) as captured:
         query(gathering, max_retries=1000000, retry_sleep_start=0)
     assert captured.value.args == ('A2_RETRY_ARGUMENTS',)
     assert calls == [] and sleeps == []
     # Finite-policy refusal does not alter the successful literal output oracle.
     result = query(gathering, max_retries=5, retry_sleep_start=0)
-    assert len(calls) == 1 and sleeps == [3] and result.values.tolist() == CANDLE_ROWS
+    assert len(calls) == 2 and sleeps == [3, 3] and result.values.tolist() == CANDLE_ROWS
 
 
 def test_no_context_imports_or_calls_no_logger(gathering, monkeypatch):
-    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     original_import = builtins.__import__
     logger_imports = []
 
@@ -429,21 +439,21 @@ def test_no_context_imports_or_calls_no_logger(gathering, monkeypatch):
 
     monkeypatch.setattr(builtins, '__import__', importing)
     result = query(gathering, logging_context=None)
-    assert logger_imports == [] and len(calls) == 1 and sleeps == [3]
+    assert logger_imports == [] and len(calls) == 2 and sleeps == [3, 3]
     assert result.values.tolist() == CANDLE_ROWS
 
 
 def test_no_context_safe_fallback_has_no_attempt_debug_flood(gathering, monkeypatch, capsys):
-    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     result = query(gathering, logging_context=None)
     output = capsys.readouterr()
     lines = output.out.splitlines()
-    assert len(lines) == 2 and output.err == ''
+    assert len(lines) == 4 and output.err == ''
     assert lines[0].startswith('Свечи QUERY_STARTED:')
-    assert lines[1].startswith('Свечи QUERY_RETURNED_UNVALIDATED:')
+    assert lines[3].startswith('Свечи QUERY_RETURNED_UNVALIDATED:')
     assert 'REQUEST_ADMISSION_STARTED' not in output.out
     assert all(len(line) <= 256 for line in lines)
-    assert len(calls) == 1 and sleeps == [3] and result.values.tolist() == CANDLE_ROWS
+    assert len(calls) == 2 and sleeps == [3, 3] and result.values.tolist() == CANDLE_ROWS
 
 
 @pytest.mark.parametrize('with_context', [False, True])
@@ -476,7 +486,7 @@ def test_console_and_logger_canaries_are_safe_together(gathering, monkeypatch, e
         outcomes = [primary, response(200, CANDLE_CSV)]
     else:
         outcomes = [primary] * 5
-    calls, sleeps = transport(gathering, monkeypatch, outcomes)
+    calls, sleeps = transport(gathering, monkeypatch, [*outcomes, response(200, EMPTY_CSV)])
     monkeypatch.setattr(gathering, 'header', {'User-Agent': markers[5]})
     monkeypatch.setattr(gathering, 'get_next_header', lambda current: {'User-Agent': markers[6]})
     raw_events = []
@@ -516,9 +526,9 @@ def test_console_and_logger_canaries_are_safe_together(gathering, monkeypatch, e
     assert all(len(message) <= 256 and len((fields.get('error') or {}).get('message', '')) <= 256
                for _, _, message, fields in raw_events)
     assert bool(raw_events) is with_context and bool(event_log.events) is with_context
-    expected_attempts = 1 if kind in ('tls', 'redirect', 'parse') else 2 if kind == 'rotation' else 5
+    expected_attempts = 1 if kind in ('tls', 'redirect', 'parse') else 3 if kind == 'rotation' else 5
     assert len(calls) == expected_attempts
-    assert sleeps == ([] if expected_attempts == 1 else [3, 3] if kind == 'rotation' else [3, 6, 12, 24])
+    assert sleeps == ([] if expected_attempts == 1 else [3, 3, 3] if kind == 'rotation' else [3, 6, 12, 24])
     if kind in ('rotation', 'exhaustion'):
         if with_context:
             assert output.out == ''
@@ -535,7 +545,7 @@ def test_primary_precedes_failed_error_diagnostics(gathering, monkeypatch, event
                                                   capsys, failure):
     primary = requests.exceptions.SSLError('A1_SYNTHETIC_CANARY')
     original_args = primary.args
-    calls, sleeps = transport(gathering, monkeypatch, [primary] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [*[primary] * 5, response(200, EMPTY_CSV)])
     original_emit = event_log.logger.emit_event
 
     def emit(context, level, *args):
@@ -561,7 +571,7 @@ def test_primary_precedes_failed_error_diagnostics(gathering, monkeypatch, event
 @pytest.mark.parametrize('failure', ['throw', 'rejected', 'unhealthy'])
 def test_diagnostics_without_primary_stop_before_network(gathering, monkeypatch, event_log,
                                                         failure):
-    calls, sleeps = transport(gathering, monkeypatch, [])
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, EMPTY_CSV)])
     event_log.fail = failure == 'throw'
     event_log.accepted = failure != 'rejected'
     event_log.healthy = failure != 'unhealthy'
@@ -577,7 +587,7 @@ def test_diagnostics_without_primary_stop_before_network(gathering, monkeypatch,
 def test_failure_after_transient_primary_stops_before_next_request(gathering, monkeypatch,
                                                                  event_log, failure, point, capsys):
     primary = requests.exceptions.Timeout('A1_SYNTHETIC_CANARY')
-    calls, sleeps = transport(gathering, monkeypatch, [primary, response(200, CANDLE_CSV)])
+    calls, sleeps = transport(gathering, monkeypatch, [primary, response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     original_emit = event_log.logger.emit_event
 
     def emit(context, level, event, message, fields):
@@ -674,7 +684,7 @@ def test_broken_console_and_stderr_preserve_failure_precedence(gathering, monkey
                                                               with_context, has_primary):
     primary = requests.exceptions.SSLError('A1_SYNTHETIC_CANARY')
     original_args = primary.args
-    calls, sleeps = transport(gathering, monkeypatch, [primary] * 5 if has_primary else [])
+    calls, sleeps = transport(gathering, monkeypatch, [*([primary] * 5 if has_primary else []), response(200, EMPTY_CSV)])
     original_print = builtins.print
     print_calls = []
 
@@ -726,7 +736,7 @@ def test_throwing_health_check_preserves_failure_precedence(gathering, monkeypat
                                                           event_log, capsys, has_primary):
     primary = requests.exceptions.SSLError('A1_SYNTHETIC_CANARY')
     original_args = primary.args
-    calls, sleeps = transport(gathering, monkeypatch, [primary] * 5 if has_primary else [])
+    calls, sleeps = transport(gathering, monkeypatch, [*([primary] * 5 if has_primary else []), response(200, EMPTY_CSV)])
     original_emit = event_log.logger.emit_event
     last_level = []
 
@@ -763,7 +773,7 @@ def test_throwing_health_check_preserves_failure_precedence(gathering, monkeypat
 @pytest.mark.parametrize('failure', ['throw', 'rejected', 'unhealthy', 'health_throw'])
 def test_returned_diagnostic_failure_after_parse_never_retries_http(gathering, monkeypatch,
                                                                   event_log, failure):
-    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV)] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [response(200, CANDLE_CSV), response(200, EMPTY_CSV)])
     original_emit = event_log.logger.emit_event
     original_health = event_log.logger.check_logging_health
     returned = []
@@ -789,7 +799,7 @@ def test_returned_diagnostic_failure_after_parse_never_retries_http(gathering, m
     assert captured.value.args == ('LOGGING_INCOMPLETE',)
     assert captured.value.__cause__ is None and captured.value.__suppress_context__
     assert returned == ['a2_query_returned']
-    assert len(calls) == 1 and sleeps == [3]
+    assert len(calls) == 2 and sleeps == [3, 3]
     assert not any(item['event'] in ('a2_query_retry', 'a2_query_failed') for item in event_log.events)
 
 
@@ -809,7 +819,7 @@ def test_real_reload_console_and_a2_a1_logs_redact_registered_canaries(
     raw_url = 'https://user:password@other.invalid/' + markers[2] + '?secret=' + markers[1]
     primary = requests.exceptions.SSLError(markers[2] + ' ' + raw_url)
     original_args = primary.args
-    calls, sleeps = transport(gathering, monkeypatch, [primary] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [*[primary] * 5, response(200, EMPTY_CSV)])
     monkeypatch.setattr(gathering, 'header', {'User-Agent': markers[3]})
     _, root = fixture_root
     context = event_log.context if with_context else None
@@ -841,7 +851,7 @@ def test_allowed_correlation_fields_mirror_in_closed_event_and_error(gathering, 
                'target_id': 'fixture_target', 'page': 2}
     event_log.context.update(linkage)
     primary = requests.exceptions.SSLError('A2_PRIMARY')
-    calls, sleeps = transport(gathering, monkeypatch, [primary] * 5)
+    calls, sleeps = transport(gathering, monkeypatch, [*[primary] * 5, response(200, EMPTY_CSV)])
     with pytest.raises(requests.exceptions.SSLError) as captured:
         query(gathering, logging_context=event_log.context)
     assert captured.value is primary and primary.args == ('A2_PRIMARY',)
