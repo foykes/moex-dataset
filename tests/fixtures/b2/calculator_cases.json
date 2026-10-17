@@ -1,0 +1,1054 @@
+{
+  "fixture_version": 1,
+  "scope": "P1 offline computation only; synthetic source; no production profile or authenticity claim.",
+  "legacy_negative_control": {
+    "base_sha": "223be5ebd552e3369d4b6b2488c6838798711458",
+    "source_path": "tech.py",
+    "git_blob": "ec1c1f194980e66c0e451129b52d01df51a4653d",
+    "first_red": "Retained original numerical RED on current BASE; final test uses this exact pinned legacy source as a historical negative control."
+  },
+  "sequence": {
+    "bars": 320,
+    "start": "2020-01-01 10:00:00",
+    "interval": 24,
+    "ticker": "B2_SYNTHETIC_SEQUENCE",
+    "permutation_multiplier": 73,
+    "close_formula": "100 + (i * 7) % 37 + (i // 11) % 9",
+    "open_formula": "close + i % 5 - 2",
+    "high_formula": "max(open, close) + 3 + i % 3",
+    "low_formula": "min(open, close) - 2 - i % 4",
+    "volume_formula": "1000 + ((i * 13) % 97) * 10",
+    "value_formula": "close * volume"
+  },
+  "legacy_order_oracles": [
+    "RSI14",
+    "STOCH_slowk",
+    "MFI",
+    "OBV"
+  ],
+  "tolerance": {
+    "rtol": 1e-12,
+    "atol": 1e-12
+  },
+  "continue_policy": {
+    "raw_rows": 18,
+    "effective_rows": 16,
+    "excluded_raw_ordinals": [
+      15,
+      16
+    ],
+    "closes_before_conflict": [
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114
+    ],
+    "conflicting_closes": [
+      115,
+      180
+    ],
+    "next_close": 110,
+    "initial_nan_count": 14,
+    "finite_rsi": [
+      100,
+      76.47058823529412
+    ]
+  },
+  "native_inventory_authority": {
+    "basis": "Literal independent transcription from pinned BASE tech.py calls and output names, not candidate kernel metadata.",
+    "source_commit": "223be5ebd552e3369d4b6b2488c6838798711458",
+    "source_blob": "ec1c1f194980e66c0e451129b52d01df51a4653d",
+    "calls": 66,
+    "outputs": 80,
+    "compatibility": 0,
+    "relevant_unstable_periods": {
+      "ADX": 0,
+      "ADXR": 0,
+      "ATR": 0,
+      "CMO": 0,
+      "DX": 0,
+      "EMA": 0,
+      "HT_DCPERIOD": 0,
+      "HT_DCPHASE": 0,
+      "HT_PHASOR": 0,
+      "HT_SINE": 0,
+      "HT_TRENDLINE": 0,
+      "HT_TRENDMODE": 0,
+      "KAMA": 0,
+      "MFI": 0,
+      "MINUS_DI": 0,
+      "MINUS_DM": 0,
+      "NATR": 0,
+      "PLUS_DI": 0,
+      "PLUS_DM": 0,
+      "RSI": 0,
+      "STOCHRSI": 0,
+      "T3": 0
+    }
+  },
+  "native_calls": [
+    {
+      "function": "BBANDS",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 5,
+        "nbdevup": 2,
+        "nbdevdn": 2,
+        "matype": 0
+      },
+      "outputs": [
+        "BBANDS_upperband",
+        "BBANDS_middleband",
+        "BBANDS_lowerband"
+      ]
+    },
+    {
+      "function": "DEMA",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30
+      },
+      "outputs": [
+        "DEMA"
+      ]
+    },
+    {
+      "function": "EMA",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30
+      },
+      "outputs": [
+        "EMA"
+      ]
+    },
+    {
+      "function": "HT_TRENDLINE",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "HT_TRENDLINE"
+      ]
+    },
+    {
+      "function": "KAMA",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30
+      },
+      "outputs": [
+        "KAMA"
+      ]
+    },
+    {
+      "function": "MA",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30,
+        "matype": 0
+      },
+      "outputs": [
+        "MA"
+      ]
+    },
+    {
+      "function": "MIDPOINT",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "MIDPOINT"
+      ]
+    },
+    {
+      "function": "MIDPRICE",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "MIDPRICE"
+      ]
+    },
+    {
+      "function": "SAR",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {
+        "acceleration": 0,
+        "maximum": 0
+      },
+      "outputs": [
+        "SAR"
+      ]
+    },
+    {
+      "function": "SAREXT",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {
+        "startvalue": 0,
+        "offsetonreverse": 0,
+        "accelerationinitlong": 0,
+        "accelerationlong": 0,
+        "accelerationmaxlong": 0,
+        "accelerationinitshort": 0,
+        "accelerationshort": 0,
+        "accelerationmaxshort": 0
+      },
+      "outputs": [
+        "SAREXT"
+      ]
+    },
+    {
+      "function": "T3",
+      "inputs": [
+        "high"
+      ],
+      "parameters": {
+        "timeperiod": 5,
+        "vfactor": 0
+      },
+      "outputs": [
+        "T3"
+      ]
+    },
+    {
+      "function": "TEMA",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30
+      },
+      "outputs": [
+        "TEMA"
+      ]
+    },
+    {
+      "function": "TRIMA",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30
+      },
+      "outputs": [
+        "TRIMA"
+      ]
+    },
+    {
+      "function": "WMA",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30
+      },
+      "outputs": [
+        "WMA"
+      ]
+    },
+    {
+      "function": "ADX",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "ADX"
+      ]
+    },
+    {
+      "function": "ADXR",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "ADXR"
+      ]
+    },
+    {
+      "function": "APO",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "fastperiod": 12,
+        "slowperiod": 26,
+        "matype": 0
+      },
+      "outputs": [
+        "APO"
+      ]
+    },
+    {
+      "function": "AROON",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "AROON_down",
+        "AROON_up"
+      ]
+    },
+    {
+      "function": "AROONOSC",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "AROONOSC"
+      ]
+    },
+    {
+      "function": "BOP",
+      "inputs": [
+        "open",
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "BOP"
+      ]
+    },
+    {
+      "function": "CCI",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "CCI"
+      ]
+    },
+    {
+      "function": "CMO",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "CMO"
+      ]
+    },
+    {
+      "function": "DX",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "DX"
+      ]
+    },
+    {
+      "function": "MACD",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "fastperiod": 12,
+        "slowperiod": 26,
+        "signalperiod": 9
+      },
+      "outputs": [
+        "MACD_real",
+        "MACD_signal",
+        "MACD_hist"
+      ]
+    },
+    {
+      "function": "MACDEXT",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "fastperiod": 12,
+        "fastmatype": 0,
+        "slowperiod": 26,
+        "slowmatype": 0,
+        "signalperiod": 9,
+        "signalmatype": 0
+      },
+      "outputs": [
+        "MACDEXT_real",
+        "MACDEXT_signal",
+        "MACDEXT_hist"
+      ]
+    },
+    {
+      "function": "MACDFIX",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "signalperiod": 9
+      },
+      "outputs": [
+        "MACDFIX_real",
+        "MACDFIX_signal",
+        "MACDFIX_hist"
+      ]
+    },
+    {
+      "function": "MFI",
+      "inputs": [
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "MFI"
+      ]
+    },
+    {
+      "function": "MINUS_DI",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "MINUS_DI"
+      ]
+    },
+    {
+      "function": "MINUS_DM",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "MINUS_DM"
+      ]
+    },
+    {
+      "function": "MOM",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 100
+      },
+      "outputs": [
+        "MOM"
+      ]
+    },
+    {
+      "function": "PLUS_DI",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "PLUS_DI"
+      ]
+    },
+    {
+      "function": "PLUS_DM",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "PLUS_DM"
+      ]
+    },
+    {
+      "function": "PPO",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "fastperiod": 12,
+        "slowperiod": 26,
+        "matype": 0
+      },
+      "outputs": [
+        "PPO"
+      ]
+    },
+    {
+      "function": "ROC",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 10
+      },
+      "outputs": [
+        "ROC"
+      ]
+    },
+    {
+      "function": "ROCP",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 10
+      },
+      "outputs": [
+        "ROCP"
+      ]
+    },
+    {
+      "function": "ROCR",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 10
+      },
+      "outputs": [
+        "ROCR"
+      ]
+    },
+    {
+      "function": "ROCR100",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 10
+      },
+      "outputs": [
+        "ROCR100"
+      ]
+    },
+    {
+      "function": "RSI",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "RSI14"
+      ]
+    },
+    {
+      "function": "STOCH",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "fastk_period": 5,
+        "slowk_period": 3,
+        "slowk_matype": 0,
+        "slowd_period": 3,
+        "slowd_matype": 0
+      },
+      "outputs": [
+        "STOCH_slowk",
+        "STOCH_slowd"
+      ]
+    },
+    {
+      "function": "STOCHF",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "fastk_period": 5,
+        "fastd_period": 3,
+        "fastd_matype": 0
+      },
+      "outputs": [
+        "STOCHF_fastk",
+        "STOCHF_fastd"
+      ]
+    },
+    {
+      "function": "STOCHRSI",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14,
+        "fastk_period": 5,
+        "fastd_period": 3,
+        "fastd_matype": 0
+      },
+      "outputs": [
+        "STOCHRSI_fastk",
+        "STOCHRSI_fastd"
+      ]
+    },
+    {
+      "function": "TRIX",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 30
+      },
+      "outputs": [
+        "TRIX"
+      ]
+    },
+    {
+      "function": "ULTOSC",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod1": 7,
+        "timeperiod2": 14,
+        "timeperiod3": 28
+      },
+      "outputs": [
+        "ULTOSC"
+      ]
+    },
+    {
+      "function": "WILLR",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "WILLR"
+      ]
+    },
+    {
+      "function": "ATR",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "ATR"
+      ]
+    },
+    {
+      "function": "NATR",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "NATR"
+      ]
+    },
+    {
+      "function": "TRANGE",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "TRANGE"
+      ]
+    },
+    {
+      "function": "AD",
+      "inputs": [
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "parameters": {},
+      "outputs": [
+        "AD"
+      ]
+    },
+    {
+      "function": "ADOSC",
+      "inputs": [
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "parameters": {
+        "fastperiod": 3,
+        "slowperiod": 10
+      },
+      "outputs": [
+        "ADOSC"
+      ]
+    },
+    {
+      "function": "OBV",
+      "inputs": [
+        "close",
+        "volume"
+      ],
+      "parameters": {},
+      "outputs": [
+        "OBV"
+      ]
+    },
+    {
+      "function": "AVGPRICE",
+      "inputs": [
+        "open",
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "AVGPRICE"
+      ]
+    },
+    {
+      "function": "MEDPRICE",
+      "inputs": [
+        "high",
+        "low"
+      ],
+      "parameters": {},
+      "outputs": [
+        "MEDPRICE"
+      ]
+    },
+    {
+      "function": "TYPPRICE",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "TYPPRICE"
+      ]
+    },
+    {
+      "function": "WCLPRICE",
+      "inputs": [
+        "high",
+        "low",
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "WCLPRICE"
+      ]
+    },
+    {
+      "function": "HT_DCPERIOD",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "HT_DCPERIOD"
+      ]
+    },
+    {
+      "function": "HT_DCPHASE",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "HT_DCPHASE"
+      ]
+    },
+    {
+      "function": "HT_PHASOR",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "HT_PHASOR_inphase",
+        "HT_PHASOR_quadrature"
+      ]
+    },
+    {
+      "function": "HT_SINE",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "HT_SINE_sine",
+        "HT_SINE_leadsine"
+      ]
+    },
+    {
+      "function": "HT_TRENDMODE",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {},
+      "outputs": [
+        "HT_TRENDMODE"
+      ]
+    },
+    {
+      "function": "LINEARREG",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "LINEARREG"
+      ]
+    },
+    {
+      "function": "LINEARREG_ANGLE",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "LINEARREG_ANGLE"
+      ]
+    },
+    {
+      "function": "LINEARREG_INTERCEPT",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "LINEARREG_INTERCEPT"
+      ]
+    },
+    {
+      "function": "LINEARREG_SLOPE",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "LINEARREG_SLOPE"
+      ]
+    },
+    {
+      "function": "STDDEV",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 5,
+        "nbdev": 1
+      },
+      "outputs": [
+        "STDDEV"
+      ]
+    },
+    {
+      "function": "TSF",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 14
+      },
+      "outputs": [
+        "TSF"
+      ]
+    },
+    {
+      "function": "VAR",
+      "inputs": [
+        "close"
+      ],
+      "parameters": {
+        "timeperiod": 5,
+        "nbdev": 1
+      },
+      "outputs": [
+        "VAR"
+      ]
+    }
+  ],
+  "output_columns": [
+    "BBANDS_upperband",
+    "BBANDS_middleband",
+    "BBANDS_lowerband",
+    "DEMA",
+    "EMA",
+    "HT_TRENDLINE",
+    "KAMA",
+    "MA",
+    "MIDPOINT",
+    "MIDPRICE",
+    "SAR",
+    "SAREXT",
+    "T3",
+    "TEMA",
+    "TRIMA",
+    "WMA",
+    "ADX",
+    "ADXR",
+    "APO",
+    "AROON_down",
+    "AROON_up",
+    "AROONOSC",
+    "BOP",
+    "CCI",
+    "CMO",
+    "DX",
+    "MACD_real",
+    "MACD_signal",
+    "MACD_hist",
+    "MACDEXT_real",
+    "MACDEXT_signal",
+    "MACDEXT_hist",
+    "MACDFIX_real",
+    "MACDFIX_signal",
+    "MACDFIX_hist",
+    "MFI",
+    "MINUS_DI",
+    "MINUS_DM",
+    "MOM",
+    "PLUS_DI",
+    "PLUS_DM",
+    "PPO",
+    "ROC",
+    "ROCP",
+    "ROCR",
+    "ROCR100",
+    "RSI14",
+    "STOCH_slowk",
+    "STOCH_slowd",
+    "STOCHF_fastk",
+    "STOCHF_fastd",
+    "STOCHRSI_fastk",
+    "STOCHRSI_fastd",
+    "TRIX",
+    "ULTOSC",
+    "WILLR",
+    "ATR",
+    "NATR",
+    "TRANGE",
+    "AD",
+    "ADOSC",
+    "OBV",
+    "AVGPRICE",
+    "MEDPRICE",
+    "TYPPRICE",
+    "WCLPRICE",
+    "HT_DCPERIOD",
+    "HT_DCPHASE",
+    "HT_PHASOR_inphase",
+    "HT_PHASOR_quadrature",
+    "HT_SINE_sine",
+    "HT_SINE_leadsine",
+    "HT_TRENDMODE",
+    "LINEARREG",
+    "LINEARREG_ANGLE",
+    "LINEARREG_INTERCEPT",
+    "LINEARREG_SLOPE",
+    "STDDEV",
+    "TSF",
+    "VAR"
+  ]
+}
