@@ -472,3 +472,61 @@ scope; B2_RUNTIME_INTEGRATION_ACCEPTED requires the real caller hookup;
 B2_FULL_AC_ACCEPTED requires all original #16/#55/#56 evidence. None is implied
 by a successful local calculation. P1/P2 grant no source acquisition,
 production/live, merge, issue closure, P3 or P4 permission.
+
+## B2-03: MATH_ONLY references and unavailable source evidence
+
+P2 is stacked on an exact frozen P1 HEAD. Its independent preparation commit
+is retained, and only its own new reference files are transferred. Its write
+scope is this document, `tests/shared/b2/test_reference.py`,
+`tests/fixtures/b2/reference_manifest.json` and
+`tests/fixtures/b2/reference_data.json`. The optional recovered observation and
+manifest paths are not created: no matching historical source was recovered.
+
+The reference manifest enumerates all eight SBER/MOEX cells with NOT_AVAILABLE
+availability. Observed bounds, source row/page counts, acquisition times and
+body hashes are null. Requested windows and future caps are requests, not
+measurements. Identity, response, quality, coverage and full-dataset status stay
+NOT_VERIFIED, and production admission stays NOT_ENABLED.
+
+| Interval | Requested window for each instrument |
+| --- | --- |
+| 24 (1d) | 2023-01-01 through 2024-12-31 |
+| 60 (1h) | 2024-10-01 through 2024-12-31 |
+| 10 (10m) | 2024-12-02 through 2024-12-13 |
+| 1 (1m) | 2024-12-02 |
+
+Any future diagnostic capture requires its own owner permission. Proposed caps
+remain ten GETs/5000 retained rows per cell, eighty attempts/64 MiB globally,
+fixed windows and terminal-page evidence. The 320-clean-bar requirement belongs
+to long-oracle acceptance, not general candle validity. This P2 performs no
+capture, source API call, production read or publication.
+
+`reference_data.json` contains SYNTHETIC_MATHEMATICAL_CONTROLS only: no SBER/MOEX
+observations. Nine fixed Wilder vectors include warm-up/flat/directional/mixed
+cases and the exact CONTINUE result. Native inputs/parameters and all 80 output
+names are frozen from the immutable historical calculator. A test-only
+MATH_ONLY adapter calls the same private kernel with explicit dense groups and
+private diagnostic/native-dtype state. It has no public admission bypass and
+does not construct miniature F0 metadata from the numeric inputs.
+
+Native comparisons check every call, per-column dtype, NaN mask, index/order and
+values; independent Decimal/Wilder arithmetic checks the fixed RSI controls.
+Synthetic encoded-body controls test only byte identity and strict JSON
+decoding. They are not retained provider responses. A matching SHA or a JSON
+VERIFIED label cannot upgrade provenance, independent membership, identity or
+source authentication.
+
+All five B2-01 read-only assets are checked against their frozen UTF-8/LF
+hashes. The original ledger remains 10 reconstructed parsed observations out
+of 79, with 69 unenumerated, one corroborating ASSB sample and two additional
+parsed ABIO variants. Original historical HTTP bytes remain unavailable.
+The separate research export's 39 anomalies cannot replace the unknown 69.
+New recovered evidence must use separate files/category and the pinned original
+export hash; it cannot rewrite the historical observations or add duplicate
+coverage by counting the same observation twice.
+
+Passing these mathematical/availability controls is not source-backed
+SBER/MOEX acceptance. P2 records partial reference evidence and open source ACs.
+It is not independently merge-ready while P1 lacks independent CODE_ACCEPT
+and separate merge authorization. Parent/base changes require a fresh exact-SHA
+stack check; no automatic retarget, rebase, reset or merge is permitted.
