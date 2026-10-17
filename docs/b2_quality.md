@@ -452,6 +452,13 @@ all native parameter/output bindings, dtype/masks, conversion and diagnostic
 faults. A 320-bar fixture exercises long lookbacks; it is not a universal minimum
 history/admission rule or evidence of historical completeness.
 
+The P1 legacy parity fixture retains the original campaign-anchor tech Git
+blob as compressed bytes in `calculator_cases.json`. A literal length, SHA256
+and Git blob check precedes import, with strict decoding and no runtime Git,
+network or candidate-source fallback. This makes the same historical reference
+available in shallow CI. It is a code reference, not candle/source evidence,
+and does not implement or replace the separately owned P0/B1 companion.
+
 P0 is a separate B1/F3 reference-preparation companion. The existing B1 source
 guard rejects substantial tech changes before running its accepted-reference
 comparison. Until P0 is independently accepted and included in the actual base,

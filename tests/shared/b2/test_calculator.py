@@ -1,5 +1,7 @@
 """Independent P1 admission, lineage and numerical regressions; offline only."""
 
+import base64
+import binascii
 import copy
 import datetime
 from decimal import Decimal
@@ -8,12 +10,12 @@ import json
 from pathlib import Path
 import shutil
 import types
+import zlib
 
 import numpy as np
 import pandas as pd
 import pytest
 import talib
-import mds_offline_guard as guard
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -21,6 +23,13 @@ FIXTURE_PATH = ROOT / 'tests/fixtures/b2/calculator_cases.json'
 RAW_COLUMNS = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end']
 KEY_FIELDS = ['engine', 'market', 'source_scope', 'board', 'raw_instrument_id', 'interval', 'begin']
 CANARY = 'B2_P1_SYNTHETIC_PRIVATE_CANARY'
+LEGACY_BASE = '223be5ebd552e3369d4b6b2488c6838798711458'
+LEGACY_BLOB = 'ec1c1f194980e66c0e451129b52d01df51a4653d'
+LEGACY_BYTE_LENGTH = 46632
+LEGACY_SHA256 = '0168008093fed9104045b291cc893f552294bcba497ea7a7ea90de01595bf565'
+LEGACY_COMPRESSED_LENGTH = 9042
+LEGACY_COMPRESSED_SHA256 = 'd1077ee504b74dc7108de114e756109ca0a14a13dcd917943bad6079ee85212f'
+LEGACY_ENCODED_LENGTH = 12056
 
 
 @pytest.fixture
@@ -251,25 +260,159 @@ def _legacy_result(module, frame, monkeypatch, *, suffix='csv'):
     return outputs[0]
 
 
-@pytest.fixture(scope='module')
-def pinned_legacy():
-    """Read exactly the independently pinned BASE source through the native guard."""
-    fixture = json.loads(FIXTURE_PATH.read_text(encoding='utf-8'))['legacy_negative_control']
-    executable = shutil.which('git')
-    assert executable is not None, 'PINNED_LEGACY_PREPARATION_FAILED: Git unavailable'
-    command = [executable, 'show', fixture['base_sha'] + ':' + fixture['source_path']]
-    ticket = guard.issue_ticket('native-git', command, native=True)
-    result = guard.run_child(command, role='native-git', ticket=ticket, timeout=10)
-    assert result.validated and not result.report_errors and not result.timed_out
-    assert result.returncode == result.actual_exit == 0
-    assert result.stderr == b''
-    raw = result.stdout
+def _decode_pinned_reference(fixture):
+    """Verify frozen historical bytes without Git, candidate source or fallback."""
+    failure = 'PINNED_LEGACY_PREPARATION_FAILED'
+    if (type(fixture) is not dict or fixture.get('base_sha') != LEGACY_BASE
+            or fixture.get('source_path') != 'tech.py' or fixture.get('git_blob') != LEGACY_BLOB):
+        raise ValueError(failure)
+    frozen = fixture.get('frozen_reference')
+    expected = dict(format='BASE64_ZLIB_ORIGINAL_GIT_BLOB_V1',
+        source_commit=LEGACY_BASE, source_path='tech.py', git_blob=LEGACY_BLOB,
+        raw_byte_length=LEGACY_BYTE_LENGTH, raw_sha256=LEGACY_SHA256,
+        compressed_byte_length=LEGACY_COMPRESSED_LENGTH,
+        compressed_sha256=LEGACY_COMPRESSED_SHA256)
+    if type(frozen) is not dict or any(type(frozen.get(key)) is not type(value)
+                                      or frozen[key] != value for key, value in expected.items()):
+        raise ValueError(failure)
+    encoded = frozen.get('payload')
+    if type(encoded) is not str or len(encoded) != LEGACY_ENCODED_LENGTH or not encoded.isascii():
+        raise ValueError(failure)
+    try:
+        compressed = base64.b64decode(encoded, validate=True)
+        if (len(compressed) != LEGACY_COMPRESSED_LENGTH
+                or hashlib.sha256(compressed).hexdigest() != LEGACY_COMPRESSED_SHA256):
+            raise ValueError(failure)
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(compressed, LEGACY_BYTE_LENGTH + 1)
+    except (binascii.Error, zlib.error) as error:
+        raise ValueError(failure) from error
+    if (not decoder.eof or decoder.unused_data or decoder.unconsumed_tail
+            or len(raw) != LEGACY_BYTE_LENGTH or hashlib.sha256(raw).hexdigest() != LEGACY_SHA256):
+        raise ValueError(failure)
     actual_blob = hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
-    assert actual_blob == fixture['git_blob'], 'PINNED_LEGACY_PREPARATION_FAILED: wrong source'
+    if actual_blob != LEGACY_BLOB:
+        raise ValueError(failure)
+    return raw
+
+
+def _import_pinned_legacy(raw):
     module = types.ModuleType('b2_pinned_legacy')
     module.__file__ = 'B2_PINNED_BASE_tech.py'
     exec(compile(raw, module.__file__, 'exec'), module.__dict__)
     return module
+
+
+def _load_pinned_reference(fixture):
+    # Validation completes before any historical source is compiled/imported.
+    raw = _decode_pinned_reference(fixture)
+    return _import_pinned_legacy(raw)
+
+
+@pytest.fixture(scope='module')
+def pinned_legacy():
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding='utf-8'))['legacy_negative_control']
+    return _load_pinned_reference(fixture)
+
+
+def test_frozen_reference_has_literal_original_bytes(calculator_cases):
+    raw = _decode_pinned_reference(calculator_cases['legacy_negative_control'])
+    assert len(raw) == 46632
+    assert hashlib.sha256(raw).hexdigest() == '0168008093fed9104045b291cc893f552294bcba497ea7a7ea90de01595bf565'
+    assert hashlib.sha1(b'blob 46632\0' + raw).hexdigest() == 'ec1c1f194980e66c0e451129b52d01df51a4653d'
+    assert b'def _calculator_impl(' in raw
+    assert b'def calculate_candles(' not in raw
+
+
+def test_reference_preparation_needs_no_git_candidate_source_or_network(calculator_cases, monkeypatch):
+    import builtins
+    import socket
+    import subprocess
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Frozen reference preparation attempted an external dependency or fallback')
+
+    monkeypatch.setattr(shutil, 'which', lambda *args, **kwargs: None)
+    monkeypatch.setattr(subprocess, 'run', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(socket, 'getaddrinfo', forbidden)
+    original_open = builtins.open
+    original_read_text = Path.read_text
+    original_read_bytes = Path.read_bytes
+
+    def candidate_path(path):
+        return isinstance(path, (str, Path)) and Path(path).name.casefold() == 'tech.py'
+
+    def checked_open(path, *args, **kwargs):
+        if candidate_path(path):
+            forbidden()
+        return original_open(path, *args, **kwargs)
+
+    def checked_read_text(path, *args, **kwargs):
+        if candidate_path(path):
+            forbidden()
+        return original_read_text(path, *args, **kwargs)
+
+    def checked_read_bytes(path, *args, **kwargs):
+        if candidate_path(path):
+            forbidden()
+        return original_read_bytes(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, 'open', checked_open)
+    monkeypatch.setattr(Path, 'read_text', checked_read_text)
+    monkeypatch.setattr(Path, 'read_bytes', checked_read_bytes)
+    record = copy.deepcopy(calculator_cases['legacy_negative_control'])
+    module = _load_pinned_reference(record)
+    assert module.__file__ == 'B2_PINNED_BASE_tech.py'
+    assert callable(module.calculator)
+    assert not hasattr(module, 'calculate_candles')
+    record.pop('frozen_reference')
+    with pytest.raises(ValueError, match='PINNED_LEGACY_PREPARATION_FAILED'):
+        _load_pinned_reference(record)
+
+
+@pytest.mark.parametrize('damage', ['missing', 'invalid_base64', 'truncated', 'trailing',
+                                  'replacement', 'wrong_blob', 'wrong_length', 'wrong_sha256',
+                                  'wrong_format'])
+def test_corrupt_frozen_reference_rejected_before_import(calculator_cases, monkeypatch, damage):
+    record = copy.deepcopy(calculator_cases['legacy_negative_control'])
+    frozen = record['frozen_reference']
+    imports = []
+
+    def forbidden_import(raw):
+        imports.append(raw)
+        pytest.fail('Unverified reference bytes reached historical import')
+
+    monkeypatch.setitem(globals(), '_import_pinned_legacy', forbidden_import)
+    if damage == 'missing':
+        record.pop('frozen_reference')
+    elif damage == 'invalid_base64':
+        frozen['payload'] = '!' + frozen['payload'][1:]
+    elif damage == 'truncated':
+        compressed = base64.b64decode(frozen['payload'], validate=True)
+        frozen['payload'] = base64.b64encode(compressed[:-1]).decode('ascii')
+    elif damage == 'trailing':
+        compressed = base64.b64decode(frozen['payload'], validate=True)
+        frozen['payload'] = base64.b64encode(compressed + b'UNVERIFIED_TRAILER').decode('ascii')
+    elif damage == 'replacement':
+        # Synthetic untrusted replacement, never current candidate source.
+        raw = b"raise RuntimeError('UNVERIFIED_REFERENCE_MUST_NOT_IMPORT')\n"
+        frozen['payload'] = base64.b64encode(zlib.compress(raw, level=9)).decode('ascii')
+        frozen['raw_byte_length'] = len(raw)
+        frozen['raw_sha256'] = hashlib.sha256(raw).hexdigest()
+        frozen['git_blob'] = hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
+    elif damage == 'wrong_blob':
+        record['git_blob'] = frozen['git_blob'] = '0' * 40
+    elif damage == 'wrong_length':
+        frozen['raw_byte_length'] += 1
+    elif damage == 'wrong_sha256':
+        frozen['raw_sha256'] = '0' * 64
+    else:
+        frozen['format'] = 'CANDIDATE_DERIVED_OR_FALLBACK_PROFILE'
+    with pytest.raises(ValueError, match='PINNED_LEGACY_PREPARATION_FAILED'):
+        _load_pinned_reference(record)
+    assert imports == []
 
 
 @pytest.mark.parametrize('column', ['RSI14', 'STOCH_slowk', 'MFI', 'OBV'])
