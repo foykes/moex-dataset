@@ -16,7 +16,7 @@
 # %%
 import requests, pandas as pd, sys
 from bs4 import BeautifulSoup
-import errno, re, socket, ssl, time
+import errno, hashlib, re, socket, ssl, time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from urllib3 import exceptions as urllib3_errors
@@ -60,10 +60,13 @@ def _retry_wait(delay):
 
 
 def _check_budget(deadline, last_error=None, state=None):
-    remaining = deadline - _network_clock()
+    checked = _network_clock()
+    remaining = deadline - checked
+    if state is not None:
+        state['last_checked'] = checked
     if remaining <= 0:
         if state is not None:
-            state.update(category='TIMEOUT', reason='BUDGET_EXHAUSTED')
+            state.update(category='TIMEOUT', reason='BUDGET_EXHAUSTED', failure_kind='legacy')
         raise TimeoutError('DOHOD_BUDGET_EXHAUSTED: бюджет получения данных исчерпан') from last_error
     return remaining
 
@@ -179,7 +182,11 @@ def _dohod_event(logging_context, level, event, message, *, error=None, state=No
     if error is not None:
         fields['error'] = error
     if state is not None:
-        fields['duration_ms'] = max(0, (_network_clock() - state['started']) * 1000)
+        if state.get('failure_kind') == 'initialization':
+            fields['page'] = state['page_ref']
+            fields['duration_ms'] = max(0, (state['last_checked'] - state['started']) * 1000)
+        else:
+            fields['duration_ms'] = max(0, (_network_clock() - state['started']) * 1000)
         if state['attempt']:
             fields['retries'] = {'attempt': state['attempt'], 'limit': 3}
     try:
@@ -225,10 +232,38 @@ def _retry_event(logging_context, error, state):
         return False
 
 
-def _failure(logging_context, error, state, *, export=False):
+def _safe_error_record(logging_context, state, error):
+    # Новые C3 failures не пропускаем через make_error(raw): его args/stack
+    # и legacy endpoint не являются безопасной проекцией semantic report.
+    import run_logging
+    code = state['failure_code']
+    record = dict(category=state['category'], code=code, stage='dohodru_data',
+                  retryable=False, final=True, message=code)
+    record.update({name: None for name in run_logging.ERROR_NULLABLE})
+    record.update(run_id=logging_context['run_id'], page=state.get('page_ref'),
+                  attempt=state['attempt'] or None,
+                  exception_type='RuntimeError' if code == 'LOGGING_INCOMPLETE' else 'ValueError')
+    if state.get('failure_kind') == 'initialization':
+        record['exception_type'] = ('KeyboardInterrupt' if isinstance(error, KeyboardInterrupt) else
+            'RuntimeError' if isinstance(error, RuntimeError) else
+            'Exception' if isinstance(error, Exception) else 'BaseException')
+    record['null_reasons'] = {name: 'NOT_AVAILABLE_OR_NOT_APPLICABLE'
+                              for name in run_logging.ERROR_NULLABLE if record[name] is None}
+    record['null_reasons']['endpoint'] = 'RAW_ENDPOINT_NOT_EMITTED'
+    return record
+
+
+def _failure(logging_context, error, state, *, export=False, coverage_report=None):
     if logging_context is None:
         return
     try:
+        if state.get('failure_kind', 'legacy') != 'legacy':
+            record = _safe_error_record(logging_context, state, error)
+            _dohod_event(logging_context, 'ERROR', 'dohod_acquisition_failed',
+                'Проверка данных доход.ру прервана: ' + record['code'],
+                error=record, state=state,
+                outcome='FAILED' if isinstance(error, Exception) else 'INTERRUPTED')
+            return
         code = 'DOHOD_EXPORT_FAILED' if export else 'DOHOD_SOURCE_REQUEST_FAILED'
         if not export and state.get('reason') == 'BUDGET_EXHAUSTED':
             code = 'DOHOD_BUDGET_EXHAUSTED'
@@ -240,6 +275,8 @@ def _failure(logging_context, error, state, *, export=False):
             'Выгрузка доход.ру прервана: ' + code + '; ' + state['reason'] + _phase_marker(state),
             error=record, state=state, outcome='FAILED')
     except BaseException:
+        if coverage_report is not None:
+            coverage_report['diagnostics_status'] = 'INCOMPLETE'
         try:
             print('Не удалось записать диагностику доход.ру.', file=sys.stderr)
         except BaseException:
@@ -390,6 +427,7 @@ def _request_page(url, deadline, logging_context, state, *, page_kind, text=Fals
                 try:
                     # Session.send даже с allow_redirects=False читает 3xx body
                     # ради _next. Публичный adapter.send этого не делает.
+                    state['sends'] = state.get('sends', 0) + 1
                     response = adapter.send(prepared, timeout=(min(10, remaining), min(10, remaining)),
                                             **settings)
                 except BaseException as error:
@@ -492,8 +530,10 @@ def _request_page(url, deadline, logging_context, state, *, page_kind, text=Fals
 
 
 def _operation_state(url):
-    return {'started': _network_clock(), 'endpoint': None, 'attempt': 0,
-            'category': 'SOURCE', 'reason': '', 'phase': ''}
+    started = _network_clock()
+    return {'started': started, 'last_checked': started, 'endpoint': None, 'attempt': 0,
+            'category': 'SOURCE', 'reason': '', 'phase': '', 'sends': 0,
+            'failure_kind': 'legacy'}
 
 
 def _source_checkpoint(deadline, logging_context):
@@ -503,6 +543,200 @@ def _source_checkpoint(deadline, logging_context):
     except Exception as error:
         _failure(logging_context, error, state)
         raise
+
+
+def _table_profiles():
+    # Это утверждённые consumer profiles после pandas, не live HTML contract.
+    # Исторические и synthetic legacy поля не переименовываем друг в друга.
+    return {
+        'overview': (
+            ('Тикер', 'Дивиденд'), ('Тикер', 'Компания', 'Дивиденд'),
+            ('Акция', 'Сектор', 'Период', 'Выплата на акцию (прогноз)',
+             'Доходность выплаты', 'Цена расчета доходности',
+             'Дата закрытия реестра (оценка)', 'Капитализация, млн. руб.', 'DSI')),
+        'history': (('Год', 'Сумма'), ('Год', 'Дивиденд (руб.)', 'Изм. к пред. году')),
+        'payments': (('Дата', 'Выплата'), ('Дата объявления дивиденда',
+                     'Дата закрытия реестра', 'Год для учета дивиденда', 'Дивиденд')),
+        'metrics': (('текущая доходность', 'доля от прибыли', 'индекс DSI'),),
+    }
+
+
+def _semantic_error(state, code, *, page_ref=None):
+    # Вызывается только вне исходного except и после относящегося к нему budget
+    # check. Route выбираем по месту отказа, не по тексту чужого исключения.
+    state.update(failure_kind='semantic', failure_code=code, reason=code,
+                 category='SOURCE' if code == 'DOHOD_DETAIL_PARSE_FAILED' else 'QUALITY',
+                 phase='', page_ref=page_ref)
+    return ValueError(code)
+
+
+def _select_tables(tables, page_kind):
+    profiles = _table_profiles()
+    allowed = ('overview',) if page_kind == 'overview' else ('metrics', 'history', 'payments')
+    required = ('overview',) if page_kind == 'overview' else ('metrics', 'history')
+    selected = {}
+    if type(tables) is not list:
+        return selected, 'DOHOD_TABLE_SCHEMA_UNSUPPORTED'
+    for source in tables:
+        if not isinstance(source, pd.DataFrame):
+            return selected, 'DOHOD_TABLE_SCHEMA_UNSUPPORTED'
+        if source.columns.has_duplicates or isinstance(source.columns, pd.MultiIndex):
+            return selected, 'DOHOD_TABLE_SCHEMA_UNSUPPORTED'
+        columns = source.columns.tolist()
+        role, profile, clean = None, None, columns
+        if page_kind == 'overview':
+            clean = [name for name in columns if not (type(name) is str and
+                     ('Unnamed:' in name or 'Капитализация, sorting' in name))]
+        for candidate in allowed:
+            if candidate == 'metrics':
+                # Только physical row 1 задаёт technical header. Исходные
+                # labels трёх колонок и повторные source rows не меняем.
+                if (len(columns) == 3 and len(source) >= 2
+                        and all(type(value) is str and value == label
+                                for value, label in zip(source.iloc[1], profiles['metrics'][0]))):
+                    role, profile = candidate, 0
+            elif all(type(name) is str for name in clean):
+                for number, signature in enumerate(profiles[candidate]):
+                    if tuple(clean) == signature:
+                        if role is not None:
+                            return selected, 'DOHOD_TABLE_ROLE_CONFLICT'
+                        role, profile = candidate, number
+        if role is None:
+            anchors = {label for variants in profiles.values() for signature in variants for label in signature}
+            anchored = any(type(name) is str and name in anchors for name in columns)
+            anchored = anchored or any(type(value) is str and value in profiles['metrics'][0]
+                                       for value in source.to_numpy().flat)
+            code = ('DOHOD_TABLE_SCHEMA_UNSUPPORTED' if anchored else
+                    'DOHOD_UNKNOWN_EMPTY_TABLE' if source.empty else 'DOHOD_UNKNOWN_NONEMPTY_TABLE')
+            return selected, code
+        if role in selected:
+            return selected, 'DOHOD_TABLE_ROLE_AMBIGUOUS'
+        # Только исходные payload cells. Header-as-data, index и добавленные
+        # page_url/ticker не могут сделать пустой источник непустым.
+        payload = source.loc[:, clean] if role == 'overview' else source
+        if role == 'metrics':
+            payload = source.iloc[[i for i in range(len(source)) if i != 1]]
+        if not payload.notna().to_numpy().any():
+            return selected, 'DOHOD_EMPTY_ROLE_NOT_VERIFIED'
+        selected[role] = (source.copy(deep=True), profile)
+    if any(role not in selected for role in required):
+        return selected, 'DOHOD_TABLE_REQUIRED_MISSING'
+    return selected, None
+
+
+def _page_ref(url):
+    return 'dohod-page-' + hashlib.sha256(url.encode('ascii')).hexdigest()
+
+
+def _new_coverage():
+    return dict(version=1, scope='ADMITTED_DISCOVERY', overview_final_url=None,
+        expected=None, pages=[], missing=None,
+        discovery=dict(hrefs=0, admitted=0, deduplicated=0, rejected={}, ignored=0),
+        counts=dict(expected=None, requested=0, received=0, parsed=0, validated=0,
+                    accepted=0, failed=0, not_run=0, missing=None),
+        observed_coverage='NOT_VERIFIED', source_coverage='NOT_VERIFIED',
+        payments_coverage='NOT_EVALUATED', late_group_input_status='BLOCKED_FAILED',
+        execution_outcome='STARTED', diagnostics_status='NOT_REQUESTED',
+        finalized=False, coverage_delivery_attempted=False, elapsed_ms=0)
+
+
+def _new_page(url):
+    return dict(url=url, ref=_page_ref(url), stage='DISCOVERED', outcome='NOT_RUN',
+        reason='NOT_REQUESTED', requested=False, received=False, parsed=False,
+        validated=False, accepted=False, attempts=0, sends=0, roles={},
+        elapsed_ms=0, budget_remaining_ms=None)
+
+
+def _page_progress(state):
+    page = state.get('page_record')
+    if page is not None:
+        page.update(attempts=state['attempt'], sends=state['sends'],
+                    requested=state['sends'] > 0)
+        if page['requested'] and page['stage'] == 'DISCOVERED':
+            page['stage'] = 'REQUESTED'
+
+
+def _coverage_counts(report):
+    pages = report['pages']
+    report['counts'].update({key: sum(page[key] for page in pages)
+                            for key in ('requested', 'received', 'parsed', 'validated', 'accepted')})
+    report['counts'].update(failed=sum(page['outcome'] in ('FAILED', 'NOT_VERIFIED', 'INTERRUPTED')
+                                      for page in pages),
+                            not_run=sum(page['outcome'] == 'NOT_RUN' for page in pages))
+    if report['expected'] is not None:
+        report['missing'] = [page['url'] for page in pages if not page['accepted']]
+        report['counts'].update(expected=len(pages), missing=len(report['missing']))
+
+
+def _coverage_fields(report, page=None):
+    # Разные роли имеют разные строки/header semantics. Не выдаём их сумму
+    # за rows_received и не приравниваем canonical pages к instruments.
+    counts = dict(rows_received=None, rows_accepted=None, rows_quarantined=None,
+                  pages=int(page['received']) if page is not None else report['counts']['received'],
+                  instruments=None, null_reasons={
+                      'rows_received': 'HETEROGENEOUS_TABLE_ROWS_NOT_AGGREGATED',
+                      'rows_accepted': 'HETEROGENEOUS_TABLE_ROWS_NOT_AGGREGATED',
+                      'rows_quarantined': 'NOT_EVALUATED',
+                      'instruments': 'SOURCE_UNIVERSE_NOT_VERIFIED'})
+    retries = {'attempt': page['attempts'], 'limit': 3} if page is not None and page['attempts'] else None
+    return dict(stage='dohodru_data', page=page['ref'] if page is not None else None,
+        outcome=page['outcome'] if page is not None else report['observed_coverage'],
+        elapsed_ms=report['elapsed_ms'],
+        duration_ms=page['elapsed_ms'] if page is not None else report['elapsed_ms'],
+        counts=counts, retries=retries, error=None, fields={}, null_reasons={
+            **({'page': 'AGGREGATE_COVERAGE'} if page is None else {}),
+            **({'retries': 'MULTIPLE_LOGICAL_OPERATIONS' if page is None else 'NO_REQUEST_ATTEMPTED'}
+               if retries is None else {}),
+            'error': 'NO_ERROR' if report['execution_outcome'] == 'RETURNED'
+                     else 'PRIMARY_ERROR_REPORTED_SEPARATELY'})
+
+
+def _coverage_event(logging_context, event, message, fields, state):
+    if logging_context is None:
+        return
+    import run_logging
+    delivered = False
+    try:
+        receipt = run_logging.emit_event(logging_context, 'INFO', event, message, fields)
+        delivered = receipt['accepted'] and run_logging.check_logging_health(logging_context)['healthy']
+    except Exception:
+        pass
+    if not delivered:
+        state.update(failure_kind='coverage', failure_code='LOGGING_INCOMPLETE',
+                     category='IO', reason='LOGGING_INCOMPLETE', phase='')
+        # Вне except: underlying logging exception не остаётся в context/cause.
+        raise RuntimeError('LOGGING_INCOMPLETE')
+
+
+def _coverage_batch(logging_context, report, state):
+    if report['coverage_delivery_attempted'] or logging_context is None:
+        return
+    report['coverage_delivery_attempted'] = True
+    report['diagnostics_status'] = 'PENDING'
+    for page in report['pages']:
+        _coverage_event(logging_context, 'dohod_page_coverage',
+            'Покрытие страницы доход.ру: ' + page['outcome'] + '; ' + (page['reason'] or 'ACCEPTED'),
+            _coverage_fields(report, page), state)
+    values = report['counts']
+    summary = '; '.join(key + '=' + (str(value) if value is not None else 'NOT_VERIFIED')
+                        for key, value in values.items())
+    _coverage_event(logging_context, 'dohod_coverage_summary',
+        'Покрытие обнаруженного набора доход.ру: ' + summary
+        + '; payments=' + report['payments_coverage']
+        + '; late_group_input=' + report['late_group_input_status'],
+        _coverage_fields(report), state)
+    import run_logging
+    confirmed = False
+    try:
+        receipt = run_logging.flush_logging(logging_context)
+        confirmed = receipt['confirmed'] and run_logging.check_logging_health(logging_context)['healthy']
+    except Exception:
+        pass
+    if not confirmed:
+        state.update(failure_kind='coverage', failure_code='LOGGING_INCOMPLETE',
+                     category='IO', reason='LOGGING_INCOMPLETE', phase='')
+        raise RuntimeError('LOGGING_INCOMPLETE')
+    report['diagnostics_status'] = 'CONFIRMED'
 
 
 # %%
@@ -521,7 +755,11 @@ def _main_frame(url, deadline, logging_context, state):
     html, _ = _request_page(url, deadline, logging_context, state, page_kind='overview')
     df_list = _read_dohod_html(html)
     _check_budget(deadline, state=state)
-    df_mainpage = df_list[-1]
+    selected, reason = _select_tables(df_list, 'overview')
+    _check_budget(deadline, state=state)
+    if reason is not None:
+        raise _semantic_error(state, reason)
+    df_mainpage = selected['overview'][0]
 
     # очистка от ненужных колонок
     bad_columns = []
@@ -566,15 +804,79 @@ def get_page_info (url, *, logging_context=None):
 
 
 def _prepare_pages(url, source_deadline, logging_context):
-    state = _operation_state(url)
+    frames, _ = _prepare_pages_result(url, source_deadline, logging_context, coverage_sink={})
+    return frames
+
+
+def _finish_coverage(report, state, error=None):
+    # Здесь только уже измеренные значения и собственные dict/list. Даже без
+    # logger private caller получает тот же sink до повторного raise ошибки.
+    _page_progress(state)
+    report['elapsed_ms'] = max(0, (state['last_checked'] - report['started']) * 1000)
+    page = state.get('page_record')
+    if page is not None:
+        page['elapsed_ms'] = max(0, (state['last_checked'] - state['started']) * 1000)
+        if 'deadline' in state:
+            page['budget_remaining_ms'] = max(0, state['deadline'] - state['last_checked']) * 1000
+        if error is not None and not page['accepted']:
+            reason = state.get('failure_code') if state.get('failure_kind') != 'legacy' else state['reason']
+            page['reason'] = reason or 'DOHOD_COLLECTION_FAILED'
+            if not isinstance(error, Exception):
+                page['outcome'] = 'INTERRUPTED'
+            else:
+                unverified = ('UNKNOWN', 'UNSUPPORTED', 'EMPTY_ROLE', 'PROFILE_CHANGED')
+                page['outcome'] = 'NOT_VERIFIED' if any(token in page['reason'] for token in unverified) else 'FAILED'
+    for pending in report['pages']:
+        if pending['outcome'] == 'NOT_RUN' and error is not None:
+            pending['reason'] = 'PRIOR_PAGE_FAILED'
+    _coverage_counts(report)
+    complete = bool(report['expected']) and not report['missing']
+    report['observed_coverage'] = ('COMPLETE_OBSERVED' if complete else
+                                   'INCOMPLETE' if report['expected'] else 'NOT_VERIFIED')
+    report['execution_outcome'] = ('RETURNED' if error is None else
+                                    'FAILED' if isinstance(error, Exception) else 'INTERRUPTED')
+    report['late_group_input_status'] = ('PENDING_FINAL_BUDGET_CHECK' if error is None and complete
+        and report['payments_coverage'] == 'PRESENT_FOR_ALL' else
+        'BLOCKED_NOT_VERIFIED' if error is None and complete else 'BLOCKED_FAILED')
+    report['finalized'] = True
+
+
+def _prepare_pages_result(url, source_deadline, logging_context, *, coverage_sink):
+    if type(coverage_sink) is not dict or coverage_sink:
+        raise ValueError('DOHOD_COVERAGE_SINK_INVALID')
+    report = _new_coverage()
+    coverage_sink['report'] = report
+    state = dict(started=0, last_checked=0, endpoint=None, attempt=0, sends=0,
+                 category='SOURCE', reason='', phase='', failure_kind='legacy')
+    report['started'] = 0
     try:
-        return _page_frames(url, source_deadline, logging_context, state)
-    except Exception as error:
-        _failure(logging_context, error, state)
+        state.update(_operation_state(url))
+        report['started'] = state['started']
+        frames = _page_frames(url, source_deadline, logging_context, state, report)
+        _finish_coverage(report, state)
+        _coverage_batch(logging_context, report, state)
+        _check_budget(source_deadline, state=state)
+        if report['late_group_input_status'] == 'PENDING_FINAL_BUDGET_CHECK':
+            report['late_group_input_status'] = 'PASS'
+        report['elapsed_ms'] = max(0, (state['last_checked'] - report['started']) * 1000)
+        return frames, report
+    except BaseException as error:
+        # Это единственный collection failure owner. Wrapper и main не
+        # повторяют _failure; частично доставленный batch не воспроизводим.
+        primary_state = dict(state)
+        _finish_coverage(report, primary_state, error)
+        try:
+            _coverage_batch(logging_context, report, state)
+        except BaseException:
+            report['diagnostics_status'] = 'INCOMPLETE'
+        if report['coverage_delivery_attempted'] and report['diagnostics_status'] == 'PENDING':
+            report['diagnostics_status'] = 'INCOMPLETE'
+        if isinstance(error, Exception) or primary_state.get('failure_kind') == 'initialization':
+            _failure(logging_context, error, primary_state, coverage_report=report)
         raise
 
 
-def _page_frames(url, source_deadline, logging_context, state):
+def _page_frames(url, source_deadline, logging_context, state, report):
 
     df_overview_full = pd.DataFrame()
     df_years_full = pd.DataFrame()
@@ -585,103 +887,130 @@ def _page_frames(url, source_deadline, logging_context, state):
     deadline = min(source_deadline, state['started'] + 35)
     page_text, overview_base = _request_page(url, deadline, logging_context, state,
                                           page_kind='overview', text=True)
+    report['overview_final_url'] = overview_base
     soup = BeautifulSoup(page_text, 'lxml')
     _check_budget(deadline, state=state)
 
     url_list = []
     seen, warned = set(), set()
     for link in soup.find_all('a', href=True):
+        report['discovery']['hrefs'] += 1
         href = link.get('href')
         if not href:
+            report['discovery']['ignored'] += 1
             continue
         try:
             target = _canonical_url(href, overview_base)
         except ValueError as error:
             reason = error.args[0]
+            rejected = report['discovery']['rejected']
+            rejected[reason] = rejected.get(reason, 0) + 1
             if reason != 'URL_PATH_NOT_ALLOWED' and reason not in warned:
                 warned.add(reason)
                 _dohod_event(logging_context, 'WARNING', 'dohod_url_rejected',
                     'Ссылка доход.ру отклонена: ' + reason, state=state, outcome='REJECTED')
             _check_budget(deadline, state=state)
             continue
-        if _url_kind(target) == 'detail' and target not in seen:
-            seen.add(target)
-            url_list.append(target)
+        if _url_kind(target) == 'detail':
+            report['discovery']['admitted'] += 1
+            if target not in seen:
+                seen.add(target)
+                url_list.append(target)
+            else:
+                report['discovery']['deduplicated'] += 1
+        else:
+            report['discovery']['ignored'] += 1
     
 
     print("Количество страниц для обхода: {}".format(len(url_list)))
     _logging_barrier(logging_context)
     _check_budget(deadline, state=state)
+    # Expected и records становятся видимыми вместе. Прерывание при их
+    # подготовке оставляет membership неизвестным, а не ложно полным.
+    pages = [_new_page(target) for target in url_list]
+    report.update(expected=list(url_list), pages=pages)
+    if not url_list:
+        raise _semantic_error(state, 'DOHOD_DISCOVERY_EMPTY_NOT_VERIFIED')
 
 
     ### Обход каждой страницы
 
-    b = []
-    for url in url_list:
+    profiles_seen = {}
+    for page in report['pages']:
+        url = page['url']
+        # Привязываем текущую страницу до clock: сбой её инициализации не
+        # наследует endpoint, attempts или coverage предыдущей страницы.
+        last_checked = state['last_checked']
         state.clear()
-        state.update(_operation_state(url))
+        state.update(started=last_checked, last_checked=last_checked, endpoint=None,
+            attempt=0, sends=0, category='SOURCE', reason='DOHOD_DETAIL_INITIALIZATION_FAILED',
+            phase='', failure_kind='initialization', failure_code='DOHOD_DETAIL_INITIALIZATION_FAILED',
+            page_record=page, page_ref=page['ref'])
+        next_state = _operation_state(url)
+        state.clear()
+        state.update(next_state)
+        state['page_record'] = page
+        state['page_ref'] = page['ref']
         _check_budget(source_deadline, state=state)
         deadline = min(source_deadline, state['started'] + 35)
+        state['deadline'] = deadline
         html, _ = _request_page(url, deadline, logging_context, state, page_kind='detail')
+        _page_progress(state)
+        page.update(received=True, stage='RECEIVED')
+        parse_failed = False
         try:
             df_list = _read_dohod_html(html)
-        except:
-            df_list = pd.DataFrame()
-            print('Не смог найти таблицы на этой странице: {}',format(url))
+        except Exception:
+            parse_failed = True
 
         _check_budget(deadline, state=state)
+        if parse_failed:
+            raise _semantic_error(state, 'DOHOD_DETAIL_PARSE_FAILED', page_ref=page['ref'])
+        page.update(parsed=True, stage='PARSED')
+        selected, reason = _select_tables(df_list, 'detail')
+        _check_budget(deadline, state=state)
+        if reason is not None:
+            raise _semantic_error(state, reason, page_ref=page['ref'])
+        for role in ('history', 'payments'):
+            if role in selected:
+                profile = selected[role][1]
+                if role in profiles_seen and profile != profiles_seen[role]:
+                    raise _semantic_error(state, 'DOHOD_TABLE_PROFILE_CHANGED', page_ref=page['ref'])
+                profiles_seen[role] = profile
 
-        a = len(df_list)
-        b.append(a)
-
-        if len(df_list) == 2:
-            df = df_list[0]
-            df.columns = df.iloc[1]
-            df.reset_index(inplace=True)
-            df = df.drop (index= 1)
-            df = df[['текущая доходность','доля от прибыли','индекс DSI']]
-            df['page_url'] = url
-            df['ticker'] = url.split(r'/')[-1].upper()
-            df_overview_full = pd.concat([df_overview_full,df])
-
-            df = df_list[1]
-            df['page_url'] = url
-            df['ticker'] = url.split(r'/')[-1].upper()
-            df_years_full = pd.concat([df_years_full,df])
-
-        elif len(df_list) == 3:
-            df = df_list[0]
-            df.columns = df.iloc[1]
-            df.reset_index(inplace=True)
-            df = df.drop (index= 1)
-            df = df[['текущая доходность','доля от прибыли','индекс DSI']]
-            df['page_url'] = url
-            df['ticker'] = url.split(r'/')[-1].upper()
-            if len(df) > 0: df_overview_full = pd.concat([df_overview_full,df])
-
-            df = df_list[1]
-            df['page_url'] = url
-            df['ticker'] = url.split(r'/')[-1].upper()
-            if len(df) > 0: df_years_full = pd.concat([df_years_full,df])
-
-            df = df_list[2]
-            df['page_url'] = url
-            df['ticker'] = url.split(r'/')[-1].upper()
-            if len(df) > 0: df_each_full = pd.concat([df_each_full,df])
-
+        # Legacy projection выполняется на локальных копиях только после
+        # проверки всех ролей. Никаких новых dropna/reset/dedup для source rows.
+        rate = selected['metrics'][0]
+        rate.columns = rate.iloc[1]
+        rate.reset_index(inplace=True)
+        rate = rate.drop(index=1)
+        rate = rate[list(_table_profiles()['metrics'][0])]
+        years = selected['history'][0]
+        payments = selected['payments'][0] if 'payments' in selected else pd.DataFrame()
+        for frame in (rate, years) + ((payments,) if 'payments' in selected else ()):
+            frame['page_url'] = url
+            frame['ticker'] = url.rsplit('/', 1)[-1].upper()
+        page['roles'] = {role: dict(status='PRESENT', profile=profile,
+                                    rows=len(rate) if role == 'metrics' else len(frame))
+                         for role, (frame, profile) in selected.items()}
+        if 'payments' not in selected:
+            page['roles']['payments'] = dict(status='ABSENT_ALLOWED', profile=None, rows=0)
+        page.update(validated=True, stage='VALIDATED')
+        # Сначала готовим весь набор новых frames, затем принимаем страницу.
+        # При failure ни одна часть её данных не возвращается caller как success.
+        prepared = (pd.concat([df_overview_full, rate]), pd.concat([df_years_full, years]),
+                    pd.concat([df_each_full, payments]) if 'payments' in selected else df_each_full)
         _logging_barrier(logging_context)
         _check_budget(deadline, state=state)
-
-
-    ## Статистика для отладки. Сколько разных табличек спарсено
-    o = list(set(b))
-
-    for i in o:
-        print("Тип {}. Количество: {}".format(i, b.count(i)))
-        print("___")
+        df_overview_full, df_years_full, df_each_full = prepared
+        page.update(accepted=True, stage='ACCEPTED', outcome='ACCEPTED', reason=None,
+                    elapsed_ms=max(0, (state['last_checked'] - state['started']) * 1000),
+                    budget_remaining_ms=max(0, deadline - state['last_checked']) * 1000)
 
     _logging_barrier(logging_context)
     _check_budget(source_deadline, state=state)
+    report['payments_coverage'] = ('PRESENT_FOR_ALL' if all(
+        page['roles']['payments']['status'] == 'PRESENT' for page in report['pages']) else 'NOT_VERIFIED')
     
     return df_overview_full, df_years_full, df_each_full
 
@@ -704,7 +1033,20 @@ def main(url, *, logging_context=None):
 
     # Время ранних writes учитывается исходным source deadline. Внутри уже
     # допущенной группы checkpoint нет; поздний network failure не откатывает её.
-    df_overview_full, df_years_full, df_each_full = _prepare_pages(url, source_deadline, logging_context)
+    frames, coverage = _prepare_pages_result(url, source_deadline, logging_context, coverage_sink={})
+    if coverage['late_group_input_status'] != 'PASS':
+        state = _operation_state(None)
+        error = _semantic_error(state, 'DOHOD_PAYMENTS_COVERAGE_NOT_VERIFIED')
+        primary_state = dict(state)
+        try:
+            _coverage_event(logging_context, 'dohod_late_group_blocked',
+                'Поздняя группа доход.ру запрещена: полнота payments не подтверждена',
+                dict(stage='dohodru_data', outcome='BLOCKED_NOT_VERIFIED', fields={}), state)
+        except BaseException:
+            coverage['diagnostics_status'] = 'INCOMPLETE'
+        _failure(logging_context, error, primary_state, coverage_report=coverage)
+        raise error
+    df_overview_full, df_years_full, df_each_full = frames
     _source_checkpoint(source_deadline, logging_context)
     try:
         # Один admission для всех шести calls, включая следующие XLSX/CSV пары.

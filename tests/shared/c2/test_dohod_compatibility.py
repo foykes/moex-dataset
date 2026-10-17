@@ -75,7 +75,8 @@ def test_healthy_main_nine_historical_writers(monkeypatch, model, tmp_path, cont
     for left, right in ((1, 2), (3, 4), (5, 6), (7, 8)):
         pd.testing.assert_frame_equal(written[left][3], written[right][3])
     assert all(r.close_calls == 1 and r.raw.closes == 0 and r.raw.releases == 1 for r in replies)
-    assert [e['event'] for e in events(context)] == ['dohod_request_received'] * 3
+    assert [e['event'] for e in events(context)] == ['dohod_request_received'] * 3 + [
+        'dohod_page_coverage', 'dohod_coverage_summary']
     assert all(getattr(module, name).empty for name in ('df_overview_full', 'df_years_full', 'df_each_full'))
 
 
@@ -92,12 +93,12 @@ def test_direct_get_page_info_tuple_no_writers(monkeypatch, model, tmp_path, det
     assert_requests(calls)
 
 
-def test_empty_overview_keeps_other_eight_writers(monkeypatch, model, tmp_path):
+def test_empty_overview_is_unverified_before_all_nine_writers(monkeypatch, model, tmp_path):
     module, _, _ = model
     _, _, written, _ = healthy(monkeypatch, model, tmp_path, overview_empty=True)
-    assert module.main(URL) is None
-    assert_writers(written, FILES[1:])
-    assert written[0][3].empty and written[0][3].columns.tolist() == ['Тикер', 'Дивиденд']
+    with pytest.raises(ValueError, match='DOHOD_EMPTY_ROLE_NOT_VERIFIED'):
+        module.main(URL)
+    assert written == []
 
 
 def test_url_filter_preserves_first_dom_order_and_rejects_foreign(monkeypatch, model, tmp_path):
@@ -228,7 +229,7 @@ def test_expired_last_detail_parser_no_later_six(monkeypatch, model, tmp_path, c
     failed(context)
 
 
-def test_historical_detail_parser_skip_but_budget_stays_outside_bare_except(monkeypatch, model, tmp_path):
+def test_detail_parser_failure_cannot_hide_expired_budget(monkeypatch, model, tmp_path):
     module, clock, _ = model
     source(monkeypatch, module, [(URL, reply(DISCOVERY)), (DETAIL, reply(b'bad'))])
     written = writers(monkeypatch, module, tmp_path)
@@ -282,7 +283,7 @@ def test_one_source_deadline_across_multiple_fresh_operations(monkeypatch, model
 
 
 @pytest.mark.parametrize('table_count', [0, 1, 4])
-def test_healthy_budget_unrecognized_detail_retains_historical_empty_skip(
+def test_healthy_budget_unrecognized_detail_is_terminal_without_partial_return(
         monkeypatch, model, tmp_path, context, table_count):
     module, _, waits = model
     calls = source(monkeypatch, module, [(URL, reply(DISCOVERY)), (DETAIL, reply(b'unknown'))])
@@ -293,10 +294,15 @@ def test_healthy_budget_unrecognized_detail_retains_historical_empty_skip(
         return [pd.DataFrame([['irrelevant']])] * table_count
     monkeypatch.setattr(module.pd, 'read_html', read)
     written = writers(monkeypatch, module, tmp_path)
-    result = module.get_page_info(URL, logging_context=context)
-    assert type(result) is tuple and all(frame.empty for frame in result)
+    reason = 'DOHOD_DETAIL_PARSE_FAILED' if table_count == 0 else 'DOHOD_UNKNOWN_NONEMPTY_TABLE'
+    with pytest.raises(ValueError, match=reason) as caught:
+        module.get_page_info(URL, logging_context=context)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
     assert len(calls) == 2 and written == waits == []
-    assert [e['event'] for e in events(context)] == ['dohod_request_received'] * 2
+    assert [e['event'] for e in events(context)] == ['dohod_request_received'] * 2 + [
+        'dohod_page_coverage', 'dohod_coverage_summary', 'dohod_acquisition_failed']
+    assert events(context)[-1]['error']['code'] == reason
+    failed(context)
 
 
 def test_parent_stage_propagates_dohod_failure_upload_and_success_unreachable(

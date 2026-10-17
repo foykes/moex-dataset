@@ -17,7 +17,7 @@ from urllib3._collections import HTTPHeaderDict
 from tests.shared.c2.test_dohod_compatibility import FILES, assert_writers
 from tests.shared.c2.test_dohod_network import context, events, model, writers
 from tests.shared.c3.test_dohod_html import (
-    assert_detail, assert_empty_frames, assert_no_accumulation, assert_overview, detail_html,
+    assert_detail, assert_no_accumulation, assert_overview, detail_html,
     expected_detail, expected_overview, fresh_context, overview_html,
 )
 
@@ -1091,7 +1091,7 @@ def test_same_import_redirect_failure_then_b_has_no_url_state_carryover(
     assert len(failures) == 1 and reason in failures[0]['message']
 
 
-def test_same_import_detail_parser_skip_then_b_does_not_retain_final_base(
+def test_same_import_detail_parser_failure_then_b_does_not_retain_final_base(
         monkeypatch, model, tmp_path, context):
     module, clock, waits = model
     originals = tuple(getattr(module, name) for name in
@@ -1106,21 +1106,22 @@ def test_same_import_detail_parser_skip_then_b_does_not_retain_final_base(
         (SLASH_OVERVIEW, page_a), (AAA, no_tables),
         (OVERVIEW, page_b), (BBB, detail_b)])
     written = writers(monkeypatch, module, tmp_path)
-    skipped = module.get_page_info(OVERVIEW, logging_context=context)
-    assert_empty_frames(skipped)
-    snapshots = tuple(frame.copy(deep=True) for frame in skipped)
+    with pytest.raises(ValueError, match='DOHOD_DETAIL_PARSE_FAILED') as caught:
+        module.get_page_info(OVERVIEW, logging_context=context)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
     clock[0] += 4
     clock[1] += 4
     frames_b = module.get_page_info(OVERVIEW, logging_context=context)
     assert_detail(frames_b, amount=15, page_url=BBB, ticker='BBB')
-    for retained, snapshot in zip(skipped, snapshots):
-        pd.testing.assert_frame_equal(retained, snapshot, check_exact=True)
     assert sent_urls(trace) == [OVERVIEW, SLASH_OVERVIEW, AAA, OVERVIEW, BBB]
     assert trace['pending'] == [] and waits == [] and written == []
     assert_unread_closed(redirect)
     for response in (page_a, no_tables, page_b, detail_b):
         assert_consumed(response)
     assert_no_accumulation(module, originals)
+    failures = [event for event in assert_safe_events(context)
+                if event['event'] == 'dohod_acquisition_failed']
+    assert len(failures) == 1 and failures[0]['error']['code'] == 'DOHOD_DETAIL_PARSE_FAILED'
 
 
 def test_same_import_canonical_discovery_dedup_is_fresh_for_each_call(
