@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import shutil
 import sys
 import traceback
@@ -24,8 +25,24 @@ REFERENCE_SOURCE_REF = '07945ed4ded747145b40d7a7c25e8ce97abeaa0d'
 EXPECTED_REFERENCE_TECH_BLOB = '5cab43aaaffcadcbf23feb96ab8783a9acdfc986'
 ACCEPTED_B1_SOURCE_REF = '3b6e78f11f7681cdcd9c813fff4236a8c63ab677'
 EXPECTED_ACCEPTED_B1_TECH_BLOB = 'ca7cc63bc5a95238dd587b46f68765cbf6ff38a1'
-TRIX_BASE_LINE = b'        if len(TRIX_real_ticker) > 0: _full = pd.concat([TRIX_full, TRIX_real_ticker])\n'
-TRIX_FIXED_LINE = b'        if len(TRIX_real_ticker) > 0: TRIX_full = pd.concat([TRIX_full, TRIX_real_ticker])\n'
+# Frozen 14 baseline-byte-offset hunks: 07945ed4 -> accepted 3b6e78f1.
+# Exact old slices, descending offsets; never generated from candidate at runtime.
+ACCEPTED_B1_HUNKS = (
+    (42661, b"                print('\xd0\x9d\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbb \xd1\x80\xd0\xb0\xd1\x81\xd1\x81\xd1\x87\xd1\x91\xd1\x82 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd0\xb0 {}'.format(file))\n                calculator(file)\n            except Exception as e:\n                print (e)\n                print(file)\n                print('------------------------')\n", b"                print('\xd0\x9d\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbb \xd1\x80\xd0\xb0\xd1\x81\xd1\x81\xd1\x87\xd1\x91\xd1\x82 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd0\xb0 \xe2\x84\x96{}'.format(file_number))\n                calculator(file, logging_context=logging_context)\n            except Exception:\n                # calculator \xd1\x83\xd0\xb6\xd0\xb5 \xd1\x81\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb8\xd0\xbb \xd0\xb1\xd0\xb5\xd0\xb7\xd0\xbe\xd0\xbf\xd0\xb0\xd1\x81\xd0\xbd\xd1\x83\xd1\x8e \xd0\xb4\xd0\xb8\xd0\xb0\xd0\xb3\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8\xd0\xba\xd1\x83; \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xb0\xd0\xb5\xd0\xbc \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb6\xd0\xbd\xd0\xb8\xd0\xb9 \xd1\x86\xd0\xb8\xd0\xba\xd0\xbb.\n                continue\n"),
+    (42509, b'    for file in datasets_list:\n', b'    for file_number, file in enumerate(datasets_list, start=1):\n'),
+    (42224, b'def main(current_path):\n', b'def main(current_path, *, logging_context=None):\n'),
+    (41693, b'        print(path)\n', b"        print('TECH_UNSUPPORTED_FORMAT')\n    if state['phase'] == 'WRITING': state['phase'] = 'NOT_WRITTEN'\n"),
+    (41627, b'        if len(df) > 0: df.to_excel(path,index = False)\n', b"        if len(df) > 0:\n            df.to_excel(path,index = False)\n            state['phase'] = 'WRITTEN'\n"),
+    (41541, b'        if len(df) > 0: df.to_csv(path,index = False)\n', b"        if len(df) > 0:\n            df.to_csv(path,index = False)\n            state['phase'] = 'WRITTEN'\n"),
+    (41512, b'', b"    state['columns'] = len(df.columns)\n    state['phase'] = 'WRITING'\n"),
+    (32273, b'', b"\n        _tech_diagnostic(logging_context, 'calculator_instrument_returned', '\xd0\xa0\xd0\xb0\xd1\x81\xd1\x87\xd1\x91\xd1\x82 \xd0\xb8\xd0\xbd\xd1\x81\xd1\x82\xd1\x80\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd1\x91\xd0\xbd', state, instrument_started,\n                         instrument='instrument-{}'.format(i + 1), rows=len(df_ticker), instruments=1)\n"),
+    (24475, b'            STOCH_full_slowd = pd.concat([STOCH_full_slowd,STOCH_real_ticker_slowk])\n', b'            STOCH_full_slowd = pd.concat([STOCH_full_slowd,STOCH_real_ticker_slowd])\n'),
+    (14622, b'', b'        instrument_started = perf_counter()\n'),
+    (14581, b'', b"    state['instruments'] = len(ticker_list)\n"),
+    (4193, b'', b"    state['rows'] = len(df)\n    state['phase'] = 'CALCULATING'\n\n"),
+    (572, b'def calculator(filename):\n', b"def _tech_diagnostic(logging_context, event, message, state, started, *, error=None, instrument=None, rows=None, instruments=None):\n    # \xd0\x94\xd0\xb8\xd0\xb0\xd0\xb3\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8\xd0\xba\xd0\xb0 \xd0\xbd\xd0\xb5 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x80\xd0\xb5\xd0\xb7\xd1\x83\xd0\xbb\xd1\x8c\xd1\x82\xd0\xb0\xd1\x82 \xd1\x80\xd0\xb0\xd1\x81\xd1\x87\xd1\x91\xd1\x82\xd0\xb0 \xd0\xb8 \xd0\xbd\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb8\xd1\x81\xd1\x85\xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb8\xd1\x81\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5.\n    try:\n        duration_ms = (perf_counter() - started) * 1000\n        if logging_context is None:\n            code = 'TECH_CALCULATOR_FAILED' if error is not None else event.upper()\n            print('{}; {}; phase={}; duration_ms={:.3f}'.format(code, message, state['phase'], duration_ms))\n            return\n        import run_logging\n        counts = dict(rows_received=state['rows'] if rows is None else rows,\n                      instruments=state['instruments'] if instruments is None else instruments,\n                      rows_accepted=None, rows_quarantined=None, pages=None)\n        counts['null_reasons'] = {key: 'NOT_ASSESSED_BY_TECH' for key, value in counts.items() if value is None}\n        fields = dict(stage='tech', file='dataset', instrument=instrument,\n                      duration_ms=duration_ms, counts=counts,\n                      outcome='FAILED' if error is not None else 'RETURNED' if event == 'calculator_returned' else state['phase'])\n        if error is not None:\n            fields['error'] = run_logging.make_error(logging_context, error, 'tech', code='TECH_CALCULATOR_FAILED')\n        level = 'ERROR' if error is not None else 'INFO'\n        receipt = run_logging.emit_event(logging_context, level, event, message, fields)\n        if not receipt.get('accepted') or (error is not None and not receipt.get('confirmed')):\n            raise RuntimeError('TECH_EVENT_UNCONFIRMED')\n    except Exception:\n        try:\n            print('TECH_DIAGNOSTICS_FAILED; phase={}'.format(state['phase']), file=sys.stderr)\n        except Exception:\n            pass\n\n\ndef calculator(filename, *, logging_context=None):\n    started = perf_counter()\n    state = dict(phase='READING', rows=None, instruments=None, columns=None)\n    versions = 'TA-Lib={}; pandas={}'.format(talib.__version__[:32], pd.__version__[:32])\n    _tech_diagnostic(logging_context, 'calculator_started', 'STOCH 5/3/3; matype 0/0; ' + versions, state, started)\n    try:\n        _calculator_impl(filename, logging_context, state)\n    except Exception as error:\n        _tech_diagnostic(logging_context, 'calculator_failed', '\xd0\xa0\xd0\xb0\xd1\x81\xd1\x87\xd1\x91\xd1\x82 \xd1\x82\xd0\xb5\xd1\x85 \xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd0\xba \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd0\xb8\xd0\xbb\xd1\x81\xd1\x8f \xd0\xbe\xd1\x88\xd0\xb8\xd0\xb1\xd0\xba\xd0\xbe\xd0\xb9', state, started, error=error)\n        raise\n    _tech_diagnostic(logging_context, 'calculator_returned', '\xd0\xa0\xd0\xb0\xd1\x81\xd1\x87\xd1\x91\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd1\x91\xd0\xbd; columns={}'.format(state['columns']), state, started)\n\n\ndef _calculator_impl(filename, logging_context, state):\n"),
+    (339, b'', b'from time import perf_counter\n'),
+)
 CANARY = 'B1_SYNTHETIC_SECRET_CANARY'
 PRIVATE_PATH = 'C:/B1_SYNTHETIC_PRIVATE/source'
 
@@ -82,23 +99,71 @@ def reference(tmp_path):
         pytest.fail('REFERENCE_PREPARATION_FAILURE: complete module import failed')
 
 
-def _accepted_git(git, arguments, records, *, expected_exit=0):
-    command = [git, *arguments]
-    ticket = guard.issue_ticket('native-git', command, native=True, expected_exit=expected_exit)
-    result = guard.run_child(command, role='native-git', ticket=ticket, timeout=10)
-    if (not result.validated or result.report_errors or result.timed_out
-            or result.returncode != result.actual_exit
-            or expected_exit is not None and (result.actual_exit != expected_exit or result.stderr != b'')):
+def _validate_accepted_native_result(result):
+    if (getattr(result, 'validated', None) is not True
+            or type(getattr(result, 'returncode', None)) is not int
+            or type(getattr(result, 'actual_exit', None)) is not int
+            or result.returncode != 0 or result.actual_exit != 0
+            or getattr(result, 'timed_out', None) is not False
+            or type(getattr(result, 'report_errors', None)) is not list
+            or result.report_errors != []
+            or type(getattr(result, 'stdout', None)) is not bytes
+            or type(getattr(result, 'stderr', None)) is not bytes
+            or result.stderr != b''):
         pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: native command not validated')
+
+
+def _accepted_git(git, arguments, records):
+    command = [git, *arguments]
+    ticket = guard.issue_ticket('native-git', command, native=True, expected_exit=0)
+    result = guard.run_child(command, role='native-git', ticket=ticket, timeout=10)
+    _validate_accepted_native_result(result)
     records.append({'command': ['git', *arguments], 'ticket_id': ticket['ticket_id'],
-                    'expected_exit': expected_exit, 'actual_exit': result.actual_exit,
+                    'expected_exit': 0, 'actual_exit': result.actual_exit,
                     'validated': result.validated, 'guard_report_errors': result.report_errors,
                     'timed_out': result.timed_out})
     return result
 
-
 def _git_blob(raw):
     return hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
+
+
+def _reconstruct_accepted_b1(raw, *, hunks=None):
+    if type(raw) is not bytes or _git_blob(raw) != EXPECTED_REFERENCE_TECH_BLOB:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: baseline blob mismatch')
+    hunks = ACCEPTED_B1_HUNKS if hunks is None else hunks
+    if type(hunks) is not tuple or len(hunks) != 14:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: hunk inventory mismatch')
+    restored = raw
+    boundary = len(raw) + 1
+    for hunk in hunks:
+        if type(hunk) is not tuple or len(hunk) != 3:
+            pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: malformed hunk')
+        offset, before, after = hunk
+        if (type(offset) is not int or type(before) is not bytes or type(after) is not bytes
+                or offset < 0 or offset >= boundary or offset + len(before) > min(boundary, len(raw))
+                or before == after):
+            pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: hunk geometry mismatch')
+        if restored[offset:offset + len(before)] != before:
+            pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: hunk old bytes mismatch')
+        restored = restored[:offset] + after + restored[offset + len(before):]
+        boundary = offset
+    if _git_blob(restored) != EXPECTED_ACCEPTED_B1_TECH_BLOB:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: accepted blob mismatch')
+    return restored
+
+
+def _accepted_candidate_identity(metadata):
+    sha = metadata.get('tested_sha')
+    digest = metadata.get('source_digest')
+    if (type(sha) is not str or len(sha) != 40
+            or any(character not in '0123456789abcdef' for character in sha)
+            or type(digest) is not str or len(digest) != 64
+            or any(character not in '0123456789abcdef' for character in digest)
+            or metadata.get('source_mode') not in {'commit', 'working-tree'}):
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: candidate source identity invalid')
+    return {'tested_sha': sha, 'source_mode': metadata['source_mode'],
+            'candidate_source_digest': digest}
 
 
 def _trix_profile(schema):
@@ -119,56 +184,26 @@ def _trix_profile(schema):
 
 @pytest.fixture
 def accepted_b1_reference(tmp_path, schema):
-    # Historical STOCH reference stays independent; this is the accepted H88 source.
+    # The accepted H88 source is reconstructed only from the immutable baseline.
+    identity = _accepted_candidate_identity(guard.report_metadata())
     git = shutil.which('git')
     if git is None:
         pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: Git unavailable')
     records = []
-    head_result = _accepted_git(git, ['show', 'HEAD:tech.py'], records)
-    head_raw = head_result.stdout
-    head_blob = _git_blob(head_raw)
-    restored = head_raw
-    transformation_count = 0
-    if head_blob != EXPECTED_ACCEPTED_B1_TECH_BLOB:
-        if head_raw.count(TRIX_FIXED_LINE) != 1 or head_raw.count(TRIX_BASE_LINE) != 0:
-            pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: single TRIX line required')
-        restored = head_raw.replace(TRIX_FIXED_LINE, TRIX_BASE_LINE, 1)
-        transformation_count = 1
-    if _git_blob(restored) != EXPECTED_ACCEPTED_B1_TECH_BLOB:
-        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: candidate source has foreign changes')
-
-    availability = _accepted_git(git, ['rev-parse', '--verify', ACCEPTED_B1_SOURCE_REF + '^{commit}'],
-                                 records, expected_exit=None)
-    if (availability.actual_exit == 0 and availability.stderr == b''
-            and availability.stdout.rstrip(b'\r\n') == ACCEPTED_B1_SOURCE_REF.encode('ascii')):
-        source_result = _accepted_git(git, ['show', ACCEPTED_B1_SOURCE_REF + ':tech.py'], records)
-        raw = source_result.stdout
-        method = 'DIRECT_ACCEPTED_GIT_OBJECT'
-        source_ref = ACCEPTED_B1_SOURCE_REF
-        reference_transformations = 0
-    elif (availability.actual_exit == 128 and availability.stdout == b''
-          and availability.stderr.rstrip(b'\r\n') == b'fatal: Needed a single revision'):
-        raw = restored
-        method = 'STRICT_SINGLE_TRIX_REVERSAL' if transformation_count else 'HEAD_ACCEPTED_SOURCE'
-        source_ref = 'HEAD'
-        reference_transformations = transformation_count
-    else:
-        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: object availability unresolved')
-    actual_blob = _git_blob(raw)
-    if actual_blob != EXPECTED_ACCEPTED_B1_TECH_BLOB:
-        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: accepted blob mismatch')
+    result = _accepted_git(git, ['show', REFERENCE_SOURCE_REF + ':tech.py'], records)
+    baseline = result.stdout
+    raw = _reconstruct_accepted_b1(baseline)
     source = tmp_path / 'accepted-b1-tech.py'
     source.write_bytes(raw)
-    provenance = {'accepted_base': ACCEPTED_B1_SOURCE_REF,
-                  'tested_sha': guard.report_metadata().get('tested_sha'),
-                  'retrieved_source_ref': source_ref, 'reference_path': 'tech.py',
-                  'candidate_source_ref': 'HEAD', 'candidate_tech_blob': head_blob,
-                  'candidate_source_sha256': hashlib.sha256(head_raw).hexdigest(),
-                  'candidate_identity_transformations': transformation_count,
-                  'reference_preparation_method': method,
-                  'reference_transformations': reference_transformations,
+    provenance = {'accepted_base': ACCEPTED_B1_SOURCE_REF, **identity,
+                  'retrieved_source_ref': REFERENCE_SOURCE_REF, 'reference_path': 'tech.py',
+                  'expected_baseline_tech_blob': EXPECTED_REFERENCE_TECH_BLOB,
+                  'actual_baseline_tech_blob': _git_blob(baseline),
+                  'baseline_source_sha256': hashlib.sha256(baseline).hexdigest(),
+                  'reference_preparation_method': 'FROZEN_BASELINE_HUNKS',
+                  'reference_transformations': len(ACCEPTED_B1_HUNKS),
                   'expected_reference_tech_blob': EXPECTED_ACCEPTED_B1_TECH_BLOB,
-                  'actual_reference_tech_blob': actual_blob,
+                  'actual_reference_tech_blob': _git_blob(raw),
                   'source_sha256': hashlib.sha256(raw).hexdigest(),
                   'native_commands': records, 'native_profile': _trix_profile(schema),
                   'reference_preparation': 'PASS'}
@@ -178,7 +213,6 @@ def accepted_b1_reference(tmp_path, schema):
         return _load_module(source)
     except Exception:
         pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: complete module import failed')
-
 
 def _fixture():
     return pd.read_csv(FIXTURES / 'ohlc.csv')
@@ -733,3 +767,138 @@ def test_main_catches_exception_and_continues_without_raw_print(candidate, tmp_p
         assert sum(event['event'] == 'calculator_failed' for event in events) == 1
     else:
         assert captured.out.count('TECH_CALCULATOR_FAILED') == 1
+
+
+def test_accepted_b1_reference_uses_only_immutable_baseline(tmp_path, schema, monkeypatch):
+    native_git = _accepted_git
+    commands = []
+
+    def baseline_only(git, arguments, records, **kwargs):
+        assert arguments == ['show', REFERENCE_SOURCE_REF + ':tech.py'], (
+            'accepted reference must not depend on candidate HEAD or accepted-object availability')
+        commands.append(list(arguments))
+        return native_git(git, arguments, records, **kwargs)
+
+    imported = []
+    marker = object()
+
+    def checked_import(path):
+        raw = path.read_bytes()
+        assert _git_blob(raw) == EXPECTED_ACCEPTED_B1_TECH_BLOB
+        imported.append(raw)
+        return marker
+
+    monkeypatch.setattr(sys.modules[__name__], '_accepted_git', baseline_only)
+    monkeypatch.setattr(sys.modules[__name__], '_load_module', checked_import)
+    assert accepted_b1_reference.__wrapped__(tmp_path, schema) is marker
+    assert commands == [['show', REFERENCE_SOURCE_REF + ':tech.py']]
+    assert len(imported) == 1
+
+
+@pytest.fixture
+def immutable_baseline_bytes():
+    git = shutil.which('git')
+    if git is None:
+        pytest.fail('ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE: Git unavailable')
+    return _accepted_git(git, ['show', REFERENCE_SOURCE_REF + ':tech.py'], []).stdout
+
+
+@pytest.mark.parametrize('damage', ['empty', 'byte', 'truncated'])
+def test_accepted_reference_rejects_changed_baseline(immutable_baseline_bytes, damage):
+    raw = immutable_baseline_bytes
+    if damage == 'empty':
+        raw = b''
+    elif damage == 'byte':
+        raw = b'X' + raw[1:]
+    else:
+        raw = raw[:-1]
+    with pytest.raises(pytest.fail.Exception, match='baseline blob mismatch'):
+        _reconstruct_accepted_b1(raw)
+
+
+@pytest.mark.parametrize('damage', ['missing', 'duplicate', 'order', 'offset', 'old', 'new'])
+def test_accepted_reference_rejects_corrupt_hunks(immutable_baseline_bytes, damage):
+    hunks = list(ACCEPTED_B1_HUNKS)
+    offset, before, after = hunks[0]
+    if damage == 'missing':
+        hunks.pop()
+    elif damage == 'duplicate':
+        hunks[1] = hunks[0]
+    elif damage == 'order':
+        hunks.reverse()
+    elif damage == 'offset':
+        hunks[0] = (offset + 1, before, after)
+    elif damage == 'old':
+        hunks[0] = (offset, b'X' + before[1:], after)
+    else:
+        hunks[0] = (offset, before, after + b'P0_CORRUPTION')
+    with pytest.raises(pytest.fail.Exception, match='ACCEPTED_B1_REFERENCE_PREPARATION_FAILURE'):
+        _reconstruct_accepted_b1(immutable_baseline_bytes, hunks=tuple(hunks))
+
+
+@pytest.mark.parametrize('pin', ['EXPECTED_REFERENCE_TECH_BLOB', 'EXPECTED_ACCEPTED_B1_TECH_BLOB'])
+def test_accepted_reference_rejects_wrong_source_blob_pin(immutable_baseline_bytes, monkeypatch, pin):
+    monkeypatch.setattr(sys.modules[__name__], pin, '0' * 40)
+    with pytest.raises(pytest.fail.Exception, match='blob mismatch'):
+        _reconstruct_accepted_b1(immutable_baseline_bytes)
+
+
+@pytest.mark.parametrize('field, value', [
+    ('validated', False), ('validated', 1),
+    ('returncode', 1), ('returncode', False),
+    ('actual_exit', 128), ('actual_exit', False), ('actual_exit', None),
+    ('timed_out', True), ('timed_out', None),
+    ('report_errors', None), ('report_errors', ()),
+    ('report_errors', ['MISSING_NATIVE_EXIT']), ('report_errors', ['FOREIGN_NATIVE_EXIT']),
+    ('report_errors', ['CORRUPT_NATIVE_EXIT']), ('report_errors', ['UNEXPECTED_EXIT']),
+    ('stdout', 'not bytes'), ('stderr', ''), ('stderr', b'error'),
+])
+def test_accepted_reference_rejects_invalid_native_receipt(field, value):
+    result = SimpleNamespace(validated=True, returncode=0, actual_exit=0, timed_out=False,
+                             report_errors=[], stdout=b'baseline', stderr=b'', report=None)
+    setattr(result, field, value)
+    with pytest.raises(pytest.fail.Exception, match='native command not validated'):
+        _validate_accepted_native_result(result)
+
+
+def test_accepted_reference_accepts_valid_native_receipt_without_python_report():
+    result = SimpleNamespace(validated=True, returncode=0, actual_exit=0, timed_out=False,
+                             report_errors=[], stdout=b'baseline', stderr=b'', report=None)
+    _validate_accepted_native_result(result)
+
+
+@pytest.mark.parametrize('field, value', [
+    ('tested_sha', None), ('tested_sha', 'f' * 39), ('tested_sha', 'z' * 40),
+    ('source_digest', None), ('source_digest', '0' * 63), ('source_digest', 'z' * 64),
+    ('source_mode', 'unverified'),
+])
+def test_accepted_reference_rejects_invalid_candidate_identity(field, value):
+    metadata = {'tested_sha': '1' * 40, 'source_digest': '2' * 64, 'source_mode': 'commit'}
+    metadata[field] = value
+    with pytest.raises(pytest.fail.Exception, match='candidate source identity invalid'):
+        _accepted_candidate_identity(metadata)
+
+
+def test_accepted_reference_failure_precedes_import(tmp_path, schema, monkeypatch):
+    native_git = _accepted_git
+    imported = []
+
+    def damaged_source(git, arguments, records):
+        result = native_git(git, arguments, records)
+        return SimpleNamespace(stdout=result.stdout + b'P0_SOURCE_CORRUPTION')
+
+    monkeypatch.setattr(sys.modules[__name__], '_accepted_git', damaged_source)
+    monkeypatch.setattr(sys.modules[__name__], '_load_module', lambda path: imported.append(path))
+    with pytest.raises(pytest.fail.Exception, match='baseline blob mismatch'):
+        accepted_b1_reference.__wrapped__(tmp_path, schema)
+    assert imported == []
+
+
+def test_accepted_reference_import_failure_is_preparation_failure(tmp_path, schema, monkeypatch):
+    def broken_import(path):
+        assert _git_blob(path.read_bytes()) == EXPECTED_ACCEPTED_B1_TECH_BLOB
+        raise RuntimeError('P0_SYNTHETIC_IMPORT_FAILURE')
+
+    monkeypatch.setattr(sys.modules[__name__], '_load_module', broken_import)
+    with pytest.raises(pytest.fail.Exception, match='complete module import failed'):
+        accepted_b1_reference.__wrapped__(tmp_path, schema)
