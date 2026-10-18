@@ -614,20 +614,29 @@ def test_annual_windows_forward_context_identity(gathering, candle_frame, monkey
                                                 event_log, with_context):
     context = event_log.context if with_context else None
     calls = []
+    dates = ['2024-03-01', '2023-03-01', '2022-03-01']
 
     def window(*args, logging_context=None):
         calls.append((args, logging_context))
-        return candle_frame.copy(deep=True)
+        frame = candle_frame.copy(deep=True)
+        frame['begin'] = dates[len(calls) - 1] + ' 00:00:00'
+        frame['end'] = dates[len(calls) - 1] + ' 23:59:59'
+        return frame
 
     monkeypatch.setattr(gathering, 'moex_query', window)
     result = gathering.moex('SBER', 'Акции', 3, 24, logging_context=context)
-    assert len(calls) == 2 and all(item[1] is context for item in calls)
+    assert len(calls) == 3 and all(item[1] is context for item in calls)
     assert [item[0] for item in calls] == [
-        ('SBER', 'Акции', '2023-03-03', '2024-03-02', 24),
-        ('SBER', 'Акции', '2022-03-03', '2023-03-03', 24),
+        ('SBER', 'Акции', '2023-03-02', '2024-03-02', 24),
+        ('SBER', 'Акции', '2022-03-02', '2023-03-03', 24),
+        ('SBER', 'Акции', '2021-03-02', '2022-03-03', 24),
     ]
-    assert result.values.tolist() == candle_frame.values.tolist() * 2
-    assert result.index.tolist() == [0, 0]
+    assert result.values.tolist() == [
+        [100., 101., 102., 99., 202000., 2000, '2022-03-01 00:00:00', '2022-03-01 23:59:59', 'SBER'],
+        [100., 101., 102., 99., 202000., 2000, '2023-03-01 00:00:00', '2023-03-01 23:59:59', 'SBER'],
+        [100., 101., 102., 99., 202000., 2000, '2024-03-01 00:00:00', '2024-03-01 23:59:59', 'SBER'],
+    ]
+    assert result.index.tolist() == [0, 1, 2]
 
 
 @pytest.mark.parametrize('operation', ['reload', 'update'])

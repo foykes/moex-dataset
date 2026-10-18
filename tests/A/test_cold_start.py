@@ -64,7 +64,7 @@ def test_clean_catalogue_does_not_require_blank(gathering, catalogue, snapshot,
     call_update(gathering, specification, root, catalogue, snapshot)
     assert candle_calls == [
         ('SBER', 'Акции', '2024-03-01', '2024-03-02', 24),
-        ('MOEX', 'Акции', '2023-03-03', '2024-03-02', 24),
+        ('MOEX', 'Акции', '2023-03-02', '2024-03-02', 24),
     ]
     assert len(writers) == 2
     assert [record[0] for record in writers] == ['xlsx', 'csv']
@@ -117,7 +117,7 @@ def test_each_missing_dataset(gathering, catalogue, snapshot, candle_frame,
     for position, spec in enumerate(dataset_config):
         if position != missing:
             expected_queries += [('SBER', 'Акции', '2024-03-01', '2024-03-02', spec['interval']),
-                                 ('MOEX', 'Акции', '2023-03-03', '2024-03-02', spec['interval'])]
+                                 ('MOEX', 'Акции', '2023-03-02', '2024-03-02', spec['interval'])]
     assert queries == expected_queries
     assert len(writers) == 14
     assert [item[0] for item in writers] == ['xlsx', 'csv'] * 7
@@ -160,7 +160,7 @@ def test_force_reload_same_snapshot(gathering, catalogue, snapshot, dataset_conf
 
 
 @pytest.mark.parametrize('interval', [24, 60, 10, 1])
-@pytest.mark.parametrize('years,sber_begin', [(10, '2014-03-05'), (30, '2000-01-03')])
+@pytest.mark.parametrize('years,sber_begin', [pytest.param(10, '2014-03-02', id='10-2014-03-05'), (30, '2000-01-03')])
 def test_real_full_reload(gathering, snapshot, candle_frame, fixture_root,
                           writers, monkeypatch, interval, years, sber_begin):
     import pandas as pd
@@ -223,7 +223,7 @@ def test_real_update_rows_schema_and_delta_order(gathering, catalogue, snapshot,
     gathering.data_update([{'interval': 24, 'years': 10, 'filename': 'fixture_daily', 'word': 'часа'}],
                           root, catalogue, snapshot)
     assert queries == [('SBER', 'Акции', '2024-03-01', '2024-03-02', 24),
-                       ('MOEX', 'Акции', '2023-03-03', '2024-03-02', 24)]
+                       ('MOEX', 'Акции', '2023-03-02', '2024-03-02', 24)]
     expected = [new_moex, february, [100., 101., 102., 99., 202000., 2000,
                            '2024-03-01 00:00:00', '2024-03-01 23:59:59', 'SBER'], new_sber]
     assert len(writers) == 2
@@ -340,7 +340,7 @@ def test_real_reload_thirty_year_cutoff(gathering, catalogue, snapshot, candle_f
     monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.full_reload(catalogue, 24, 30, 'fixture', 'часа', root, dates)
     assert calls == [('MOEX', 'Акции', '2020-02-29', '2024-03-01', 24),
-                     ('SBER', 'Акции', '1994-03-10', '2024-03-02', 24)]
+                     ('SBER', 'Акции', '1994-03-02', '2024-03-02', 24)]
     assert writers == []
 
 
@@ -391,8 +391,8 @@ def test_stable_three_ticker_delta_and_30day_boundary(gathering, snapshot, candl
     gathering.data_update([{'interval': 60, 'years': 30, 'filename': 'fixture', 'word': 'минут'}],
                           root, source, snapshot)
     assert queries == [('SBER', 'Акции', '2024-02-01', '2024-03-02', 60),
-                       ('MOEX', 'Акции', '2023-03-03', '2024-03-02', 60),
-                       ('BOND1', 'Облигации', '2023-03-03', '2024-03-02', 60)]
+                       ('MOEX', 'Акции', '2023-03-02', '2024-03-02', 60),
+                       ('BOND1', 'Облигации', '2023-03-02', '2024-03-02', 60)]
     assert len(writers) == 2
     assert all(item[1].values.tolist() == [[100., 101., 102., 99., 202000., 2000,
                '2024-03-01 00:00:00', '2024-02-01 12:00:00', 'SBER']] for item in writers)
@@ -417,7 +417,7 @@ def test_clean_old_ticker_has_no_hidden_annual_backfill(gathering, catalogue, sn
     monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.data_update([{'interval': 24, 'years': 10, 'filename': 'fixture', 'word': 'часа'}],
                           root, catalogue, snapshot)
-    assert queries == [('MOEX', 'Акции', '2023-03-03', '2024-03-02', 24)]
+    assert queries == [('MOEX', 'Акции', '2023-03-02', '2024-03-02', 24)]
     assert len(writers) == 2 and all(item[1].ticker.tolist() == ['SBER'] for item in writers)
 
 

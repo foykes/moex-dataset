@@ -1074,37 +1074,153 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
 
 # %%
 ## Функция выгрузки данных через ручку MOEX
+_A3_ANNUAL_EVIDENCE_BYTES = 64 * 1024
+_A3_ANNUAL_METADATA_BYTES = 16 * 1024
+
+
+def _a3_calendar_anniversary(anchor, years):
+    target_year = anchor.year - years
+    day = anchor.day
+    if anchor.month == 2 and day == 29 and not calendar.isleap(target_year):
+        day = 28
+    return anchor.replace(year=target_year, day=day)
+
+
+def _a3_annual_row(frame, position):
+    # Отдельные scalar values: iterrows может округлить целое до float.
+    columns = ('open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end', 'ticker')
+    return dict(values=tuple(frame[column].iloc[position] for column in columns),
+                dtypes=tuple(str(frame[column].dtype) for column in columns),
+                row_position=position, index=frame.index[position])
+
+
+def _a3_annual_evidence(primary, request, pairs, logging_context=None):
+    # Только parsed scalar evidence: исходный CSV public query не возвращает.
+    try:
+        if hasattr(primary, 'a3_annual_evidence'):
+            return
+
+        def identifier(value):
+            bounded = _a3_metadata(value)
+            if type(bounded) is str:
+                content = bounded.encode('utf-8')
+                return dict(value=None, state='HASH_ONLY_IDENTIFIER', bytes=len(content),
+                            sha256=hashlib.sha256(content).hexdigest(), encoding='UTF8')
+            if type(bounded) is dict:
+                return bounded
+            return dict(value=None, state='REDACTED_IDENTIFIER')
+
+        typed_rows, provenance = [], []
+        for row, window, lower, upper in pairs[:2]:
+            cells = []
+            for position, value in enumerate(row['values'][:8]):
+                cell = dict(dtype=row['dtypes'][position])
+                if position < 6:
+                    numerator, denominator, negative_zero = _a3_numeric_identity(value)
+                    if pd.api.types.is_integer(value) and not isinstance(value, bool):
+                        cell.update(kind='integer', decimal=str(int(value)))
+                    else:
+                        cell.update(kind='float', hex=float(value).hex(),
+                                    ratio=[numerator, denominator], negative_zero=negative_zero)
+                elif type(value) is str:
+                    cell.update(kind='text', value=value)
+                else:
+                    raise ValueError('A3_ANNUAL_EVIDENCE_CELLS_INVALID')
+                cells.append(cell)
+            typed_rows.append(tuple(cells))
+            provenance.append(dict(window_ordinal=window, from_date=lower, till_date=upper,
+                row_position=row['row_position'], index=_a3_metadata(row['index']),
+                dtypes=list(row['dtypes']), ticker=identifier(row['values'][8])))
+        # Оба cap измеряются точно по JSON_ASCII_COMPACT_SORTED_V1.
+        payload = json.dumps(typed_rows, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        if len(payload) > _A3_ANNUAL_EVIDENCE_BYTES:
+            raise ValueError('A3_ANNUAL_EVIDENCE_CELLS_LIMIT')
+        context = logging_context if type(logging_context) is dict else {}
+        metadata = dict(format='A3_ANNUAL_TYPED_ROWS_V1', reason='ANNUAL_KEY_CONFLICT', state='CAPTURED',
+            serialization='JSON_ASCII_COMPACT_SORTED_V1',
+            request=dict(market=_a3_metadata(request['market']), security=identifier(request['security']),
+                         interval=identifier(request['interval'])),
+            engine='stock', endpoint='ISS_CANDLES',
+            identity='ISS_CANDLES_BOARDLESS/stock/market/security/interval/raw_begin',
+            board=None, board_reason='NOT_PRESENT_IN_REQUEST_A5_UNVERIFIED',
+            source_identity='NOT_VERIFIED', availability='NOT_VERIFIED',
+            source_representation='PARSED_SCALARS_ONLY',
+            columns=['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end'],
+            row_cap=2, cell_bytes_cap=_A3_ANNUAL_EVIDENCE_BYTES, cell_bytes=len(payload),
+            metadata_bytes_cap=_A3_ANNUAL_METADATA_BYTES, rows=provenance,
+            correlation={key: identifier(context.get(key))
+                         for key in ('run_id', 'snapshot_id', 'dataset_id')},
+            verified_sha=None, sha_reason='NOT_VERIFIED', persistence='NOT_REQUESTED')
+        encoded = json.dumps(metadata, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        if len(encoded) > _A3_ANNUAL_METADATA_BYTES:
+            raise ValueError('A3_ANNUAL_EVIDENCE_METADATA_LIMIT')
+        primary.a3_annual_evidence = dict(metadata=metadata, typed_rows=tuple(typed_rows))
+    except BaseException:
+        _a3_evidence_note(primary)
+
+
 def moex (ticker_in, ticker_type, years, interval, *, logging_context=None):
-
-    df_ticker = pd.DataFrame()
-
-    df = pd.DataFrame()
     global exception_list
-    today = datetime.datetime.now()
+    today = datetime.datetime.now().date()
+    # range сохраняет native __index__/TypeError; bool остаётся no-query профилем.
+    count = range(1, years).stop
+    if isinstance(years, bool) or count <= 0:
+        return pd.DataFrame()
 
-    for i in range(1, years):
-
-        if i == 1:
-            start_date = today
-        else:
-            d_s = datetime.timedelta(days = 365*(i-1))
-            start_date = today - d_s
-
-        d_e = datetime.timedelta(days = 365*i)
-        end_date = today - d_e
-
-        start_date_mx = start_date.strftime('%Y-%m-%d')
-        end_date_mx = end_date.strftime('%Y-%m-%d')
-
-        try:
-            df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+    # Полный календарь до первого GET, включая возможный underflow года.
+    anniversaries = [today] + [_a3_calendar_anniversary(today, i) for i in range(1, count + 1)]
+    bounds = [(anniversaries[i].isoformat(),
+               (today if i == 1 else min(today, anniversaries[i - 1] + datetime.timedelta(days=1))).isoformat())
+              for i in range(1, count + 1)]
+    market = 'bonds' if ticker_type in ['Облигации', 'Еврооблигации'] else 'shares'
+    request = dict(market=market, security=f'{ticker_in}', interval=f'{interval}')
+    identity = ('ISS_CANDLES_BOARDLESS', 'stock', market, request['security'], request['interval'])
+    frames, seen, positions = [], {}, []
+    offset = 0
+    try:
+        for window, (lower, upper) in enumerate(bounds, 1):
+            df = moex_query(ticker_in, ticker_type, lower, upper, interval,
                             logging_context=logging_context)
-            if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
-        except:
+            if len(df) == 0:
+                continue
+            frames.append(df)
+            for position in range(len(df)):
+                row = _a3_annual_row(df, position)
+                key = identity + (row['values'][6],)
+                if key in seen:
+                    previous, previous_window, previous_lower, previous_upper = seen[key]
+                    same = (all(_a3_numeric_identity(before) == _a3_numeric_identity(after)
+                                for before, after in zip(previous['values'][:6], row['values'][:6]))
+                            and previous['values'][6:] == row['values'][6:])
+                    if not same:
+                        primary = ValueError('A3_ISS_ANNUAL_KEY_CONFLICT')
+                        try:
+                            _a3_annual_evidence(primary, request,
+                                ((previous, previous_window, previous_lower, previous_upper),
+                                 (row, window, lower, upper)), logging_context)
+                        except BaseException:
+                            _a3_evidence_note(primary)
+                        raise primary
+                else:
+                    # Ранний exact repeat не заменяет исходного представителя.
+                    seen[key] = (row, window, lower, upper)
+                    positions.append(offset + position)
+            offset += len(df)
+        # Все исходные scalars/dtypes, включая exact repeats, проверяются до удаления.
+        result = _a3_assemble(frames, ticker_in)
+        if not frames:
+            return result
+        result = result.iloc[positions].sort_values(by='begin', kind='stable')
+        return result.reset_index(drop=True)
+    except BaseException as primary:
+        try:
             exception_list.append(ticker_in)
-            raise
-
-    return df_ticker
+        except BaseException:
+            try:
+                BaseException.add_note(primary, 'A3_ANNUAL_EXCEPTION_LIST_FAILED')
+            except BaseException:
+                pass
+        raise
 
 # %%
 ## Функция выгружает даты торгов по каждому тикеру (когда начали торговать по этому тикеру и конца закончили)
@@ -1281,8 +1397,7 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
 
         ##определяем границу нужного диапазона выгрузки
         if years != 0:
-            date_shift_needed = start_date - datetime.timedelta(days=years*365)
-            date_shift_needed = date_shift_needed.strftime('%Y-%m-%d')
+            date_shift_needed = _a3_calendar_anniversary(start_date.date(), years).isoformat()
         else:
             date_shift_needed = '0'
 
@@ -1302,7 +1417,7 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
                     end_date_mx = date_shift_needed
 
                 if tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].isna().values[0] == True:
-                    start_date_mx = start_date.strftime('%Y-%m-%d')
+                    start_date_mx = start_date.date().isoformat()
                 else:
                     start_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['stopped_date'].values[0]
                     start_date_mx = str(start_date_mx)[:10]
@@ -1438,8 +1553,8 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_
                         ticker_in = delta[t]
                         active_fields = dict(dataset_id=filename_j, interval=interval,
                                              instrument=ticker_in, file=filename_j + '.csv')
-                        start_date_mx = today.strftime('%Y-%m-%d')
-                        end_date_mx = (today - datetime.timedelta(days = 365)).strftime('%Y-%m-%d')
+                        start_date_mx = today.date().isoformat()
+                        end_date_mx = _a3_calendar_anniversary(today.date(), 1).isoformat()
                         ticker_type = lookup[lookup['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
 
                         _a1_event(logging_context, 'INFO', 'a1_instrument_started',
