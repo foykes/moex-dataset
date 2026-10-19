@@ -1,0 +1,3025 @@
+{
+  "schema_id": "mds.release.workspace_cases",
+  "schema_version": 1,
+  "origin": "SYNTHETIC_ONLY",
+  "contract_identity": "mds.release.workspace/1",
+  "contract_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+  "registries": {
+    "linux": {
+      "schema_id": "mds.release.workspace",
+      "schema_version": 1,
+      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "registry_id": "registry-alpha",
+      "context": {
+        "run_id": "run-alpha",
+        "snapshot_id": "snapshot-alpha",
+        "dataset_id": "dividends",
+        "as_of": "2026-10-19T12:00:00Z"
+      },
+      "candidate_release_id": "release-candidate",
+      "platform": "LINUX",
+      "roots": [
+        {
+          "root_id": "source",
+          "kind": "SOURCE",
+          "owner": "INPUT_OWNER",
+          "path": "/synthetic/c2-workspace/source",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "SOURCE_WORKER",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "configuration",
+          "kind": "CONFIGURATION",
+          "owner": "INPUT_OWNER",
+          "path": "/synthetic/c2-workspace/configuration",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "SOURCE_WORKER",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "previous",
+          "kind": "PREVIOUS",
+          "owner": "INPUT_OWNER",
+          "path": "/synthetic/c2-workspace/previous",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "candidate_a",
+          "kind": "CANDIDATE_A",
+          "owner": "A",
+          "path": "/synthetic/c2-workspace/candidate_a",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "PREPARER_A"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "candidate_b",
+          "kind": "CANDIDATE_B",
+          "owner": "B",
+          "path": "/synthetic/c2-workspace/candidate_b",
+          "read_roles": [
+            "PREPARER_B",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "PREPARER_B"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "candidate_c",
+          "kind": "CANDIDATE_C",
+          "owner": "C2",
+          "path": "/synthetic/c2-workspace/candidate_c",
+          "read_roles": [
+            "PREPARER_C",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "PREPARER_C"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "capture_spool",
+          "kind": "CAPTURE_SPOOL",
+          "owner": "F_SOURCE",
+          "path": "/synthetic/c2-workspace/capture_spool",
+          "read_roles": [
+            "SOURCE_WORKER",
+            "E_VERIFIER"
+          ],
+          "write_roles": [
+            "SOURCE_WORKER"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "sealed_evidence",
+          "kind": "SEALED_EVIDENCE",
+          "owner": "E",
+          "path": "/synthetic/c2-workspace/sealed_evidence",
+          "read_roles": [
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "E_VERIFIER"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "current",
+          "kind": "CURRENT",
+          "owner": "D_PUBLISH",
+          "path": "/synthetic/c2-workspace/current",
+          "read_roles": [],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        }
+      ],
+      "basis_records": [
+        {
+          "basis_id": "cutoff-basis",
+          "kind": "AS_OF",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        },
+        {
+          "basis_id": "acquisition-basis",
+          "kind": "ACQUISITION",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        },
+        {
+          "basis_id": "coverage-basis",
+          "kind": "COVERAGE",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        },
+        {
+          "basis_id": "previous-content",
+          "kind": "PREVIOUS_CONTENT",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": {
+            "release_id": "release-previous",
+            "snapshot_id": "snapshot-previous",
+            "as_of": "2026-10-18T12:00:00Z"
+          }
+        },
+        {
+          "basis_id": "previous-absence",
+          "kind": "PREVIOUS_ABSENCE",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        }
+      ]
+    },
+    "windows": {
+      "schema_id": "mds.release.workspace",
+      "schema_version": 1,
+      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "registry_id": "registry-alpha",
+      "context": {
+        "run_id": "run-alpha",
+        "snapshot_id": "snapshot-alpha",
+        "dataset_id": "dividends",
+        "as_of": "2026-10-19T12:00:00Z"
+      },
+      "candidate_release_id": "release-candidate",
+      "platform": "WINDOWS",
+      "roots": [
+        {
+          "root_id": "source",
+          "kind": "SOURCE",
+          "owner": "INPUT_OWNER",
+          "path": "C:/synthetic/c2-workspace/source",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "SOURCE_WORKER",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "configuration",
+          "kind": "CONFIGURATION",
+          "owner": "INPUT_OWNER",
+          "path": "C:/synthetic/c2-workspace/configuration",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "SOURCE_WORKER",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "previous",
+          "kind": "PREVIOUS",
+          "owner": "INPUT_OWNER",
+          "path": "C:/synthetic/c2-workspace/previous",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "candidate_a",
+          "kind": "CANDIDATE_A",
+          "owner": "A",
+          "path": "C:/synthetic/c2-workspace/candidate_a",
+          "read_roles": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "PREPARER_A"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "candidate_b",
+          "kind": "CANDIDATE_B",
+          "owner": "B",
+          "path": "C:/synthetic/c2-workspace/candidate_b",
+          "read_roles": [
+            "PREPARER_B",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "PREPARER_B"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "candidate_c",
+          "kind": "CANDIDATE_C",
+          "owner": "C2",
+          "path": "C:/synthetic/c2-workspace/candidate_c",
+          "read_roles": [
+            "PREPARER_C",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "PREPARER_C"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "capture_spool",
+          "kind": "CAPTURE_SPOOL",
+          "owner": "F_SOURCE",
+          "path": "C:/synthetic/c2-workspace/capture_spool",
+          "read_roles": [
+            "SOURCE_WORKER",
+            "E_VERIFIER"
+          ],
+          "write_roles": [
+            "SOURCE_WORKER"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "sealed_evidence",
+          "kind": "SEALED_EVIDENCE",
+          "owner": "E",
+          "path": "C:/synthetic/c2-workspace/sealed_evidence",
+          "read_roles": [
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ],
+          "write_roles": [
+            "E_VERIFIER"
+          ],
+          "alias_status": "PLAIN_DECLARATION"
+        },
+        {
+          "root_id": "current",
+          "kind": "CURRENT",
+          "owner": "D_PUBLISH",
+          "path": "C:/synthetic/c2-workspace/current",
+          "read_roles": [],
+          "write_roles": [],
+          "alias_status": "PLAIN_DECLARATION"
+        }
+      ],
+      "basis_records": [
+        {
+          "basis_id": "cutoff-basis",
+          "kind": "AS_OF",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        },
+        {
+          "basis_id": "acquisition-basis",
+          "kind": "ACQUISITION",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        },
+        {
+          "basis_id": "coverage-basis",
+          "kind": "COVERAGE",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        },
+        {
+          "basis_id": "previous-content",
+          "kind": "PREVIOUS_CONTENT",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": {
+            "release_id": "release-previous",
+            "snapshot_id": "snapshot-previous",
+            "as_of": "2026-10-18T12:00:00Z"
+          }
+        },
+        {
+          "basis_id": "previous-absence",
+          "kind": "PREVIOUS_ABSENCE",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "status": "SYNTHETIC_ONLY",
+          "generation": null
+        }
+      ]
+    }
+  },
+  "workspaces": {
+    "linux": {
+      "schema_id": "mds.release.workspace",
+      "schema_version": 1,
+      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "context": {
+        "run_id": "run-alpha",
+        "snapshot_id": "snapshot-alpha",
+        "dataset_id": "dividends",
+        "as_of": "2026-10-19T12:00:00Z"
+      },
+      "candidate_release_id": "release-candidate",
+      "registry_ref": "registry-alpha",
+      "platform": "LINUX",
+      "root_ids": [
+        "source",
+        "configuration",
+        "previous",
+        "candidate_a",
+        "candidate_b",
+        "candidate_c",
+        "capture_spool",
+        "sealed_evidence",
+        "current"
+      ],
+      "previous": {
+        "captured_for": {
+          "run_id": "run-alpha",
+          "snapshot_id": "snapshot-alpha",
+          "dataset_id": "dividends",
+          "as_of": "2026-10-19T12:00:00Z"
+        },
+        "state": "NOT_VERIFIED",
+        "release_id": null,
+        "snapshot_id": null,
+        "as_of": null,
+        "evidence_ref": null,
+        "reason": "NOT_VERIFIED"
+      },
+      "bases": {
+        "as_of": {
+          "status": "SYNTHETIC_ONLY",
+          "basis_ref": "cutoff-basis",
+          "reason": null
+        },
+        "acquisition": {
+          "status": "SYNTHETIC_ONLY",
+          "basis_ref": "acquisition-basis",
+          "reason": null,
+          "acquired_at": "2026-10-19T12:03:00Z"
+        },
+        "coverage": {
+          "status": "SYNTHETIC_ONLY",
+          "basis_ref": "coverage-basis",
+          "reason": null,
+          "scope_id": "independent-expected-universe-v1",
+          "as_of": "2026-10-19T12:00:00Z"
+        }
+      },
+      "operations": [
+        {
+          "operation_id": "read-configuration",
+          "actor": "PREPARER_A",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "configuration",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "write-a",
+          "actor": "PREPARER_A",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_a",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "read-a-by-b",
+          "actor": "PREPARER_B",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_a",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "write-b",
+          "actor": "PREPARER_B",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_b",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "read-source",
+          "actor": "PREPARER_C",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "source",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-catalogue",
+          "actor": "PREPARER_C",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_a",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "write-c",
+          "actor": "PREPARER_C",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_c",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "write-capture",
+          "actor": "SOURCE_WORKER",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "capture_spool",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-capture",
+          "actor": "E_VERIFIER",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "capture_spool",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "seal-capture",
+          "actor": "E_VERIFIER",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "sealed_evidence",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-sealed",
+          "actor": "Q_ASSESSOR",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "sealed_evidence",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-candidate-by-d4",
+          "actor": "D4",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_c",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        }
+      ],
+      "candidate_state": "PREPARED",
+      "publication_status": "NOT_ATTEMPTED"
+    },
+    "windows": {
+      "schema_id": "mds.release.workspace",
+      "schema_version": 1,
+      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "context": {
+        "run_id": "run-alpha",
+        "snapshot_id": "snapshot-alpha",
+        "dataset_id": "dividends",
+        "as_of": "2026-10-19T12:00:00Z"
+      },
+      "candidate_release_id": "release-candidate",
+      "registry_ref": "registry-alpha",
+      "platform": "WINDOWS",
+      "root_ids": [
+        "source",
+        "configuration",
+        "previous",
+        "candidate_a",
+        "candidate_b",
+        "candidate_c",
+        "capture_spool",
+        "sealed_evidence",
+        "current"
+      ],
+      "previous": {
+        "captured_for": {
+          "run_id": "run-alpha",
+          "snapshot_id": "snapshot-alpha",
+          "dataset_id": "dividends",
+          "as_of": "2026-10-19T12:00:00Z"
+        },
+        "state": "NOT_VERIFIED",
+        "release_id": null,
+        "snapshot_id": null,
+        "as_of": null,
+        "evidence_ref": null,
+        "reason": "NOT_VERIFIED"
+      },
+      "bases": {
+        "as_of": {
+          "status": "SYNTHETIC_ONLY",
+          "basis_ref": "cutoff-basis",
+          "reason": null
+        },
+        "acquisition": {
+          "status": "SYNTHETIC_ONLY",
+          "basis_ref": "acquisition-basis",
+          "reason": null,
+          "acquired_at": "2026-10-19T12:03:00Z"
+        },
+        "coverage": {
+          "status": "SYNTHETIC_ONLY",
+          "basis_ref": "coverage-basis",
+          "reason": null,
+          "scope_id": "independent-expected-universe-v1",
+          "as_of": "2026-10-19T12:00:00Z"
+        }
+      },
+      "operations": [
+        {
+          "operation_id": "read-configuration",
+          "actor": "PREPARER_A",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "configuration",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "write-a",
+          "actor": "PREPARER_A",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_a",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "read-a-by-b",
+          "actor": "PREPARER_B",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_a",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "write-b",
+          "actor": "PREPARER_B",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_b",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "read-source",
+          "actor": "PREPARER_C",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "source",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-catalogue",
+          "actor": "PREPARER_C",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_a",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "write-c",
+          "actor": "PREPARER_C",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_c",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        },
+        {
+          "operation_id": "write-capture",
+          "actor": "SOURCE_WORKER",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "capture_spool",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-capture",
+          "actor": "E_VERIFIER",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "capture_spool",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "seal-capture",
+          "actor": "E_VERIFIER",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "sealed_evidence",
+          "relative_path": "artifacts/table.csv",
+          "access": "WRITE",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-sealed",
+          "actor": "Q_ASSESSOR",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "sealed_evidence",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": null,
+          "generation_reason": "NOT_APPLICABLE"
+        },
+        {
+          "operation_id": "read-candidate-by-d4",
+          "actor": "D4",
+          "context": {
+            "run_id": "run-alpha",
+            "snapshot_id": "snapshot-alpha",
+            "dataset_id": "dividends",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "candidate_release_id": "release-candidate",
+          "root_id": "candidate_c",
+          "relative_path": "artifacts/table.csv",
+          "access": "READ",
+          "generation": {
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z"
+          },
+          "generation_reason": null
+        }
+      ],
+      "candidate_state": "PREPARED",
+      "publication_status": "NOT_ATTEMPTED"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "linux-candidate-only",
+      "profile": "linux",
+      "changes": [],
+      "expected": {
+        "contract_error": null,
+        "result": {
+          "workspace_status": "VALID_DECLARATION",
+          "candidate_state": "PREPARED",
+          "publication_status": "NOT_ATTEMPTED",
+          "authority": "DECLARATION_ONLY",
+          "evaluation_scope": "SYNTHETIC_ONLY",
+          "native_containment": "NOT_VERIFIED",
+          "official_source_status": "NOT_VERIFIED"
+        }
+      }
+    },
+    {
+      "case_id": "windows-lexical-only",
+      "profile": "windows",
+      "changes": [],
+      "expected": {
+        "contract_error": null,
+        "result": {
+          "workspace_status": "VALID_DECLARATION",
+          "candidate_state": "PREPARED",
+          "publication_status": "NOT_ATTEMPTED",
+          "authority": "DECLARATION_ONLY",
+          "evaluation_scope": "SYNTHETIC_ONLY",
+          "native_containment": "NOT_VERIFIED",
+          "official_source_status": "NOT_VERIFIED"
+        }
+      }
+    },
+    {
+      "case_id": "unknown-source-bases-stay-not-verified",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "as_of"
+          ],
+          "value": {
+            "status": "NOT_VERIFIED",
+            "basis_ref": null,
+            "reason": "NOT_VERIFIED"
+          }
+        },
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "acquisition"
+          ],
+          "value": {
+            "status": "NOT_VERIFIED",
+            "basis_ref": null,
+            "reason": "NOT_VERIFIED",
+            "acquired_at": null
+          }
+        },
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "coverage"
+          ],
+          "value": {
+            "status": "NOT_VERIFIED",
+            "basis_ref": null,
+            "reason": "NOT_VERIFIED",
+            "scope_id": null,
+            "as_of": null
+          }
+        }
+      ],
+      "expected": {
+        "contract_error": null,
+        "result": {
+          "workspace_status": "VALID_DECLARATION",
+          "candidate_state": "PREPARED",
+          "publication_status": "NOT_ATTEMPTED",
+          "authority": "DECLARATION_ONLY",
+          "evaluation_scope": "SYNTHETIC_ONLY",
+          "native_containment": "NOT_VERIFIED",
+          "official_source_status": "NOT_VERIFIED"
+        }
+      }
+    },
+    {
+      "case_id": "previous-absent-explicit-basis",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "previous"
+          ],
+          "value": {
+            "captured_for": {
+              "run_id": "run-alpha",
+              "snapshot_id": "snapshot-alpha",
+              "dataset_id": "dividends",
+              "as_of": "2026-10-19T12:00:00Z"
+            },
+            "state": "ABSENT",
+            "release_id": null,
+            "snapshot_id": null,
+            "as_of": null,
+            "evidence_ref": "previous-absence",
+            "reason": null
+          }
+        }
+      ],
+      "expected": {
+        "contract_error": null,
+        "result": {
+          "workspace_status": "VALID_DECLARATION",
+          "candidate_state": "PREPARED",
+          "publication_status": "NOT_ATTEMPTED",
+          "authority": "DECLARATION_ONLY",
+          "evaluation_scope": "SYNTHETIC_ONLY",
+          "native_containment": "NOT_VERIFIED",
+          "official_source_status": "NOT_VERIFIED"
+        }
+      }
+    },
+    {
+      "case_id": "previous-independent-identity",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "previous"
+          ],
+          "value": {
+            "captured_for": {
+              "run_id": "run-alpha",
+              "snapshot_id": "snapshot-alpha",
+              "dataset_id": "dividends",
+              "as_of": "2026-10-19T12:00:00Z"
+            },
+            "state": "PRESENT",
+            "evidence_ref": "previous-content",
+            "reason": null,
+            "release_id": "release-previous",
+            "snapshot_id": "snapshot-previous",
+            "as_of": "2026-10-18T12:00:00Z"
+          }
+        },
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations"
+          ],
+          "value": [
+            {
+              "operation_id": "read-configuration",
+              "actor": "PREPARER_A",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "configuration",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": null,
+              "generation_reason": "NOT_APPLICABLE"
+            },
+            {
+              "operation_id": "write-a",
+              "actor": "PREPARER_A",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "candidate_a",
+              "relative_path": "artifacts/table.csv",
+              "access": "WRITE",
+              "generation": {
+                "release_id": "release-candidate",
+                "snapshot_id": "snapshot-alpha",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "generation_reason": null
+            },
+            {
+              "operation_id": "read-a-by-b",
+              "actor": "PREPARER_B",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "candidate_a",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": {
+                "release_id": "release-candidate",
+                "snapshot_id": "snapshot-alpha",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "generation_reason": null
+            },
+            {
+              "operation_id": "write-b",
+              "actor": "PREPARER_B",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "candidate_b",
+              "relative_path": "artifacts/table.csv",
+              "access": "WRITE",
+              "generation": {
+                "release_id": "release-candidate",
+                "snapshot_id": "snapshot-alpha",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "generation_reason": null
+            },
+            {
+              "operation_id": "read-source",
+              "actor": "PREPARER_C",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "source",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": null,
+              "generation_reason": "NOT_APPLICABLE"
+            },
+            {
+              "operation_id": "read-catalogue",
+              "actor": "PREPARER_C",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "candidate_a",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": {
+                "release_id": "release-candidate",
+                "snapshot_id": "snapshot-alpha",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "generation_reason": null
+            },
+            {
+              "operation_id": "write-c",
+              "actor": "PREPARER_C",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "candidate_c",
+              "relative_path": "artifacts/table.csv",
+              "access": "WRITE",
+              "generation": {
+                "release_id": "release-candidate",
+                "snapshot_id": "snapshot-alpha",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "generation_reason": null
+            },
+            {
+              "operation_id": "write-capture",
+              "actor": "SOURCE_WORKER",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "capture_spool",
+              "relative_path": "artifacts/table.csv",
+              "access": "WRITE",
+              "generation": null,
+              "generation_reason": "NOT_APPLICABLE"
+            },
+            {
+              "operation_id": "read-capture",
+              "actor": "E_VERIFIER",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "capture_spool",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": null,
+              "generation_reason": "NOT_APPLICABLE"
+            },
+            {
+              "operation_id": "seal-capture",
+              "actor": "E_VERIFIER",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "sealed_evidence",
+              "relative_path": "artifacts/table.csv",
+              "access": "WRITE",
+              "generation": null,
+              "generation_reason": "NOT_APPLICABLE"
+            },
+            {
+              "operation_id": "read-sealed",
+              "actor": "Q_ASSESSOR",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "sealed_evidence",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": null,
+              "generation_reason": "NOT_APPLICABLE"
+            },
+            {
+              "operation_id": "read-candidate-by-d4",
+              "actor": "D4",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "candidate_c",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": {
+                "release_id": "release-candidate",
+                "snapshot_id": "snapshot-alpha",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "generation_reason": null
+            },
+            {
+              "operation_id": "read-previous",
+              "actor": "PREPARER_C",
+              "context": {
+                "run_id": "run-alpha",
+                "snapshot_id": "snapshot-alpha",
+                "dataset_id": "dividends",
+                "as_of": "2026-10-19T12:00:00Z"
+              },
+              "candidate_release_id": "release-candidate",
+              "root_id": "previous",
+              "relative_path": "artifacts/table.csv",
+              "access": "READ",
+              "generation": {
+                "release_id": "release-previous",
+                "snapshot_id": "snapshot-previous",
+                "as_of": "2026-10-18T12:00:00Z"
+              },
+              "generation_reason": null
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "contract_error": null,
+        "result": {
+          "workspace_status": "VALID_DECLARATION",
+          "candidate_state": "PREPARED",
+          "publication_status": "NOT_ATTEMPTED",
+          "authority": "DECLARATION_ONLY",
+          "evaluation_scope": "SYNTHETIC_ONLY",
+          "native_containment": "NOT_VERIFIED",
+          "official_source_status": "NOT_VERIFIED"
+        }
+      }
+    },
+    {
+      "case_id": "unknown-workspace-field",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "unexpected"
+          ],
+          "value": true
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "missing-candidate-release-id",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "remove",
+          "path": [
+            "candidate_release_id"
+          ]
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "context-release-id-not-allowed",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "context",
+            "release_id"
+          ],
+          "value": "wrong"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "null-context",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "context"
+          ],
+          "value": null
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "null-as-of",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "context",
+            "as_of"
+          ],
+          "value": null
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "impossible-as-of",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "context",
+            "as_of"
+          ],
+          "value": "2026-02-30T12:00:00Z"
+        }
+      ],
+      "expected": {
+        "contract_error": "CONTEXT",
+        "result": null
+      }
+    },
+    {
+      "case_id": "noncanonical-as-of",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "context",
+            "as_of"
+          ],
+          "value": "2026-10-19T12:00:00+00:00"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "unsupported-version",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "schema_version"
+          ],
+          "value": 2
+        }
+      ],
+      "expected": {
+        "contract_error": "VERSION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "bool-version-is-not-integer",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "schema_version"
+          ],
+          "value": true
+        }
+      ],
+      "expected": {
+        "contract_error": "VERSION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "unsupported-schema-id",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "schema_id"
+          ],
+          "value": "other.contract"
+        }
+      ],
+      "expected": {
+        "contract_error": "VERSION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "wrong-schema-digest",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "schema_digest"
+          ],
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA_DIGEST",
+        "result": null
+      }
+    },
+    {
+      "case_id": "wrong-retained-schema-digest",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "schema_digest"
+          ],
+          "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA_DIGEST",
+        "result": null
+      }
+    },
+    {
+      "case_id": "different-retained-context",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "context",
+            "run_id"
+          ],
+          "value": "other-run"
+        }
+      ],
+      "expected": {
+        "contract_error": "CONTEXT",
+        "result": null
+      }
+    },
+    {
+      "case_id": "different-registry-ref",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "registry_ref"
+          ],
+          "value": "other-registry"
+        }
+      ],
+      "expected": {
+        "contract_error": "REGISTRY_BINDING",
+        "result": null
+      }
+    },
+    {
+      "case_id": "different-candidate-release",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "candidate_release_id"
+          ],
+          "value": "other-release"
+        }
+      ],
+      "expected": {
+        "contract_error": "GENERATION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "platform-mismatch",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "platform"
+          ],
+          "value": "WINDOWS"
+        }
+      ],
+      "expected": {
+        "contract_error": "PLATFORM",
+        "result": null
+      }
+    },
+    {
+      "case_id": "platform-not-supported-by-contract",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "platform"
+          ],
+          "value": "MACOS"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "missing-root",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "root_ids"
+          ],
+          "value": [
+            "source",
+            "configuration",
+            "previous",
+            "candidate_a",
+            "candidate_b",
+            "candidate_c",
+            "capture_spool",
+            "sealed_evidence"
+          ]
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_INVENTORY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "duplicate-root-reference",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "root_ids"
+          ],
+          "value": [
+            "source",
+            "configuration",
+            "previous",
+            "candidate_a",
+            "candidate_b",
+            "candidate_c",
+            "capture_spool",
+            "sealed_evidence",
+            "current",
+            "source"
+          ]
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "unknown-root-reference",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "root_ids",
+            0
+          ],
+          "value": "other-source"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_INVENTORY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-kind-inventory",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            1,
+            "kind"
+          ],
+          "value": "SOURCE"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_INVENTORY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "duplicate-root-id",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            1,
+            "root_id"
+          ],
+          "value": "source"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_INVENTORY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "same-root-path",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            1,
+            "path"
+          ],
+          "value": "/synthetic/c2-workspace/source"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_OVERLAP",
+        "result": null
+      }
+    },
+    {
+      "case_id": "candidate-under-current",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            5,
+            "path"
+          ],
+          "value": "/synthetic/c2-workspace/current/new"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_OVERLAP",
+        "result": null
+      }
+    },
+    {
+      "case_id": "current-under-candidate",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            8,
+            "path"
+          ],
+          "value": "/synthetic/c2-workspace/candidate_a/current"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_OVERLAP",
+        "result": null
+      }
+    },
+    {
+      "case_id": "windows-case-alias",
+      "profile": "windows",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            1,
+            "path"
+          ],
+          "value": "C:/SYNTHETIC/C2-WORKSPACE/SOURCE"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_OVERLAP",
+        "result": null
+      }
+    },
+    {
+      "case_id": "linux-case-distinct-is-lexical-only",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            1,
+            "path"
+          ],
+          "value": "/synthetic/c2-workspace/SOURCE"
+        }
+      ],
+      "expected": {
+        "contract_error": null,
+        "result": {
+          "workspace_status": "VALID_DECLARATION",
+          "candidate_state": "PREPARED",
+          "publication_status": "NOT_ATTEMPTED",
+          "authority": "DECLARATION_ONLY",
+          "evaluation_scope": "SYNTHETIC_ONLY",
+          "native_containment": "NOT_VERIFIED",
+          "official_source_status": "NOT_VERIFIED"
+        }
+      }
+    },
+    {
+      "case_id": "root-parent-traversal",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "/synthetic/../current"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-dot-alias",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "/synthetic/./source"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-double-separator",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "/synthetic//source"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-relative-path",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "synthetic/source"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "windows-unc-refused",
+      "profile": "windows",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "//server/share/source"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "windows-device-prefix-refused",
+      "profile": "windows",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "\\\\?\\C:\\source"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "windows-reserved-device",
+      "profile": "windows",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "C:/synthetic/NUL.txt"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "windows-ads-refused",
+      "profile": "windows",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "path"
+          ],
+          "value": "C:/synthetic/source:stream"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-symlink-declaration",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "alias_status"
+          ],
+          "value": "SYMLINK"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ALIAS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-reparse-declaration",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "alias_status"
+          ],
+          "value": "REPARSE_POINT"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ALIAS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-hardlink-declaration",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "alias_status"
+          ],
+          "value": "SHARED_HARDLINK"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ALIAS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "root-alias-unverified",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "alias_status"
+          ],
+          "value": "NOT_VERIFIED"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ALIAS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "wrong-root-owner",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            3,
+            "owner"
+          ],
+          "value": "B"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_AUTHORITY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "source-write-authority-injection",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            0,
+            "write_roles"
+          ],
+          "value": [
+            "PREPARER_C"
+          ]
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_AUTHORITY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "current-write-authority-injection",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "roots",
+            8,
+            "write_roles"
+          ],
+          "value": [
+            "D4"
+          ]
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_AUTHORITY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "worker-cannot-write-source",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            4,
+            "access"
+          ],
+          "value": "WRITE"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ACCESS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "worker-cannot-write-previous",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            4,
+            "root_id"
+          ],
+          "value": "previous"
+        },
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            4,
+            "access"
+          ],
+          "value": "WRITE"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ACCESS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "worker-cannot-write-sealed",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            7,
+            "root_id"
+          ],
+          "value": "sealed_evidence"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ACCESS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "wrong-candidate-owner",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            1,
+            "actor"
+          ],
+          "value": "PREPARER_B"
+        }
+      ],
+      "expected": {
+        "contract_error": "ROOT_ACCESS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "current-write-rejected",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            6,
+            "root_id"
+          ],
+          "value": "current"
+        }
+      ],
+      "expected": {
+        "contract_error": "CURRENT_ACCESS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "current-read-is-not-previous-read",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            4,
+            "root_id"
+          ],
+          "value": "current"
+        }
+      ],
+      "expected": {
+        "contract_error": "CURRENT_ACCESS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "d4-cannot-publish-through-preparation",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            6,
+            "root_id"
+          ],
+          "value": "current"
+        },
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            6,
+            "actor"
+          ],
+          "value": "D4"
+        }
+      ],
+      "expected": {
+        "contract_error": "CURRENT_ACCESS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-context-mismatch",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "context",
+            "snapshot_id"
+          ],
+          "value": "other-snapshot"
+        }
+      ],
+      "expected": {
+        "contract_error": "CONTEXT",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-candidate-mismatch",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "candidate_release_id"
+          ],
+          "value": "other-release"
+        }
+      ],
+      "expected": {
+        "contract_error": "GENERATION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-unknown-root",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "root_id"
+          ],
+          "value": "unknown"
+        }
+      ],
+      "expected": {
+        "contract_error": "REFERENCE",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-parent-escape",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "relative_path"
+          ],
+          "value": "../current/table.csv"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-absolute-path",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "relative_path"
+          ],
+          "value": "/current/table.csv"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-backslash-alias",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "relative_path"
+          ],
+          "value": "data\\..\\current.csv"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-encoded-escape",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "relative_path"
+          ],
+          "value": "%2e%2e/current.csv"
+        }
+      ],
+      "expected": {
+        "contract_error": "PATH",
+        "result": null
+      }
+    },
+    {
+      "case_id": "operation-duplicate-id",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            1,
+            "operation_id"
+          ],
+          "value": "read-configuration"
+        }
+      ],
+      "expected": {
+        "contract_error": "OPERATION_INVENTORY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "candidate-generation-mismatch",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            1,
+            "generation",
+            "release_id"
+          ],
+          "value": "other-release"
+        }
+      ],
+      "expected": {
+        "contract_error": "GENERATION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "candidate-generation-null",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            1,
+            "generation"
+          ],
+          "value": null
+        }
+      ],
+      "expected": {
+        "contract_error": "GENERATION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "candidate-generation-as-of-mismatch",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            1,
+            "generation",
+            "as_of"
+          ],
+          "value": "2026-10-18T12:00:00Z"
+        }
+      ],
+      "expected": {
+        "contract_error": "GENERATION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "source-generation-not-applicable",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "operations",
+            0,
+            "generation_reason"
+          ],
+          "value": null
+        }
+      ],
+      "expected": {
+        "contract_error": "GENERATION_NULL",
+        "result": null
+      }
+    },
+    {
+      "case_id": "prepared-is-not-current",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "candidate_state"
+          ],
+          "value": "CURRENT_VERIFIED"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "prepared-is-not-published",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "publication_status"
+          ],
+          "value": "ACKNOWLEDGED"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "previous-null-is-not-absent",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "previous",
+            "state"
+          ],
+          "value": "ABSENT"
+        }
+      ],
+      "expected": {
+        "contract_error": "PREVIOUS_STATE",
+        "result": null
+      }
+    },
+    {
+      "case_id": "previous-present-needs-identity",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "previous",
+            "state"
+          ],
+          "value": "PRESENT"
+        }
+      ],
+      "expected": {
+        "contract_error": "PREVIOUS_STATE",
+        "result": null
+      }
+    },
+    {
+      "case_id": "previous-cross-context",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "previous",
+            "captured_for",
+            "run_id"
+          ],
+          "value": "other-run"
+        }
+      ],
+      "expected": {
+        "contract_error": "CONTEXT",
+        "result": null
+      }
+    },
+    {
+      "case_id": "previous-candidate-identity-refused",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "previous"
+          ],
+          "value": {
+            "captured_for": {
+              "run_id": "run-alpha",
+              "snapshot_id": "snapshot-alpha",
+              "dataset_id": "dividends",
+              "as_of": "2026-10-19T12:00:00Z"
+            },
+            "state": "PRESENT",
+            "release_id": "release-candidate",
+            "snapshot_id": "snapshot-alpha",
+            "as_of": "2026-10-19T12:00:00Z",
+            "evidence_ref": "previous-content",
+            "reason": null
+          }
+        }
+      ],
+      "expected": {
+        "contract_error": "GENERATION",
+        "result": null
+      }
+    },
+    {
+      "case_id": "previous-absence-wrong-basis",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "previous"
+          ],
+          "value": {
+            "captured_for": {
+              "run_id": "run-alpha",
+              "snapshot_id": "snapshot-alpha",
+              "dataset_id": "dividends",
+              "as_of": "2026-10-19T12:00:00Z"
+            },
+            "state": "ABSENT",
+            "release_id": null,
+            "snapshot_id": null,
+            "as_of": null,
+            "evidence_ref": "coverage-basis",
+            "reason": null
+          }
+        }
+      ],
+      "expected": {
+        "contract_error": "PREVIOUS_STATE",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-cross-context",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "basis_records",
+            0,
+            "context",
+            "dataset_id"
+          ],
+          "value": "candles"
+        }
+      ],
+      "expected": {
+        "contract_error": "CONTEXT",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-identity-substitution",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "coverage",
+            "basis_ref"
+          ],
+          "value": "acquisition-basis"
+        }
+      ],
+      "expected": {
+        "contract_error": "BASIS_KIND",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-unknown-reference",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "coverage",
+            "basis_ref"
+          ],
+          "value": "unknown-basis"
+        }
+      ],
+      "expected": {
+        "contract_error": "REFERENCE",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-null-does-not-mean-measured",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "coverage",
+            "basis_ref"
+          ],
+          "value": null
+        }
+      ],
+      "expected": {
+        "contract_error": "BASIS_NULL",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-nominal-official-verified-refused",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "coverage",
+            "status"
+          ],
+          "value": "VERIFIED"
+        }
+      ],
+      "expected": {
+        "contract_error": "SCHEMA",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-coverage-as-of-mismatch",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "coverage",
+            "as_of"
+          ],
+          "value": "2026-10-18T12:00:00Z"
+        }
+      ],
+      "expected": {
+        "contract_error": "COVERAGE_BASIS",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-acquisition-does-not-replace-as-of",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "as_of",
+            "basis_ref"
+          ],
+          "value": "acquisition-basis"
+        }
+      ],
+      "expected": {
+        "contract_error": "BASIS_KIND",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-duplicate-id",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "registry",
+          "op": "set",
+          "path": [
+            "basis_records",
+            1,
+            "basis_id"
+          ],
+          "value": "cutoff-basis"
+        }
+      ],
+      "expected": {
+        "contract_error": "BASIS_INVENTORY",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-unknown-acquisition-time",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "acquisition",
+            "acquired_at"
+          ],
+          "value": null
+        }
+      ],
+      "expected": {
+        "contract_error": "CONTEXT",
+        "result": null
+      }
+    },
+    {
+      "case_id": "basis-unknown-coverage-scope",
+      "profile": "linux",
+      "changes": [
+        {
+          "target": "workspace",
+          "op": "set",
+          "path": [
+            "bases",
+            "coverage",
+            "scope_id"
+          ],
+          "value": null
+        }
+      ],
+      "expected": {
+        "contract_error": "COVERAGE_BASIS",
+        "result": null
+      }
+    }
+  ]
+}

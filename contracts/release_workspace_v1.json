@@ -1,0 +1,845 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mds.release.workspace/1",
+  "title": "Release workspace preparation declaration version 1",
+  "description": "Closed offline provider contract. No runtime admission or native authority.",
+  "$ref": "#/$defs/workspace",
+  "$defs": {
+    "alias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
+    },
+    "utc": {
+      "type": "string",
+      "pattern": "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "as_of": {
+          "$ref": "#/$defs/utc"
+        }
+      },
+      "required": [
+        "run_id",
+        "snapshot_id",
+        "dataset_id",
+        "as_of"
+      ],
+      "additionalProperties": false
+    },
+    "generation": {
+      "type": "object",
+      "properties": {
+        "release_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "as_of": {
+          "$ref": "#/$defs/utc"
+        }
+      },
+      "required": [
+        "release_id",
+        "snapshot_id",
+        "as_of"
+      ],
+      "additionalProperties": false
+    },
+    "root": {
+      "type": "object",
+      "properties": {
+        "root_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "SOURCE",
+            "CONFIGURATION",
+            "PREVIOUS",
+            "CANDIDATE_A",
+            "CANDIDATE_B",
+            "CANDIDATE_C",
+            "CAPTURE_SPOOL",
+            "SEALED_EVIDENCE",
+            "CURRENT"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "enum": [
+            "INPUT_OWNER",
+            "A",
+            "B",
+            "C2",
+            "F_SOURCE",
+            "E",
+            "D_PUBLISH"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "read_roles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "PREPARER_A",
+              "PREPARER_B",
+              "PREPARER_C",
+              "SOURCE_WORKER",
+              "E_VERIFIER",
+              "Q_ASSESSOR",
+              "D4"
+            ]
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "write_roles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "PREPARER_A",
+              "PREPARER_B",
+              "PREPARER_C",
+              "SOURCE_WORKER",
+              "E_VERIFIER",
+              "Q_ASSESSOR",
+              "D4"
+            ]
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "alias_status": {
+          "type": "string",
+          "enum": [
+            "PLAIN_DECLARATION",
+            "NOT_VERIFIED",
+            "SYMLINK",
+            "REPARSE_POINT",
+            "SHARED_HARDLINK"
+          ]
+        }
+      },
+      "required": [
+        "root_id",
+        "kind",
+        "owner",
+        "path",
+        "read_roles",
+        "write_roles",
+        "alias_status"
+      ],
+      "additionalProperties": false
+    },
+    "basis_record": {
+      "type": "object",
+      "properties": {
+        "basis_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "AS_OF",
+            "ACQUISITION",
+            "COVERAGE",
+            "PREVIOUS_CONTENT",
+            "PREVIOUS_ABSENCE"
+          ]
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "SYNTHETIC_ONLY"
+          ]
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/generation"
+            }
+          ]
+        }
+      },
+      "required": [
+        "basis_id",
+        "kind",
+        "context",
+        "status",
+        "generation"
+      ],
+      "additionalProperties": false
+    },
+    "previous": {
+      "type": "object",
+      "properties": {
+        "captured_for": {
+          "$ref": "#/$defs/context"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "NOT_VERIFIED",
+            "PRESENT",
+            "ABSENT"
+          ]
+        },
+        "release_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/alias"
+            }
+          ]
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/alias"
+            }
+          ]
+        },
+        "as_of": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/utc"
+            }
+          ]
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/alias"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "NOT_VERIFIED"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "captured_for",
+        "state",
+        "release_id",
+        "snapshot_id",
+        "as_of",
+        "evidence_ref",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "bases": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "SYNTHETIC_ONLY",
+                "NOT_VERIFIED"
+              ]
+            },
+            "basis_ref": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/alias"
+                }
+              ]
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "NOT_VERIFIED"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "basis_ref",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "acquisition": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "SYNTHETIC_ONLY",
+                "NOT_VERIFIED"
+              ]
+            },
+            "basis_ref": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/alias"
+                }
+              ]
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "NOT_VERIFIED"
+                  ]
+                }
+              ]
+            },
+            "acquired_at": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/utc"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "basis_ref",
+            "reason",
+            "acquired_at"
+          ],
+          "additionalProperties": false
+        },
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "SYNTHETIC_ONLY",
+                "NOT_VERIFIED"
+              ]
+            },
+            "basis_ref": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/alias"
+                }
+              ]
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "NOT_VERIFIED"
+                  ]
+                }
+              ]
+            },
+            "scope_id": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/alias"
+                }
+              ]
+            },
+            "as_of": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/utc"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "basis_ref",
+            "reason",
+            "scope_id",
+            "as_of"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "as_of",
+        "acquisition",
+        "coverage"
+      ],
+      "additionalProperties": false
+    },
+    "operation": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "actor": {
+          "type": "string",
+          "enum": [
+            "PREPARER_A",
+            "PREPARER_B",
+            "PREPARER_C",
+            "SOURCE_WORKER",
+            "E_VERIFIER",
+            "Q_ASSESSOR",
+            "D4"
+          ]
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "candidate_release_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "root_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "access": {
+          "type": "string",
+          "enum": [
+            "READ",
+            "WRITE"
+          ]
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/generation"
+            }
+          ]
+        },
+        "generation_reason": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "NOT_APPLICABLE"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "operation_id",
+        "actor",
+        "context",
+        "candidate_release_id",
+        "root_id",
+        "relative_path",
+        "access",
+        "generation",
+        "generation_reason"
+      ],
+      "additionalProperties": false
+    },
+    "registry": {
+      "type": "object",
+      "properties": {
+        "schema_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "schema_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "registry_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "candidate_release_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "LINUX",
+            "WINDOWS"
+          ]
+        },
+        "roots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/root"
+          },
+          "minItems": 9,
+          "maxItems": 9
+        },
+        "basis_records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/basis_record"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "schema_id",
+        "schema_version",
+        "schema_digest",
+        "registry_id",
+        "context",
+        "candidate_release_id",
+        "platform",
+        "roots",
+        "basis_records"
+      ],
+      "additionalProperties": false
+    },
+    "workspace": {
+      "type": "object",
+      "properties": {
+        "schema_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "schema_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "candidate_release_id": {
+          "$ref": "#/$defs/alias"
+        },
+        "registry_ref": {
+          "$ref": "#/$defs/alias"
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "LINUX",
+            "WINDOWS"
+          ]
+        },
+        "root_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/alias"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "previous": {
+          "$ref": "#/$defs/previous"
+        },
+        "bases": {
+          "$ref": "#/$defs/bases"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operation"
+          },
+          "minItems": 0
+        },
+        "candidate_state": {
+          "type": "string",
+          "enum": [
+            "PREPARED"
+          ]
+        },
+        "publication_status": {
+          "type": "string",
+          "enum": [
+            "NOT_ATTEMPTED"
+          ]
+        }
+      },
+      "required": [
+        "schema_id",
+        "schema_version",
+        "schema_digest",
+        "context",
+        "candidate_release_id",
+        "registry_ref",
+        "platform",
+        "root_ids",
+        "previous",
+        "bases",
+        "operations",
+        "candidate_state",
+        "publication_status"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "x-contract": {
+    "schema_id": "mds.release.workspace",
+    "schema_version": 1,
+    "identity": "mds.release.workspace/1",
+    "runtime_authority_created": false,
+    "native_containment_proven": false,
+    "digest": "SHA-256 of strict-decoded JSON encoded as UTF-8; sorted keys; compact separators; ensure_ascii=false; allow_nan=false",
+    "supported_declaration_platforms": [
+      "LINUX",
+      "WINDOWS"
+    ],
+    "native_acceptance": "NOT_VERIFIED; Linux-first provider proofs are separate",
+    "context_fields": [
+      "run_id",
+      "snapshot_id",
+      "dataset_id",
+      "as_of"
+    ],
+    "preparation_result": {
+      "workspace_status": "VALID_DECLARATION",
+      "candidate_state": "PREPARED",
+      "publication_status": "NOT_ATTEMPTED",
+      "authority": "DECLARATION_ONLY",
+      "evaluation_scope": "SYNTHETIC_ONLY",
+      "native_containment": "NOT_VERIFIED",
+      "official_source_status": "NOT_VERIFIED"
+    },
+    "root_policy": {
+      "SOURCE": {
+        "owner": "INPUT_OWNER",
+        "read_roles": [
+          "PREPARER_A",
+          "PREPARER_B",
+          "PREPARER_C",
+          "SOURCE_WORKER",
+          "E_VERIFIER",
+          "Q_ASSESSOR",
+          "D4"
+        ],
+        "write_roles": []
+      },
+      "CONFIGURATION": {
+        "owner": "INPUT_OWNER",
+        "read_roles": [
+          "PREPARER_A",
+          "PREPARER_B",
+          "PREPARER_C",
+          "SOURCE_WORKER",
+          "E_VERIFIER",
+          "Q_ASSESSOR",
+          "D4"
+        ],
+        "write_roles": []
+      },
+      "PREVIOUS": {
+        "owner": "INPUT_OWNER",
+        "read_roles": [
+          "PREPARER_A",
+          "PREPARER_B",
+          "PREPARER_C",
+          "E_VERIFIER",
+          "Q_ASSESSOR",
+          "D4"
+        ],
+        "write_roles": []
+      },
+      "CANDIDATE_A": {
+        "owner": "A",
+        "read_roles": [
+          "PREPARER_A",
+          "PREPARER_B",
+          "PREPARER_C",
+          "E_VERIFIER",
+          "Q_ASSESSOR",
+          "D4"
+        ],
+        "write_roles": [
+          "PREPARER_A"
+        ]
+      },
+      "CANDIDATE_B": {
+        "owner": "B",
+        "read_roles": [
+          "PREPARER_B",
+          "E_VERIFIER",
+          "Q_ASSESSOR",
+          "D4"
+        ],
+        "write_roles": [
+          "PREPARER_B"
+        ]
+      },
+      "CANDIDATE_C": {
+        "owner": "C2",
+        "read_roles": [
+          "PREPARER_C",
+          "E_VERIFIER",
+          "Q_ASSESSOR",
+          "D4"
+        ],
+        "write_roles": [
+          "PREPARER_C"
+        ]
+      },
+      "CAPTURE_SPOOL": {
+        "owner": "F_SOURCE",
+        "read_roles": [
+          "SOURCE_WORKER",
+          "E_VERIFIER"
+        ],
+        "write_roles": [
+          "SOURCE_WORKER"
+        ]
+      },
+      "SEALED_EVIDENCE": {
+        "owner": "E",
+        "read_roles": [
+          "E_VERIFIER",
+          "Q_ASSESSOR",
+          "D4"
+        ],
+        "write_roles": [
+          "E_VERIFIER"
+        ]
+      },
+      "CURRENT": {
+        "owner": "D_PUBLISH",
+        "read_roles": [],
+        "write_roles": []
+      }
+    },
+    "cross_field_rules": [
+      "Strict JSON: reject duplicate keys, nonstandard numeric constants, invalid UTF-8 and missing or unknown fields.",
+      "Exact version and canonical schema digest in workspace and independently retained registry.",
+      "Exact context equality across workspace, registry, basis records, previous.captured_for and operations; calendar-valid canonical UTC as_of.",
+      "candidate_release_id is separate from context and equal in registry and operations; context.release_id is forbidden.",
+      "Exactly one root of each fixed kind; unique root IDs and exact required root membership.",
+      "Root owner/read_roles/write_roles exactly match root_policy; fixture declarations never create runtime authority.",
+      "Canonical absolute lexical paths, no dot/parent/empty components, backslash aliases or trailing dots/spaces; Windows additionally rejects UNC/device/ADS/reserved names and compares case-insensitively.",
+      "Every root is disjoint from every other root: no equal path or ancestor/descendant overlap.",
+      "Only PLAIN_DECLARATION alias observations are accepted; actual symlink/reparse/hardlink/TOCTOU proof remains a native provider obligation.",
+      "Relative operation paths cannot escape roots; unknown roots and operation IDs duplicated in one plan are rejected.",
+      "Every operation must satisfy fixed role access. CURRENT access is forbidden throughout preparation, including D4 calls.",
+      "Candidate operations bind the exact candidate release/snapshot/as_of tuple; previous operations require explicit PRESENT previous and its independent tuple.",
+      "Non-generation source/configuration/capture/sealed operations require generation=null with NOT_APPLICABLE; unknown generation is not NOT_APPLICABLE.",
+      "Previous NOT_VERIFIED has null identity/evidence and an explicit reason; null identity never implies ABSENT.",
+      "Previous ABSENT requires explicit retained PREVIOUS_ABSENCE basis. PRESENT requires retained matching PREVIOUS_CONTENT and independent release/snapshot IDs.",
+      "as_of, acquisition and coverage bases are separately resolved by ID, kind and context; acquisition time never supplies business as_of and actual membership never supplies independent coverage.",
+      "SYNTHETIC_ONLY basis requires a reference and no reason; NOT_VERIFIED requires null values with explicit NOT_VERIFIED reason. No official VERIFIED status is accepted by this synthetic contract.",
+      "A prepared candidate can only be PREPARED/NOT_ATTEMPTED; publication and CURRENT verification belong to separate providers and contracts."
+    ],
+    "safe_error_codes": [
+      "SCHEMA",
+      "SCHEMA_DEFINITION",
+      "VERSION",
+      "SCHEMA_DIGEST",
+      "CONTEXT",
+      "GENERATION",
+      "REGISTRY_BINDING",
+      "PLATFORM",
+      "ROOT_INVENTORY",
+      "ROOT_ALIAS",
+      "ROOT_AUTHORITY",
+      "ROOT_OVERLAP",
+      "PATH",
+      "REFERENCE",
+      "ROOT_ACCESS",
+      "CURRENT_ACCESS",
+      "OPERATION_INVENTORY",
+      "GENERATION_NULL",
+      "PREVIOUS_STATE",
+      "BASIS_INVENTORY",
+      "BASIS_NULL",
+      "BASIS_KIND",
+      "BASIS_INDEPENDENCE",
+      "COVERAGE_BASIS",
+      "JSON_DUPLICATE_KEY",
+      "JSON_NONSTANDARD_CONSTANT",
+      "JSON_SYNTAX",
+      "FIXTURE"
+    ]
+  }
+}
