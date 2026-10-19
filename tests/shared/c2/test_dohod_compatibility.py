@@ -370,7 +370,11 @@ def test_parent_stage_propagates_dohod_failure_upload_and_success_unreachable(
     called = []
     for name in ('data_gathering', 'dividends', 'tech', 'upload'):
         stub = types.ModuleType(name)
-        stub.main = lambda *a, stage=name, **kw: called.append(stage)
+        def previous(*args, stage=name, **kwargs):
+            if modern:
+                assert runtime_events == ['entered', 'bound'], 'Stage before fixture runtime admission'
+            called.append(stage)
+        stub.main = previous
         if name == 'upload':
             stub.main = forbidden_upload
             stub.runtime_scope = runtime_scope

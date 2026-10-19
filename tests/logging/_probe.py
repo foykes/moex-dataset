@@ -329,21 +329,20 @@ def cli_probe(mode):
         return report
     log.finalize_logging = finalized
     calls = []
-    for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data', 'upload'):
+    names = ('data_gathering', 'dividends', 'tech', 'dohodru_data', 'upload')
+    def stage_call(order, args):
+        name = names[order]
+        calls.append(name)
+        if name == 'data_gathering' and mode == 'error':
+            print('FIXTURE_DATA_GATHERING_RAISED')
+            raise ValueError('password=CLI_CANARY_823')
+    upload_fixture = fixture.fixture_upload(stage_call, profile=profile,
+        log=log, observed_reports=observed)
+    for order, name in enumerate(names):
         module = types.ModuleType(name)
-
-        def stage(*args, name=name, **kwargs):
-            calls.append(name)
-            if name == 'data_gathering' and mode == 'error':
-                print('FIXTURE_DATA_GATHERING_RAISED')
-                raise ValueError('password=CLI_CANARY_823')
-
-        module.main = stage
+        module.main = lambda *args, order=order, **kwargs: upload_fixture._fixture_stage_call(order, args)
         if name == 'upload':
-            def returned(order, args):
-                calls.append('upload')
-            module = fixture.fixture_upload(returned, profile=profile,
-                log=log, observed_reports=observed)
+            module = upload_fixture
         sys.modules[name] = module
     sys.argv = [str(ROOT / 'main.py')]
     # No sensitive literal registration is needed for sensitive key=value text.

@@ -386,6 +386,9 @@ def test_pipeline_forwards_exact_context_only_to_dividends(monkeypatch, context,
     for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data'):
         stub = types.ModuleType(name)
         def main(*args, stage=name, **kwargs):
+            if profile == 'modern':
+                runtime = observed['runtime']
+                assert runtime is not None and runtime.active and runtime.bound, 'Stage before fixture runtime admission'
             calls.append((stage, args, kwargs))
         stub.main = main
         monkeypatch.setitem(sys.modules, name, stub)

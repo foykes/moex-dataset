@@ -51,8 +51,13 @@ def fixture_upload(stage_call, *, profile, log, observed_reports):
                  entered=False, bound=False, closed=False, returned=False,
                  report=None, final_status=None)
     module._fixture_state = state
+    def stage_call_after_admission(order, args):
+        if profile == 'modern':
+            assert (state['active'] and state['bound'] and not state['closed']), 'Stage before fixture runtime admission'
+        return stage_call(order, args)
+    module._fixture_stage_call = stage_call_after_admission
     if profile == 'legacy':
-        module.main = lambda *args: stage_call(4, args)
+        module.main = lambda *args: stage_call_after_admission(4, args)
         return module
     assert profile == 'modern'
 
@@ -79,7 +84,7 @@ def fixture_upload(stage_call, *, profile, log, observed_reports):
         assert _runtime is state['runtime'] and logging_context is state['context']
         assert type(result_sink) is dict, 'Fixture requires parent-owned sink'
         state['sink'] = result_sink
-        result = stage_call(4, (root, target))
+        result = stage_call_after_admission(4, (root, target))
         state['returned'] = True
         return result
 
@@ -137,12 +142,13 @@ def load_main(monkeypatch, stage_call):
         observed.append((context, report))
         return report
     monkeypatch.setattr(log, 'finalize_logging', finalized)
+    upload_fixture = fixture_upload(stage_call, profile=profile, log=log, observed_reports=observed)
     names = ('data_gathering', 'dividends', 'tech', 'dohodru_data', 'upload')
     for order, name in enumerate(names):
         module = types.ModuleType(name)
-        module.main = lambda *args, order=order, **kwargs: stage_call(order, args)
+        module.main = lambda *args, order=order, **kwargs: upload_fixture._fixture_stage_call(order, args)
         if name == 'upload':
-            module = fixture_upload(stage_call, profile=profile, log=log, observed_reports=observed)
+            module = upload_fixture
         monkeypatch.setitem(sys.modules, name, module)
     spec = importlib.util.spec_from_file_location('flog_main_' + uuid.uuid4().hex, ROOT / 'main.py')
     module = importlib.util.module_from_spec(spec)
@@ -477,3 +483,34 @@ def test_modern_unit_rejects_real_incomplete_report(log, session, monkeypatch):
     assert report['delivery_outcome'] == 'INCOMPLETE' and report['exit_status'] != 0
     upload._d2_apply_finalization(sink, report)
     assert not upload._d2_completion_allowed(sink)
+
+
+@pytest.mark.parametrize('phase', ['before_runtime', 'unbound', 'closed', 'admitted'])
+def test_modern_first_stage_requires_prior_admission(log, monkeypatch, tmp_path, phase):
+    # Disposable modern syntax tests the fixture, not an implemented D2 pipeline.
+    bodies = {
+        'before_runtime': '    data_gathering.main("unit-root")\n',
+        'unbound': ('    with upload.runtime_scope(logging_context=logging_context) as runtime:\n'
+                    '        data_gathering.main("unit-root")\n'),
+        'closed': ('    with upload.runtime_scope(logging_context=logging_context) as runtime:\n'
+                   '        runtime.bind_context(logging_context)\n'
+                   '    data_gathering.main("unit-root")\n'),
+        'admitted': ('    with upload.runtime_scope(logging_context=logging_context) as runtime:\n'
+                     '        runtime.bind_context(logging_context)\n'
+                     '        data_gathering.main("unit-root")\n'),
+    }
+    source = ("D2_SOURCE_PROFILE = 'linux-stage-b-v1'\n"
+              'def main(*, logging_context=None, result_sink=None):\n'
+              '    import data_gathering, upload\n' + bodies[phase] +
+              'def _run_cli(): pass\n')
+    (tmp_path / 'main.py').write_text(source, encoding='utf-8')
+    monkeypatch.setitem(load_main.__globals__, 'ROOT', tmp_path)
+    effects = []
+    module = load_main(monkeypatch, lambda order, args: effects.append((order, args)))
+    if phase == 'admitted':
+        module.main(logging_context={}, result_sink={})
+        assert effects == [(0, ('unit-root',))]
+    else:
+        with pytest.raises(AssertionError, match='Stage before fixture runtime admission'):
+            module.main(logging_context={}, result_sink={})
+        assert effects == []

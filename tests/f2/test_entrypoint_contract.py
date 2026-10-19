@@ -139,6 +139,9 @@ def test_main_preserves_stage_order_and_arguments(monkeypatch, capsys):
     keywords = []
 
     def record(stage, args, kwargs):
+        if profile == 'modern':
+            runtime = upload['runtime']
+            assert runtime is not None and runtime.active and runtime.bound, 'Stage before fixture runtime admission'
         calls.append((stage, args))
         keywords.append((stage, kwargs))
 

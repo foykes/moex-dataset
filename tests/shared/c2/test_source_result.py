@@ -557,6 +557,8 @@ def test_pipeline_stage_failure_never_reaches_later_stages(monkeypatch, context)
     pipeline = importlib.util.module_from_spec(spec)
     reached = []
     def initial(root):
+        if modern:
+            assert runtime_events == ['entered', 'bound'], 'Stage before fixture runtime admission'
         reached.append('data_gathering')
     def forbidden(*args):
         pytest.fail('Later stage was reached after a required dividend failure')
