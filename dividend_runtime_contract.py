@@ -10,7 +10,7 @@ import re
 
 SCHEMA_ID = 'mds.c2.runtime'
 SCHEMA_VERSION = 1
-SCHEMA_SHA256 = '2b1ac3102d695d6d8f86a4ff3146af015d71a210f352295f4a30da976400d73b'
+SCHEMA_SHA256 = 'a0daced78e661713d75a5f768df5a354f5caf3c82a9f0a76a7ca53f10ad19619'
 
 
 class ContractError(ValueError):

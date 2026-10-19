@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -56,6 +57,34 @@ def test_schema_identity_has_independent_frozen_digest(codec):
     assert codec.schema_digest(raw) == CASES['schema_sha256']
     # Checkout CRLF и форматирование не создают новую schema identity.
     assert codec.schema_digest(json.dumps(schema, indent=4).encode()) == CASES['schema_sha256']
+
+
+@pytest.mark.parametrize('field,value', [
+    ('alias', 'SYN_RUN_1\n'),
+    ('digest', 'a' * 64 + '\n'),
+    ('utc', '2026-10-19T20:00:00Z\n'),
+    ('integer', '123\n'),
+])
+def test_standard_schema_and_codec_refuse_terminal_linefeed(codec, field, value):
+    # JSON Schema ищет pattern, а не вызывает fullmatch. Конец перед финальным
+    # LF нельзя принять только потому, что procedural codec строже schema.
+    message = copy.deepcopy(CASES['message'])
+    if field == 'alias':
+        message['context']['run_id'] = value
+    elif field == 'digest':
+        message['canonical']['content_sha256'] = value
+    elif field == 'utc':
+        message['context']['as_of'] = value
+    else:
+        message['canonical']['rows'][0][3] = {'kind': 'INT', 'value': value}
+    schema_bytes = SCHEMA.read_bytes()
+    schema = json.loads(schema_bytes)
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert list(validator.iter_errors(CASES['message'])) == []
+    assert list(validator.iter_errors(message)), field
+    with pytest.raises(codec.ContractError, match=':SHAPE$'):
+        codec.decode(canonical(message), schema_bytes=schema_bytes, trusted=CASES['trusted'])
 
 
 def test_retained_synthetic_source_and_canonical_hashes_are_independent():

@@ -15,7 +15,7 @@ Schema identity is exactly:
 ```text
 schema_id: mds.c2.runtime
 schema_version: 1 (integer; bool is invalid)
-schema_sha256: 2b1ac3102d695d6d8f86a4ff3146af015d71a210f352295f4a30da976400d73b
+schema_sha256: a0daced78e661713d75a5f768df5a354f5caf3c82a9f0a76a7ca53f10ad19619
 ```
 
 Digest profile `SHA256_CANONICAL_JSON_UTF8_SORTED_COMPACT_V1` means strict UTF-8
@@ -42,6 +42,9 @@ evaluator import. JSON duplicate keys, bare NaN/Infinity, numeric overflow to a
 nonfinite float, invalid UTF-8/BOM and lone surrogate strings are refused. Keys
 and types are closed at every object. Missing and null remain distinct; integer
 fields reject bool. Caller objects and retained registries are not mutated.
+Schema patterns use an absolute end assertion, including for a final LF; the
+structural schema and codec both reject that alias/digest/UTC/integer suffix.
+The codec also enforces the procedural semantic rules described below.
 
 ## Correlation and independent caller basis
 
