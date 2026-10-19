@@ -286,24 +286,137 @@ def test_main_failure_stops_before_export(monkeypatch, tmp_path, request,
     assert report['errors'] == [error]
 
 
+def _d2_main_profile(source):
+    """Select a fixture ABI before executing main; this is not runtime acceptance."""
+    import ast
+    import hashlib
+
+    source = source.replace(b'\r\n', b'\n')
+    if hashlib.sha256(source).hexdigest() == 'c035f4439c060391e38c270f6f7adf257b356e6aae2104b135cf53e770509c3a':
+        return 'legacy'
+    tree = ast.parse(source.decode('utf-8'))
+    markers = [node for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+               and any(isinstance(item, ast.Name) and item.id == 'D2_SOURCE_PROFILE'
+                       for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                       for item in ast.walk(target))]
+    assert len(markers) == 1, 'Unknown main source profile'
+    marker = markers[0]
+    assert (isinstance(marker, ast.Assign) and len(marker.targets) == 1
+            and isinstance(marker.targets[0], ast.Name)
+            and isinstance(marker.value, ast.Constant)
+            and marker.value.value == 'linux-stage-b-v1'), 'Unknown main source profile'
+    for name, keywords in (('main', ['logging_context', 'result_sink']), ('_run_cli', [])):
+        functions = [node for node in tree.body
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+        assert len(functions) == 1 and type(functions[0]) is ast.FunctionDef, 'Unknown main callable'
+        function = functions[0]
+        args = function.args
+        assert (not function.decorator_list and not args.posonlyargs and not args.args
+                and args.vararg is None and args.kwarg is None and not args.defaults
+                and [arg.arg for arg in args.kwonlyargs] == keywords
+                and all(isinstance(value, ast.Constant) and value.value is None
+                        for value in args.kw_defaults)), 'Unknown main signature'
+    return 'modern'
+
+
+def _d2_upload_dependency(profile, expected_context, record):
+    """Unit double without native observations or a fabricated F-LOG seal."""
+    observed = {'runtime': None, 'sink': None, 'returned': False, 'closed': False}
+
+    class UnitRuntime:
+        def __init__(self, context):
+            self.context = context
+            self.bound = False
+            self.active = False
+
+        def __enter__(self):
+            assert observed['runtime'] is None, 'Duplicate fixture runtime'
+            observed['runtime'] = self
+            self.active = True
+            return self
+
+        def bind_context(self, context):
+            assert self.active and (context is None or type(context) is dict), 'Invalid fixture context'
+            assert ((not self.bound and self.context is None) or self.context is context), 'Fixture context was replaced'
+            self.context = context
+            self.bound = True
+
+        def __exit__(self, *error):
+            assert self.active, 'Fixture runtime already closed'
+            self.active = False
+            observed['closed'] = True
+            return False
+
+    def runtime_scope(*, logging_context=None):
+        assert profile == 'modern' and logging_context is expected_context
+        return UnitRuntime(logging_context)
+
+    def main(root, target, *, logging_context=None, result_sink=None, _runtime=None):
+        if profile == 'legacy':
+            assert logging_context is None and result_sink is None and _runtime is None
+            kwargs = {}
+        else:
+            assert (_runtime is observed['runtime'] and _runtime is not None
+                    and _runtime.active and _runtime.bound)
+            assert logging_context is expected_context and _runtime.context is expected_context
+            assert type(result_sink) is dict and not observed['returned']
+            observed['sink'] = result_sink
+            kwargs = dict(logging_context=logging_context, result_sink=result_sink, _runtime=_runtime)
+        record('upload', (root, target), kwargs)
+        observed['returned'] = True
+
+    def finalization(result_sink, report, *, status=0):
+        raise AssertionError('Orchestration fixture has no observed F-LOG finalization')
+
+    module = types.ModuleType('upload')
+    module.main = main
+    module.runtime_scope = runtime_scope
+    module._d2_apply_finalization = finalization
+    module._d2_completion_allowed = lambda result_sink: False
+    module.fixture_kind = 'UNIT_DOUBLE'
+    return module, observed
+
+
 @pytest.mark.parametrize('with_logging', [False, True])
 def test_pipeline_forwards_exact_context_only_to_dividends(monkeypatch, context, with_logging):
+    path = ROOT / 'main.py'
+    source = path.read_bytes()
+    profile = _d2_main_profile(source)
     calls = []
-    for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data', 'upload'):
+    for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data'):
         stub = types.ModuleType(name)
         def main(*args, stage=name, **kwargs):
             calls.append((stage, args, kwargs))
         stub.main = main
         monkeypatch.setitem(sys.modules, name, stub)
-    module = load('main')
-    assert (module.main(logging_context=context) if with_logging else module.main()) is None
+    upload, observed = _d2_upload_dependency(profile, context if with_logging else None,
+        lambda stage, args, kwargs: calls.append((stage, args, kwargs)))
+    monkeypatch.setitem(sys.modules, 'upload', upload)
+    specification = importlib.util.spec_from_file_location('c1_main', path)
+    module = importlib.util.module_from_spec(specification)
+    exec(compile(source, str(path), 'exec'), module.__dict__)
+    result_sink = {}
+    if profile == 'legacy':
+        assert (module.main(logging_context=context) if with_logging else module.main()) is None
+    else:
+        assert module.main(logging_context=context if with_logging else None,
+                           result_sink=result_sink) is None
     assert [stage for stage, args, kwargs in calls] == [
         'data_gathering', 'dividends', 'tech', 'dohodru_data', 'upload']
     assert calls[1][1] == ()
     assert calls[1][2] == ({'logging_context': context} if with_logging else {})
     if with_logging:
         assert calls[1][2]['logging_context'] is context
-    assert all(kwargs == {} for stage, args, kwargs in calls if stage != 'dividends')
+    if profile == 'legacy':
+        assert all(kwargs == {} for stage, args, kwargs in calls if stage != 'dividends')
+        assert observed['runtime'] is None and observed['sink'] is None
+    else:
+        assert all(kwargs == {} for stage, args, kwargs in calls if stage not in {'dividends', 'upload'})
+        assert calls[4][2] == dict(logging_context=context if with_logging else None,
+                                  result_sink=result_sink, _runtime=observed['runtime'])
+        assert calls[4][2]['logging_context'] is (context if with_logging else None)
+        assert observed['sink'] is result_sink and observed['closed']
+    assert observed['returned']
     assert calls[0][1] == calls[2][1] == (str(ROOT),)
     assert calls[3][1] == ('https://www.dohod.ru/ik/analytics/dividend',)
     assert calls[4][1][0] == str(ROOT) and len(calls[4][1]) == 2

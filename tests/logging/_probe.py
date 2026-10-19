@@ -308,6 +308,26 @@ def _worker_body(bootstrap, mode, count):
 
 def cli_probe(mode):
     install_guards()
+    assert mode in {'normal', 'error'}, 'Unsupported fixed CLI probe mode'
+    # Only this closed unit fixture is loaded after native guards. This seam is
+    # not a production platform bypass and never launches publication workers.
+    own_module = sys.modules[__name__]
+    alias = sys.modules.setdefault('_probe', own_module)
+    assert Path(alias.__file__).resolve() == Path(__file__).resolve()
+    specification = importlib.util.spec_from_file_location(
+        'flog_cli_fixture', ROOT / 'tests/logging/test_entrypoint.py')
+    fixture = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(fixture)
+    source = (ROOT / 'main.py').read_bytes()
+    profile = fixture.source_profile(source)
+    import run_logging as log
+    observed = []
+    finalizer = log.finalize_logging
+    def finalized(context, **kwargs):
+        report = finalizer(context, **kwargs)
+        observed.append((context, report))
+        return report
+    log.finalize_logging = finalized
     calls = []
     for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data', 'upload'):
         module = types.ModuleType(name)
@@ -315,13 +335,20 @@ def cli_probe(mode):
         def stage(*args, name=name, **kwargs):
             calls.append(name)
             if name == 'data_gathering' and mode == 'error':
+                print('FIXTURE_DATA_GATHERING_RAISED')
                 raise ValueError('password=CLI_CANARY_823')
 
         module.main = stage
+        if name == 'upload':
+            def returned(order, args):
+                calls.append('upload')
+            module = fixture.fixture_upload(returned, profile=profile,
+                log=log, observed_reports=observed)
         sys.modules[name] = module
     sys.argv = [str(ROOT / 'main.py')]
     # No sensitive literal registration is needed for sensitive key=value text.
-    runpy.run_path(str(ROOT / 'main.py'), run_name='__main__')
+    exec(compile(source, str(ROOT / 'main.py'), 'exec'),
+         {'__file__': str(ROOT / 'main.py'), '__name__': '__main__', '__package__': None})
 
 
 if __name__ == '__main__':
