@@ -364,6 +364,22 @@ def test_schema_and_fixture_are_frozen_independent_contracts():
     assert len(fixture['cases']) == 83
 
 
+@pytest.mark.parametrize('definition,valid', [
+    ('alias', 'run-alpha'), ('utc', '2026-10-19T12:00:00Z'),
+    ('schema_digest', 'a' * 64),
+])
+def test_schema_patterns_match_whole_values_for_other_consumers(definition, valid):
+    schema = _decode(SCHEMA.read_text(encoding='utf-8'))
+    specification = (schema['$defs']['workspace']['properties']['schema_digest']
+                     if definition == 'schema_digest' else schema['$defs'][definition])
+    pattern = specification['pattern']
+    # JSON Schema pattern searches inside a string. Do not let our fullmatch-based
+    # reference interpreter conceal a prefix/suffix accepted by another consumer.
+    assert re.search(pattern, valid) is not None
+    for invalid in ('!' + valid, valid + '!', valid + '\n'):
+        assert re.search(pattern, invalid) is None
+
+
 def test_expected_outputs_are_not_inputs_to_reducer():
     fixture = _fixture()
     schema = _decode(SCHEMA.read_text(encoding='utf-8'))

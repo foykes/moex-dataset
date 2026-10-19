@@ -3,12 +3,12 @@
   "schema_version": 1,
   "origin": "SYNTHETIC_ONLY",
   "contract_identity": "mds.release.workspace/1",
-  "contract_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+  "contract_digest": "adb45e0d3253e2787658af8de9041da51ffe33b01c174921bb76c37711e3a1c8",
   "registries": {
     "linux": {
       "schema_id": "mds.release.workspace",
       "schema_version": 1,
-      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "schema_digest": "adb45e0d3253e2787658af8de9041da51ffe33b01c174921bb76c37711e3a1c8",
       "registry_id": "registry-alpha",
       "context": {
         "run_id": "run-alpha",
@@ -228,7 +228,7 @@
     "windows": {
       "schema_id": "mds.release.workspace",
       "schema_version": 1,
-      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "schema_digest": "adb45e0d3253e2787658af8de9041da51ffe33b01c174921bb76c37711e3a1c8",
       "registry_id": "registry-alpha",
       "context": {
         "run_id": "run-alpha",
@@ -450,7 +450,7 @@
     "linux": {
       "schema_id": "mds.release.workspace",
       "schema_version": 1,
-      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "schema_digest": "adb45e0d3253e2787658af8de9041da51ffe33b01c174921bb76c37711e3a1c8",
       "context": {
         "run_id": "run-alpha",
         "snapshot_id": "snapshot-alpha",
@@ -729,7 +729,7 @@
     "windows": {
       "schema_id": "mds.release.workspace",
       "schema_version": 1,
-      "schema_digest": "8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024",
+      "schema_digest": "adb45e0d3253e2787658af8de9041da51ffe33b01c174921bb76c37711e3a1c8",
       "context": {
         "run_id": "run-alpha",
         "snapshot_id": "snapshot-alpha",

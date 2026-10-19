@@ -6,7 +6,7 @@ owns this schema; A/B/C2 and the D/F providers must review consumer integration.
 No existing entrypoint, writer, public dataset schema or publication policy changes.
 
 The canonical schema SHA-256 is
-`8771485c5993178a86f483748c92f471cd790a70ed078e737ce5c5b45df93024`.
+`adb45e0d3253e2787658af8de9041da51ffe33b01c174921bb76c37711e3a1c8`.
 Digest input is strict-decoded JSON encoded as UTF-8 with sorted keys, compact
 separators, `ensure_ascii=false` and `allow_nan=false`. Checkout LF/CRLF therefore
 does not change the contract identity. Git blob/mode identities separately bind
@@ -100,7 +100,7 @@ only closed safe codes; untrusted paths/values are not interpolated into message
 The fixture specifies 83 manual scenario outcomes, including root overlap/escape,
 role violations, version/context/generation substitution, unknown/null evidence
 and attempts to relabel preparation as publication. Six strict-JSON decoder cases
-and independent fixture/schema, expected-output and redaction regressions accompany
+and independent fixture/schema, full-value pattern, expected-output and redaction regressions accompany
 them. Expected outcomes are not computed by the reference interpreter.
 
 Run existing guarded F3 collection/execution, F2, F-LOG and the exact-ref check of
