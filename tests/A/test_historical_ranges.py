@@ -236,15 +236,27 @@ def test_live_protocol_is_eight_bounded_cases_with_no_implicit_authority(gatheri
 
 def test_real_native_probe_reports_process_and_job_headroom(gathering):
     sample = gathering._a3_memory_snapshot()
-    assert sample is not None and sample['status'] == 'AVAILABLE'
-    assert sample['page_size'] in (4096, 65536)
-    assert sample['private_bytes'] > 0 and sample['working_set'] > 0
-    assert 0 <= sample['quota_available'] <= sample['app_available_commit']
-    assert sample['quotas_verified'] is (not sample['job_member'])
-    if sample['job_member']:
-        assert sample['quota_basis'] == 'UNKNOWN_ANCESTOR_JOBS'
+    if gathering.sys.platform == 'win32':
+        assert sample is not None and sample['status'] == 'AVAILABLE'
+        assert sample['page_size'] in (4096, 65536)
+        assert sample['private_bytes'] > 0 and sample['working_set'] > 0
+        assert 0 <= sample['quota_available'] <= sample['app_available_commit']
+        assert sample['quotas_verified'] is (not sample['job_member'])
+        if sample['job_member']:
+            assert sample['quota_basis'] == 'UNKNOWN_ANCESTOR_JOBS'
+            with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+                gathering._a3_memory_admit(GiB)
+    elif sample is None:
+        assert gathering.sys.platform.startswith('linux')
         with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
             gathering._a3_memory_admit(GiB)
+    else:
+        assert sample['status'] == 'AVAILABLE' and sample['platform'] == 'linux'
+        assert sample['page_size'] > 0 and sample['private_bytes'] is None
+        assert sample['vm_size_bytes'] >= sample['vm_data_bytes'] >= 0
+        assert sample['working_set'] >= 0 and sample['quotas_verified'] is True
+        assert sample['quota_basis'] == 'INITIAL_CGROUP_NAMESPACE_FULL_ANCESTRY'
+        assert 0 <= sample['quota_available'] <= sample['process_available']
     print('A3_NATIVE_MEMORY_SNAPSHOT=' + json.dumps(sample, sort_keys=True))
 
 
@@ -519,6 +531,14 @@ def test_caller_union_refuses_unsafe_numeric_before_writer(gathering, monkeypatc
 
 @pytest.mark.parametrize('page_size', [4096, 8192, 65536])
 def test_native_api_page_units_and_private_usage_are_not_rss(gathering, monkeypatch, page_size):
+    if gathering.sys.platform.startswith('linux'):
+        facts, _, _ = linux_memory_fixture(gathering, monkeypatch)
+        facts['page_size'] = page_size
+        sample = gathering._a3_memory_snapshot()
+        assert sample['page_size'] == page_size
+        assert sample['total_phys'] == 68719476736  # kB conversion is independent of page size.
+        assert sample['vm_size_bytes'] == 2147483648 and sample['private_bytes'] is None
+        return
     actual = gathering._a3_memory_snapshot()
     assert actual is not None
     _, Memory, Performance, Process, Job, AppMemory = gathering._A3_MEMORY_API
@@ -561,7 +581,8 @@ def test_native_api_page_units_and_private_usage_are_not_rss(gathering, monkeypa
 def test_source_protocol_aggregate_caps_and_eight_offline_cases(gathering, monkeypatch):
     assert gathering._A3_SOURCE_DIAGNOSTIC_LIMITS == dict(
         seconds=2700, gets=512, bytes=134217728, rows=250000,
-        final_bytes=134217728, evidence_bytes=268435456)
+        final_bytes=134217728)
+    assert gathering._A3_SOURCE_DIAGNOSTIC_REFERENCE_LIMITS == dict(evidence_bytes=268435456)
     calls = mock_queries(gathering, monkeypatch, [pd.DataFrame()] * 128)
     with gathering._a3_source_diagnostic_scope() as state:
         for case in gathering._a3_source_diagnostic_plan():
@@ -701,7 +722,10 @@ def linux_memory_fixture(gathering, monkeypatch, version='v2'):
 @pytest.mark.parametrize('version', ['v1', 'v2'])
 def test_review_linux_admission_success_and_literal_units(gathering, monkeypatch, version):
     facts, files, calls = linux_memory_fixture(gathering, monkeypatch, version)
-    sample = gathering._a3_linux_memory_snapshot()
+    platform = SimpleNamespace(**vars(gathering.sys))
+    platform.platform = 'linux'
+    monkeypatch.setattr(gathering, 'sys', platform)
+    sample = gathering._a3_memory_snapshot()
     assert sample['platform'] == 'linux' and sample['quotas_verified'] is True
     assert sample['total_phys'] == 68719476736 and sample['available_phys'] == 51539607552
     assert sample['commit_limit'] == 137438953472 and sample['commit_available'] == 68719476736
@@ -785,15 +809,25 @@ def test_review_linux_exhausted_ancestor_refuses_before_get(gathering, monkeypat
     assert calls == [] and writers == []
 
 
-def test_review_linux_known_unlimited_and_disabled_controller(gathering, monkeypatch):
-    facts, files, _ = linux_memory_fixture(gathering, monkeypatch)
+@pytest.mark.parametrize('case', ['unlimited-v1', 'unlimited-v2', 'disabled', 'subtree-disabled'])
+def test_review_linux_known_unlimited_and_disabled_controller(gathering, monkeypatch, case):
+    facts, files, _ = linux_memory_fixture(gathering, monkeypatch, 'v1' if case == 'unlimited-v1' else 'v2')
     facts['rlimit_as'] = facts['rlimit_data'] = (-1, -1)
-    files['/proc/cgroups'] = 'memory 0 1 0\n'
-    files['/sys/fs/cgroup/cgroup.controllers'] = 'cpu pids\n'
-    files['/sys/fs/cgroup/cgroup.subtree_control'] = ''
-    files['/sys/fs/cgroup/team/cgroup.subtree_control'] = ''
+    if case == 'disabled':
+        files['/proc/cgroups'] = 'memory 0 1 0\n'
+        files['/sys/fs/cgroup/cgroup.controllers'] = 'cpu pids\n'
+    elif case.startswith('unlimited'):
+        for name in list(files):
+            if name.endswith(('/memory.max', '/memory.swap.max')):
+                files[name] = 'max\n'
+            elif name.endswith(('/memory.limit_in_bytes', '/memory.memsw.limit_in_bytes')):
+                files[name] = '9223372036854771712\n'
+    if case in ('disabled', 'subtree-disabled'):
+        files['/sys/fs/cgroup/cgroup.subtree_control'] = ''
+        files['/sys/fs/cgroup/team/cgroup.subtree_control'] = ''
     sample = gathering._a3_linux_memory_snapshot()
-    assert sample['quotas_verified'] is True and sample['cgroup_version'] == 'disabled'
+    assert sample['quotas_verified'] is True
+    assert sample['cgroup_version'] == ('disabled' if case == 'disabled' else 'v1' if case == 'unlimited-v1' else 'v2')
     assert sample['process_available'] == sample['quota_available'] == 68719476736
 
 
@@ -882,3 +916,26 @@ def test_review_internal_evidence_failure_keeps_native_primary(gathering, monkey
     assert type(primary) is ValueError and primary.args == ('A3_ISS_RANGE_KEY_CONFLICT',)
     assert not hasattr(primary, 'a3_annual_evidence') and not hasattr(primary, 'a3_range_evidence')
     assert writers == []
+
+
+def test_review_linux_native_memory_error_keeps_object_and_stops(gathering, monkeypatch, writers):
+    linux_memory_fixture(gathering, monkeypatch)
+    primary = MemoryError('NATIVE_KERNEL_CAPTURE_PRIMARY')
+    def read(path):
+        raise primary
+    monkeypatch.setattr(gathering, '_a3_linux_read', read)
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', gathering._a3_linux_memory_snapshot)
+    calls = mock_queries(gathering, monkeypatch, [])
+    with monkeypatch.context() as observation:
+        observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        with pytest.raises(MemoryError) as captured:
+            gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
+        assert captured.value is primary and primary.args == ('NATIVE_KERNEL_CAPTURE_PRIMARY',)
+    assert calls == [] and writers == []
+
+
+def test_review_linux_metadata_reader_has_finite_bound(gathering, tmp_path):
+    path = tmp_path/'synthetic_kernel.txt'
+    path.write_text('0'*65537, encoding='ascii')
+    with pytest.raises(ValueError, match='A3_MEMORY_INPUT_LIMIT'):
+        gathering._a3_linux_read(path)

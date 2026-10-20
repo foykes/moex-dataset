@@ -1127,15 +1127,212 @@ _A3_RANGE_LIMITS = {
     'dataset': dict(ranges=1048576, gets=16777216, bytes=128 * 1024**3, rows=128000000,
                     final_bytes=16 * 1024**3, live_bytes=32 * 1024**3, metadata_bytes=8 * 1024**3),
     'run': dict(ranges=4194304, gets=67108864, bytes=512 * 1024**3, rows=512000000,
-                datasets=64, jobs=4096, evidence_bytes=32 * 1024**3 - 1024**2,
+                datasets=64, jobs=4096,
                 live_bytes=32 * 1024**3, metadata_bytes=8 * 1024**3),
 }
 _A3_MEMORY_API = None
 _A3_SOURCE_DIAGNOSTIC_LIMITS = dict(seconds=2700, gets=512, bytes=128 * 1024**2,
-    rows=250000, final_bytes=128 * 1024**2, evidence_bytes=256 * 1024**2)
+    rows=250000, final_bytes=128 * 1024**2)
+# Требование к отдельному reference harness, не расходный счётчик acquisition.
+_A3_SOURCE_DIAGNOSTIC_REFERENCE_LIMITS = dict(evidence_bytes=256 * 1024**2)
+
+
+def _a3_linux_read(path):
+    # Только bounded read kernel metadata; никаких writes или cgroup changes.
+    with open(path, 'r', encoding='utf-8', errors='strict') as stream:
+        text = stream.read(65537)
+    if len(text) > 65536:
+        raise ValueError('A3_MEMORY_INPUT_LIMIT')
+    return text
+
+
+def _a3_linux_runtime():
+    import resource
+    if sys.maxsize <= 2**32:
+        raise ValueError('A3_MEMORY_ARCH_UNKNOWN')
+    return dict(namespace_inode=os.stat('/proc/self/ns/cgroup').st_ino,
+        namespace_link=os.readlink('/proc/self/ns/cgroup'),
+        page_size=os.sysconf('SC_PAGE_SIZE'),
+        rlimit_as=resource.getrlimit(resource.RLIMIT_AS),
+        rlimit_data=resource.getrlimit(resource.RLIMIT_DATA))
+
+
+def _a3_linux_number(text, unlimited=False):
+    text = text.strip()
+    if unlimited and text == 'max':
+        return None
+    if not re.fullmatch(r'[0-9]{1,20}', text) or int(text) > 2**63 - 1:
+        raise ValueError('A3_MEMORY_NUMBER_INVALID')
+    return int(text)
+
+
+def _a3_linux_kib(text, names):
+    values = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(':')
+        if key not in names:
+            continue
+        parts = value.split()
+        if not separator or key in values or len(parts) != 2 or parts[1] != 'kB':
+            raise ValueError('A3_MEMORY_UNITS_INVALID')
+        count = _a3_linux_number(parts[0])
+        if count > (2**63 - 1) // 1024:
+            raise ValueError('A3_MEMORY_NUMBER_INVALID')
+        values[key] = count * 1024
+    if set(values) != set(names):
+        raise ValueError('A3_MEMORY_FIELDS_MISSING')
+    return values
+
+
+def _a3_linux_cgroup_headroom(membership, mounts, controllers, available, swap_total):
+    # Initial namespace + a full-root mount are required: a namespace root or
+    # delegated mount alone cannot prove that no hidden ancestor limit applies.
+    entries = []
+    for line in membership.splitlines():
+        hierarchy, names, path = line.split(':', 2)
+        hierarchy = _a3_linux_number(hierarchy)
+        parts = path.split('/')[1:]
+        if (not path.startswith('/') or len(path) > 4096 or len(parts) > 64 or
+                any(part in ('.', '..', '') for part in parts) and path != '/'):
+            raise ValueError('A3_MEMORY_CGROUP_PATH_INVALID')
+        entries.append((hierarchy, names.split(',') if names else [], path))
+    memory = [line.split() for line in controllers.splitlines()
+              if line and not line.startswith('#') and line.split()[0] == 'memory']
+    if len(memory) != 1 or len(memory[0]) != 4:
+        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+    _, hierarchy, _, enabled = memory[0]
+    hierarchy, enabled = _a3_linux_number(hierarchy), _a3_linux_number(enabled)
+    if enabled not in (0, 1):
+        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+
+    def unescape(value):
+        value = re.sub(r'\\(040|011|012|134)', lambda m: chr(int(m[1], 8)), value)
+        if '\\' in value or not value.startswith('/'):
+            raise ValueError('A3_MEMORY_MOUNT_UNKNOWN')
+        return value
+
+    mount_rows = []
+    for line in mounts.splitlines():
+        before, after = line.split(' - ', 1)
+        before, after = before.split(), after.split()
+        if len(before) < 6 or len(after) < 3:
+            raise ValueError('A3_MEMORY_MOUNT_UNKNOWN')
+        if after[0] in ('cgroup', 'cgroup2'):
+            mount_rows.append((after[0], unescape(before[3]), unescape(before[4]), after[2].split(',')))
+    v1 = [entry for entry in entries if 'memory' in entry[1]]
+    v2 = [entry for entry in entries if entry[0] == 0 and not entry[1]]
+    if not enabled:
+        if v1:
+            raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+        return available, 'disabled'
+    if len(v1) == 1 and hierarchy == v1[0][0] and hierarchy > 0:
+        version, path = 'v1', v1[0][2]
+        candidates = [row for row in mount_rows if row[0] == 'cgroup' and row[1] == '/' and 'memory' in row[3]]
+    elif not v1 and len(v2) == 1 and hierarchy == 0:
+        version, path = 'v2', v2[0][2]
+        candidates = [row for row in mount_rows if row[0] == 'cgroup2' and row[1] == '/']
+    else:
+        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+    if not candidates:
+        raise ValueError('A3_MEMORY_ANCESTORS_UNKNOWN')
+    root = sorted(row[2].rstrip('/') for row in candidates)[0]
+    if version == 'v2' and 'memory' not in _a3_linux_read(root+'/cgroup.controllers').split():
+        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+    parent, active = root, True
+    # Kernel root cgroups are exempt from memory limit controls. Every non-root
+    # ancestor, including the current group, participates in the minimum.
+    for component in path.strip('/').split('/') if path != '/' else ():
+        node = parent + '/' + component
+        if version == 'v2':
+            enabled_here = 'memory' in _a3_linux_read(parent+'/cgroup.subtree_control').split()
+            if enabled_here and not active:
+                raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+            active = active and enabled_here
+            if active:
+                limit = _a3_linux_number(_a3_linux_read(node+'/memory.max'), True)
+                used = _a3_linux_number(_a3_linux_read(node+'/memory.current'))
+                try:
+                    swap_limit = _a3_linux_number(_a3_linux_read(node+'/memory.swap.max'), True)
+                    swap_used = _a3_linux_number(_a3_linux_read(node+'/memory.swap.current'))
+                except FileNotFoundError:
+                    if swap_total:
+                        raise ValueError('A3_MEMORY_SWAP_QUOTA_UNKNOWN') from None
+                    swap_limit, swap_used = 0, 0
+                if limit is not None:
+                    available = min(available, max(0, limit-used))
+                    if swap_limit is not None:
+                        available = min(available, max(0, limit+swap_limit-used-swap_used))
+        else:
+            limit = _a3_linux_number(_a3_linux_read(node+'/memory.limit_in_bytes'))
+            used = _a3_linux_number(_a3_linux_read(node+'/memory.usage_in_bytes'))
+            available = min(available, max(0, limit-used))
+            try:
+                memsw_limit = _a3_linux_number(_a3_linux_read(node+'/memory.memsw.limit_in_bytes'))
+                memsw_used = _a3_linux_number(_a3_linux_read(node+'/memory.memsw.usage_in_bytes'))
+            except FileNotFoundError:
+                if swap_total:
+                    raise ValueError('A3_MEMORY_SWAP_QUOTA_UNKNOWN') from None
+            else:
+                available = min(available, max(0, memsw_limit-memsw_used))
+        parent = node
+    return available, version
+
+
+def _a3_linux_memory_snapshot():
+    try:
+        sampled_at = time.perf_counter()
+        runtime = _a3_linux_runtime()
+        # Upstream proc_ns.h PROC_CGROUP_INIT_INO. Unknown/new representations
+        # refuse; PID 1 equality alone is not proof of the initial namespace.
+        if (runtime['namespace_inode'] != 0xEFFFFFFB or
+                runtime['namespace_link'] != 'cgroup:[4026531835]' or
+                type(runtime['page_size']) is not int or runtime['page_size'] <= 0):
+            return None
+        membership = _a3_linux_read('/proc/self/cgroup')
+        mounts = _a3_linux_read('/proc/self/mountinfo')
+        controllers = _a3_linux_read('/proc/cgroups')
+        memory = _a3_linux_kib(_a3_linux_read('/proc/meminfo'),
+            ('MemTotal', 'MemAvailable', 'CommitLimit', 'Committed_AS', 'SwapTotal'))
+        process = _a3_linux_kib(_a3_linux_read('/proc/self/status'), ('VmSize', 'VmData', 'VmRSS'))
+        if not (process['VmData'] <= process['VmSize'] and process['VmRSS'] <= process['VmSize']):
+            return None
+        if _a3_linux_number(_a3_linux_read('/proc/sys/vm/overcommit_memory')) not in (0, 1, 2):
+            return None
+        # Conservative client commit ceiling in every overcommit mode. This is
+        # a snapshot, not a reservation or a promise that malloc cannot fail.
+        commit_available = max(0, memory['CommitLimit']-memory['Committed_AS'])
+        process_available = commit_available
+        for key, used in (('rlimit_as', process['VmSize']), ('rlimit_data', process['VmData'])):
+            soft, hard = runtime[key]
+            if (type(soft) is not int or type(hard) is not int or soft < -1 or hard < -1 or
+                    hard != -1 and (soft == -1 or soft > hard)):
+                return None
+            for limit in (soft, hard):
+                if limit != -1:
+                    process_available = min(process_available, max(0, limit-used))
+        quota, version = _a3_linux_cgroup_headroom(membership, mounts, controllers,
+                                                process_available, memory['SwapTotal'])
+        if (membership != _a3_linux_read('/proc/self/cgroup') or
+                mounts != _a3_linux_read('/proc/self/mountinfo') or
+                controllers != _a3_linux_read('/proc/cgroups') or runtime != _a3_linux_runtime()):
+            return None
+        return dict(status='AVAILABLE', platform='linux', sampled_at=sampled_at,
+            total_phys=memory['MemTotal'], available_phys=memory['MemAvailable'],
+            commit_limit=memory['CommitLimit'], commit_available=commit_available,
+            process_available=process_available, quota_available=quota,
+            private_bytes=None, private_bytes_reason='NOT_EXPOSED_BY_PROCFS',
+            vm_size_bytes=process['VmSize'], vm_data_bytes=process['VmData'],
+            working_set=process['VmRSS'], page_size=runtime['page_size'], quotas_verified=True,
+            quota_basis='INITIAL_CGROUP_NAMESPACE_FULL_ANCESTRY', cgroup_version=version)
+    except MemoryError:
+        raise
+    except Exception:
+        return None
 
 
 def _a3_memory_snapshot():
+    if sys.platform.startswith('linux'):
+        return _a3_linux_memory_snapshot()
     # Read-only Win32 APIs; никакого psutil/dependency или изменения job limits.
     global _A3_MEMORY_API
     try:
@@ -1229,7 +1426,9 @@ def _a3_memory_snapshot():
             quota_basis='UNKNOWN_ANCESTOR_JOBS' if in_job.value else 'NATIVE_PROCESS_WITHOUT_JOB',
             app_available_commit=int(app.available_commit),
             job_member=bool(in_job.value), immediate_job_limit=job_limit, immediate_job_peak=job_peak)
-    except (Exception, MemoryError):
+    except MemoryError:
+        raise
+    except Exception:
         return None
 
 
@@ -1244,9 +1443,14 @@ def _a3_memory_admit(growth_bytes):
         raise _a3_capacity('MEMORY_GROWTH_UNKNOWN')
     sample = _a3_memory_snapshot()
     fields = ('total_phys', 'available_phys', 'commit_limit', 'commit_available',
-              'process_available', 'quota_available', 'private_bytes', 'working_set', 'page_size')
+              'process_available', 'quota_available', 'working_set', 'page_size')
+    private_valid = (type(sample) is dict and (
+        type(sample.get('private_bytes')) is int and sample['private_bytes'] >= 0 or
+        sample.get('platform') == 'linux' and sample.get('private_bytes') is None and
+        all(type(sample.get(key)) is int and sample[key] >= 0 for key in ('vm_size_bytes', 'vm_data_bytes'))))
     if (type(sample) is not dict or sample.get('status') != 'AVAILABLE' or
             sample.get('quotas_verified') is not True or
+            not private_valid or
             any(type(sample.get(name)) is not int or sample[name] < 0 for name in fields) or
             sample['page_size'] <= 0 or type(sample.get('sampled_at')) not in (int, float) or
             not math.isfinite(sample['sampled_at']) or
@@ -1301,6 +1505,53 @@ def _a3_checkpoint(primary=None):
         raise requests.exceptions.Timeout('A3_ISS_RANGE_DEADLINE_EXCEEDED')
 
 
+def _a3_offline_test_profile():
+    # Observe an already running guard; production never imports/starts it.
+    # Environment strings alone are neither runner nor admission evidence.
+    try:
+        guard = sys.modules.get('mds_offline_guard')
+        namespace = vars(guard)
+        context = namespace.get('_CONTEXT')
+        report = namespace.get('report_metadata')
+        root = os.path.dirname(os.path.abspath(__file__))
+        canonical = lambda path: os.path.normcase(os.path.abspath(path))
+        expected = canonical(os.path.join(root, 'tools', 'offline_guard.py'))
+        if (canonical(namespace.get('__file__', '')) != expected or
+                getattr(report, '__globals__', None) is not namespace or
+                canonical(report.__code__.co_filename) != expected or
+                context is None or context.started is not True or context.finished is not False or
+                canonical(context.root) != canonical(root)):
+            return False
+        metadata = report()
+        if (metadata.get('pid') != os.getpid() or metadata.get('version') != 1 or
+                metadata.get('source_mode') not in ('commit', 'working-tree') or
+                any(metadata.get(key) != getattr(context, key) for key in
+                    ('run_id', 'tested_sha', 'source_digest', 'source_mode')) or
+                not os.environ.get('MDS_OFFLINE_ROOT') or
+                canonical(os.environ['MDS_OFFLINE_ROOT']) != canonical(root) or
+                os.environ.get('MDS_OFFLINE_RUN_ID') != context.run_id or
+                os.environ.get('MDS_OFFLINE_SOURCE_MODE') != context.source_mode):
+            return False
+        if namespace.get('_INSTALLED') is True:
+            return True
+        # Native F2/F-LOG keep their existing policies. Their actual installed
+        # adapter shares this counter object and marks context ready afterwards.
+        counts = context.native_counts
+        native = {'f2': ('tests', 'f2', '_probe.py'),
+                  'flog': ('tests', 'logging', '_probe.py')}.get(context.lane)
+        if type(counts) is not dict or native is None:
+            return False
+        probe_path = canonical(os.path.join(root, *native))
+        for module in tuple(sys.modules.values()):
+            attributes = getattr(module, '__dict__', {})
+            if (attributes.get('_guard_counts') is counts and
+                    canonical(attributes.get('__file__', '')) == probe_path):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 @contextmanager
 def _a3_scope(kind, planned=0):
     previous = _A3_RANGE_STATE.get()
@@ -1308,13 +1559,7 @@ def _a3_scope(kind, planned=0):
     now = time.perf_counter()
     if 'run' not in state:
         state['run'] = dict(started=now, seconds=256 * 86400)
-        # Explicit existing offline report envelope selects only a SMALL profile.
-        # Эти markers не дают live/production authority и не обходят guard.
-        report_root = os.environ.get('MDS_OFFLINE_ROOT')
-        state['scaled_offline'] = (type(report_root) is str and
-            os.path.normcase(os.path.abspath(report_root)) == os.path.normcase(os.path.dirname(os.path.abspath(__file__))) and
-            os.environ.get('MDS_OFFLINE_SOURCE_MODE') in ('commit', 'working-tree') and
-            re.fullmatch(r'[0-9a-f]{32}', os.environ.get('MDS_OFFLINE_RUN_ID', '')) is not None)
+        state['scaled_offline'] = _a3_offline_test_profile()
     if kind in ('job', 'dataset') and 'dataset' not in state:
         state['dataset'] = dict(started=now, seconds=86400, retained_bytes=0)
         state['run']['datasets'] = state['run'].get('datasets', 0) + 1
@@ -1371,6 +1616,8 @@ def _a3_reserve(frame_bytes, metadata_bytes, growth):
 def _a3_allocation_admit(growth, live=0, metadata=0):
     state = _A3_RANGE_STATE.get()
     if state is not None and state.get('scaled_offline'):
+        if not _a3_offline_test_profile():
+            raise _a3_capacity('OFFLINE_PROFILE_IDENTITY_LOST')
         # Заведомо bounded fixtures, не production capacity admission.
         if growth > 128 * 1024**2 or live > 128 * 1024**2 or metadata > 64 * 1024**2:
             raise _a3_capacity('SCALED_OFFLINE_MEMORY')
@@ -1491,67 +1738,70 @@ def _a3_annual_row(frame, position):
                 row_position=position, index=frame.index[position])
 
 
-def _a3_annual_evidence(primary, request, pairs, logging_context=None):
+def _a3_typed_evidence_payload(request, pairs, logging_context=None,
+                               format_name='A3_ANNUAL_TYPED_ROWS_V1', reason='ANNUAL_KEY_CONFLICT'):
     # Только parsed scalar evidence: исходный CSV public query не возвращает.
-    try:
-        if hasattr(primary, 'a3_annual_evidence'):
-            return
+    def identifier(value):
+        bounded = _a3_metadata(value)
+        if type(bounded) is str:
+            content = bounded.encode('utf-8')
+            return dict(value=None, state='HASH_ONLY_IDENTIFIER', bytes=len(content),
+                        sha256=hashlib.sha256(content).hexdigest(), encoding='UTF8')
+        if type(bounded) is dict:
+            return bounded
+        return dict(value=None, state='REDACTED_IDENTIFIER')
 
-        def identifier(value):
-            bounded = _a3_metadata(value)
-            if type(bounded) is str:
-                content = bounded.encode('utf-8')
-                return dict(value=None, state='HASH_ONLY_IDENTIFIER', bytes=len(content),
-                            sha256=hashlib.sha256(content).hexdigest(), encoding='UTF8')
-            if type(bounded) is dict:
-                return bounded
-            return dict(value=None, state='REDACTED_IDENTIFIER')
-
-        typed_rows, provenance = [], []
-        for row, window, lower, upper in pairs[:2]:
-            cells = []
-            for position, value in enumerate(row['values'][:8]):
-                cell = dict(dtype=row['dtypes'][position])
-                if position < 6:
-                    numerator, denominator, negative_zero = _a3_numeric_identity(value)
-                    if pd.api.types.is_integer(value) and not isinstance(value, bool):
-                        cell.update(kind='integer', decimal=str(int(value)))
-                    else:
-                        cell.update(kind='float', hex=float(value).hex(),
-                                    ratio=[numerator, denominator], negative_zero=negative_zero)
-                elif type(value) is str:
-                    cell.update(kind='text', value=value)
+    typed_rows, provenance = [], []
+    for row, window, lower, upper in pairs[:2]:
+        cells = []
+        for position, value in enumerate(row['values'][:8]):
+            cell = dict(dtype=row['dtypes'][position])
+            if position < 6:
+                numerator, denominator, negative_zero = _a3_numeric_identity(value)
+                if pd.api.types.is_integer(value) and not isinstance(value, bool):
+                    cell.update(kind='integer', decimal=str(int(value)))
                 else:
-                    raise ValueError('A3_ANNUAL_EVIDENCE_CELLS_INVALID')
-                cells.append(cell)
-            typed_rows.append(tuple(cells))
-            provenance.append(dict(window_ordinal=window, from_date=lower, till_date=upper,
-                row_position=row['row_position'], index=_a3_metadata(row['index']),
-                dtypes=list(row['dtypes']), ticker=identifier(row['values'][8])))
-        # Оба cap измеряются точно по JSON_ASCII_COMPACT_SORTED_V1.
-        payload = json.dumps(typed_rows, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
-        if len(payload) > _A3_ANNUAL_EVIDENCE_BYTES:
-            raise ValueError('A3_ANNUAL_EVIDENCE_CELLS_LIMIT')
-        context = logging_context if type(logging_context) is dict else {}
-        metadata = dict(format='A3_ANNUAL_TYPED_ROWS_V1', reason='ANNUAL_KEY_CONFLICT', state='CAPTURED',
-            serialization='JSON_ASCII_COMPACT_SORTED_V1',
-            request=dict(market=_a3_metadata(request['market']), security=identifier(request['security']),
-                         interval=identifier(request['interval'])),
-            engine='stock', endpoint='ISS_CANDLES',
-            identity='ISS_CANDLES_BOARDLESS/stock/market/security/interval/raw_begin',
-            board=None, board_reason='NOT_PRESENT_IN_REQUEST_A5_UNVERIFIED',
-            source_identity='NOT_VERIFIED', availability='NOT_VERIFIED',
-            source_representation='PARSED_SCALARS_ONLY',
-            columns=['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end'],
-            row_cap=2, cell_bytes_cap=_A3_ANNUAL_EVIDENCE_BYTES, cell_bytes=len(payload),
-            metadata_bytes_cap=_A3_ANNUAL_METADATA_BYTES, rows=provenance,
-            correlation={key: identifier(context.get(key))
-                         for key in ('run_id', 'snapshot_id', 'dataset_id')},
-            verified_sha=None, sha_reason='NOT_VERIFIED', persistence='NOT_REQUESTED')
-        encoded = json.dumps(metadata, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
-        if len(encoded) > _A3_ANNUAL_METADATA_BYTES:
-            raise ValueError('A3_ANNUAL_EVIDENCE_METADATA_LIMIT')
-        primary.a3_annual_evidence = dict(metadata=metadata, typed_rows=tuple(typed_rows))
+                    cell.update(kind='float', hex=float(value).hex(),
+                                ratio=[numerator, denominator], negative_zero=negative_zero)
+            elif type(value) is str:
+                cell.update(kind='text', value=value)
+            else:
+                raise ValueError('A3_ANNUAL_EVIDENCE_CELLS_INVALID')
+            cells.append(cell)
+        typed_rows.append(tuple(cells))
+        provenance.append(dict(window_ordinal=window, from_date=lower, till_date=upper,
+            row_position=row['row_position'], index=_a3_metadata(row['index']),
+            dtypes=list(row['dtypes']), ticker=identifier(row['values'][8])))
+    # Оба cap измеряются точно по JSON_ASCII_COMPACT_SORTED_V1.
+    payload = json.dumps(typed_rows, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    if len(payload) > _A3_ANNUAL_EVIDENCE_BYTES:
+        raise ValueError('A3_ANNUAL_EVIDENCE_CELLS_LIMIT')
+    context = logging_context if type(logging_context) is dict else {}
+    metadata = dict(format=format_name, reason=reason, state='CAPTURED',
+        serialization='JSON_ASCII_COMPACT_SORTED_V1',
+        request=dict(market=_a3_metadata(request['market']), security=identifier(request['security']),
+                     interval=identifier(request['interval'])),
+        engine='stock', endpoint='ISS_CANDLES',
+        identity='ISS_CANDLES_BOARDLESS/stock/market/security/interval/raw_begin',
+        board=None, board_reason='NOT_PRESENT_IN_REQUEST_A5_UNVERIFIED',
+        source_identity='NOT_VERIFIED', availability='NOT_VERIFIED',
+        source_representation='PARSED_SCALARS_ONLY',
+        columns=['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end'],
+        row_cap=2, cell_bytes_cap=_A3_ANNUAL_EVIDENCE_BYTES, cell_bytes=len(payload),
+        metadata_bytes_cap=_A3_ANNUAL_METADATA_BYTES, rows=provenance,
+        correlation={key: identifier(context.get(key))
+                     for key in ('run_id', 'snapshot_id', 'dataset_id')},
+        verified_sha=None, sha_reason='NOT_VERIFIED', persistence='NOT_REQUESTED')
+    encoded = json.dumps(metadata, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    if len(encoded) > _A3_ANNUAL_METADATA_BYTES:
+        raise ValueError('A3_ANNUAL_EVIDENCE_METADATA_LIMIT')
+    return dict(metadata=metadata, typed_rows=tuple(typed_rows))
+
+
+def _a3_annual_evidence(primary, request, pairs, logging_context=None):
+    try:
+        if not hasattr(primary, 'a3_annual_evidence'):
+            primary.a3_annual_evidence = _a3_typed_evidence_payload(request, pairs, logging_context)
     except BaseException:
         _a3_evidence_note(primary)
 
@@ -1633,12 +1883,21 @@ def _a3_range_evidence(primary, request, pairs, logging_context):
     if hasattr(primary, 'a3_range_evidence'):
         return
     try:
-        _a3_annual_evidence(primary, request,
+        if len(pairs) != 2:
+            raise ValueError('A3_RANGE_EVIDENCE_PAIR_INVALID')
+        cross_annual = pairs[0][1]['logical_ordinal'] != pairs[1][1]['logical_ordinal']
+        if cross_annual:
+            try:
+                _a3_annual_evidence(primary, request,
+                    tuple((row, leaf['logical_ordinal'], leaf['logical_lower'], leaf['logical_upper'])
+                          for row, leaf in pairs), logging_context)
+            except BaseException:
+                _a3_evidence_note(primary)
+        source = _a3_typed_evidence_payload(request,
             tuple((row, leaf['logical_ordinal'], leaf['from_date'], leaf['till_date'])
-                  for row, leaf in pairs), logging_context)
-        source = primary.a3_annual_evidence
-        metadata = dict(source['metadata'], format='A3_RANGE_TYPED_ROWS_V1',
-                        reason='RANGE_KEY_CONFLICT')
+                  for row, leaf in pairs), logging_context, 'A3_RANGE_TYPED_ROWS_V1', 'RANGE_KEY_CONFLICT')
+        metadata = dict(source['metadata'],
+                        conflict_scope='CROSS_ANNUAL' if cross_annual else 'INTERNAL_PHYSICAL')
         metadata['rows'] = [dict(previous, logical_ordinal=leaf['logical_ordinal'],
             physical_ordinal=leaf['physical_ordinal'], logical_lower=leaf['logical_lower'],
             logical_upper=leaf['logical_upper'])

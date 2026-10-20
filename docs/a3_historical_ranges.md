@@ -92,9 +92,12 @@ datasets and nested cold starts; job counters survive all logical windows.
 Run also admits at most 64 datasets and 4,096 ticker jobs. Cooperative budgets
 are `Tjob=min(96h,180s*planned_ranges+6h)`,
 `Tdataset=min(96d,sum(Tjob)+24h)`, `Trun=256d`.
-Private execution evidence has a 32 GiB quota with 1 MiB reserved for a failure
-receipt. Acquisition creates no spool or new dataset writer. These are maxima,
-not permission to run a reload or a promise about actual duration.
+Acquisition creates no spool or new dataset/evidence writer. It enforces the
+listed intake/frame/key limits and the existing per-exception evidence bounds;
+it has no aggregate runtime evidence-byte counter. The development supervisor's
+separate 32 GiB private evidence-disk ceiling (1 MiB failure reserve) protects
+the offline harness, not application acquisition. These are maxima, not
+permission to run a reload or a promise about actual duration.
 
 Each native `moex_query` keeps 180 seconds, 1,000 pages including terminal,
 64 MiB/query, 8 MiB/body, retry/header/Retry-After/cleanup and the complete
@@ -124,8 +127,40 @@ claim that 32 GiB frames plus 8 GiB metadata fits an arbitrary machine is made.
 See [Microsoft's job query contract](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject)
 and [native memory fields](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex).
 
-The explicit existing guarded offline report envelope selects a separate small
-profile: 100,000 total rows, 32 MiB returned bytes, 64 MiB final frame,
+Linux x64 uses bounded read-only kernel metadata plus `getrlimit(RLIMIT_AS,
+RLIMIT_DATA)`. `/proc/meminfo` supplies physical availability and a conservative
+client commit ceiling `max(0,CommitLimit-Committed_AS)` in all recognized
+overcommit modes. `/proc/self/status` supplies VmSize/VmData for finite process
+limits and VmRSS for observation; VmSize is not called private commit or RSS.
+Unlimited soft/hard limits must be explicit. Invalid units, missing fields,
+unknown policy, changed membership/limits or a slow/stale probe refuse.
+
+The probe requires the recognized initial cgroup namespace identity from
+[upstream proc_ns.h](https://github.com/torvalds/linux/blob/v6.12/include/linux/proc_ns.h#L37-L45)
+and a full-root controller mount. Equality with container PID 1 alone is
+insufficient. It takes the minimum remaining memory and memory+swap headroom
+over every applicable v1/v2 ancestor, together with process limits. V2 controller
+propagation must be explicit; disabled/unlimited controllers are accepted only
+when kernel metadata establishes that state. Delegated mounts, hidden ancestor
+namespaces, unreadable quotas or missing swap accounting with active system
+swap refuse. Kernel-root limit controls are exempt. Unknown/new namespace
+representations refuse rather than guessing that ancestors are unlimited.
+See [cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html),
+[v1 memory controls](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)
+and [Linux commit accounting](https://www.kernel.org/doc/Documentation/vm/overcommit-accounting).
+The same reserves and `2*G+1GiB` admission inequality apply. Neither platform's
+snapshot reserves memory; a native MemoryError retains its object/type/args.
+Deterministic Linux-file fixtures are separate from admitted Linux runtime
+evidence. Windows tests or Linux syntax do not establish Linux A runtime PASS.
+
+Only an already active, started, unfinished, run-bound guard from this checkout
+can select the small offline profile. Its module/function identity, actual
+context/source/root/process and matching envelope are checked; native F2/F-LOG
+also require their installed adapter's shared counter identity. Application
+code observes this state without loading, starting or changing a guard.
+Arbitrary `MDS_OFFLINE_*` values cannot create it. Allocation rechecks the
+identity and refuses if it is lost. The profile permits only
+100,000 total rows, 32 MiB returned bytes, 64 MiB final frame,
 128 MiB accounted live/growth and 64 MiB metadata. This is not production memory
 admission; markers grant no source access and never disable the guard. Native
 test commands retain 20-minute maximum, stricter inner timeout, 32 processes and
@@ -163,7 +198,10 @@ refusal remains possible even for models below final row/payload caps.
 
 Range conflicts add private `a3_range_evidence`: two typed rows, 64 KiB cells and
 16 KiB metadata, with logical/physical ordinals, bounds, dtypes and request
-identity. Annual evidence compatibility remains. This is parsed evidence, not
+identity. `conflict_scope=INTERNAL_PHYSICAL` produces no annual attribute;
+`CROSS_ANNUAL` additionally preserves `a3_annual_evidence` with logical annual
+bounds. First/late representatives and per-attribute caps are unchanged.
+This is parsed evidence, not
 raw CSV/page/codec/SHA provenance. Native raw evidence and privacy caps remain.
 Secondary evidence failure preserves the primary; no production evidence writer
 or public diagnostic bundle is added.
@@ -179,8 +217,15 @@ F07 is a ready protocol/offline harness, **not executed live**. After a separate
 live grant, compare candidate to independent reference captures for both SBER
 and MOEX: 24/60=`2023-02-27..2024-03-02`,
 10=`2024-01-30..2024-03-02`, 1=`2024-02-23..2024-03-02`.
-Whole diagnostic limits: 45 minutes, 512 GETs, 128 MiB returned bytes,
-250,000 rows, 128 MiB frame and 256 MiB evidence. Record actual bounds/offsets,
+The candidate acquisition scope enforces 45 minutes, 512 GETs, 128 MiB returned
+bytes, 250,000 rows and 128 MiB frame. A separate reference-harness requirement
+is 256 MiB total retained evidence (`_A3_SOURCE_DIAGNOSTIC_REFERENCE_LIMITS`);
+this is protocol data, not a runtime-enforced acquisition counter. The retained
+offline reference helper counts raw body bytes; that alone is not proof of a
+total encoded body/envelope/writer quota. Before a live grant the independent
+outer harness must demonstrate complete accounting, including both candidate
+and reference captures and their persisted envelopes. No such live admission
+or whole-evidence quota is claimed here. Record actual bounds/offsets,
 retry/sleeps, raw bodies/codec/SHA, counts/keys/numbers and capture times. The
 private accounting scope enforces candidate limits; the reference harness must
 count both candidate and reference traffic against the same outer limits.
