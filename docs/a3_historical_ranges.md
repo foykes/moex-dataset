@@ -134,6 +134,8 @@ overcommit modes. `/proc/self/status` supplies VmSize/VmData for finite process
 limits and VmRSS for observation; VmSize is not called private commit or RSS.
 Unlimited soft/hard limits must be explicit. Invalid units, missing fields,
 unknown policy, changed membership/limits or a slow/stale probe refuse.
+Namespace and membership use the [calling thread](https://man7.org/linux/man-pages/man5/proc_thread-self.5.html),
+not the process leader's potentially different v1 cgroup.
 
 The probe requires the recognized initial cgroup namespace identity from
 [upstream proc_ns.h](https://github.com/torvalds/linux/blob/v6.12/include/linux/proc_ns.h#L37-L45)

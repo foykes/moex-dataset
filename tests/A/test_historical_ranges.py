@@ -682,7 +682,7 @@ def linux_memory_fixture(gathering, monkeypatch, version='v2'):
         '/proc/self/status': 'VmSize: 2097152 kB\nVmData: 1048576 kB\nVmRSS: 524288 kB\n',
         '/proc/sys/vm/overcommit_memory': '0\n',
         '/proc/cgroups': '#subsys_name hierarchy num_cgroups enabled\nmemory 0 3 1\n',
-        '/proc/self/cgroup': '0::/team/leaf\n',
+        '/proc/thread-self/cgroup': '0::/team/leaf\n',
         '/proc/self/mountinfo': '30 23 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n',
         '/sys/fs/cgroup/cgroup.controllers': 'cpu memory pids\n',
         '/sys/fs/cgroup/cgroup.subtree_control': 'memory\n',
@@ -698,7 +698,7 @@ def linux_memory_fixture(gathering, monkeypatch, version='v2'):
     }
     if version == 'v1':
         files['/proc/cgroups'] = 'memory 5 3 1\n'
-        files['/proc/self/cgroup'] = '5:memory:/team/leaf\n'
+        files['/proc/thread-self/cgroup'] = '5:memory:/team/leaf\n'
         files['/proc/self/mountinfo'] = '30 23 0:28 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n'
         for suffix, limit, used, memsw_limit, memsw_used in (
                 ('team', '42949672960', '8589934592', '60129542144', '10737418240'),
@@ -733,7 +733,7 @@ def test_review_linux_admission_success_and_literal_units(gathering, monkeypatch
     assert sample['working_set'] == 536870912 and sample['private_bytes'] is None
     assert sample['process_available'] == 16106127360 and sample['quota_available'] == 16106127360
     assert sample['cgroup_version'] == version and sample['page_size'] == 4096
-    assert '/proc/self/mountinfo' in calls and calls.count('/proc/self/cgroup') == 2
+    assert '/proc/self/mountinfo' in calls and calls.count('/proc/thread-self/cgroup') == 2
     monkeypatch.setattr(gathering, '_a3_memory_snapshot', lambda: sample)
     assert gathering._a3_memory_admit(GiB) is sample
     with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
@@ -767,7 +767,7 @@ def test_review_linux_unknown_invalid_stale_has_no_get_or_writer(gathering, monk
         original = gathering._a3_linux_read
         seen = []
         def read(path):
-            if path == '/proc/self/cgroup':
+            if path == '/proc/thread-self/cgroup':
                 seen.append(path)
                 if len(seen) == 2:
                     return '0::/moved\n'
@@ -939,3 +939,12 @@ def test_review_linux_metadata_reader_has_finite_bound(gathering, tmp_path):
     path.write_text('0'*65537, encoding='ascii')
     with pytest.raises(ValueError, match='A3_MEMORY_INPUT_LIMIT'):
         gathering._a3_linux_read(path)
+
+
+def test_review_linux_uses_calling_thread_not_leader_quota(gathering, monkeypatch):
+    _, files, calls = linux_memory_fixture(gathering, monkeypatch)
+    files['/proc/self/cgroup'] = '0::/leader-with-different-quota\n'
+    files['/sys/fs/cgroup/team/memory.max'] = '8589934592\n'
+    sample = gathering._a3_linux_memory_snapshot()
+    assert sample['quotas_verified'] is True and sample['quota_available'] == 0
+    assert calls.count('/proc/thread-self/cgroup') == 2 and '/proc/self/cgroup' not in calls

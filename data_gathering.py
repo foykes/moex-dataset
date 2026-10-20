@@ -1150,8 +1150,8 @@ def _a3_linux_runtime():
     import resource
     if sys.maxsize <= 2**32:
         raise ValueError('A3_MEMORY_ARCH_UNKNOWN')
-    return dict(namespace_inode=os.stat('/proc/self/ns/cgroup').st_ino,
-        namespace_link=os.readlink('/proc/self/ns/cgroup'),
+    return dict(namespace_inode=os.stat('/proc/thread-self/ns/cgroup').st_ino,
+        namespace_link=os.readlink('/proc/thread-self/ns/cgroup'),
         page_size=os.sysconf('SC_PAGE_SIZE'),
         rlimit_as=resource.getrlimit(resource.RLIMIT_AS),
         rlimit_data=resource.getrlimit(resource.RLIMIT_DATA))
@@ -1288,7 +1288,7 @@ def _a3_linux_memory_snapshot():
                 runtime['namespace_link'] != 'cgroup:[4026531835]' or
                 type(runtime['page_size']) is not int or runtime['page_size'] <= 0):
             return None
-        membership = _a3_linux_read('/proc/self/cgroup')
+        membership = _a3_linux_read('/proc/thread-self/cgroup')
         mounts = _a3_linux_read('/proc/self/mountinfo')
         controllers = _a3_linux_read('/proc/cgroups')
         memory = _a3_linux_kib(_a3_linux_read('/proc/meminfo'),
@@ -1312,7 +1312,7 @@ def _a3_linux_memory_snapshot():
                     process_available = min(process_available, max(0, limit-used))
         quota, version = _a3_linux_cgroup_headroom(membership, mounts, controllers,
                                                 process_available, memory['SwapTotal'])
-        if (membership != _a3_linux_read('/proc/self/cgroup') or
+        if (membership != _a3_linux_read('/proc/thread-self/cgroup') or
                 mounts != _a3_linux_read('/proc/self/mountinfo') or
                 controllers != _a3_linux_read('/proc/cgroups') or runtime != _a3_linux_runtime()):
             return None
