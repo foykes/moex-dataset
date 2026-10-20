@@ -109,16 +109,24 @@ def assert_rows(result, expected, *, dtypes=None):
 @pytest.mark.parametrize('with_context', [False, True])
 def test_red_exact_n_literal_requests_and_one_clock(gathering, monkeypatch, annual_fixture,
                                                   event_log, years, interval, with_context):
+    physical = json.loads(FIXTURE.with_name('historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    factor = {24: 1, 60: 1, 10: 12, 1: 53}[interval]
+    expected = physical[f'1994-03-02/2024-03-02/{interval}'][:years * factor]
     clock = freeze(gathering, monkeypatch, '2024-03-02', advance=True)
     context = event_log.context if with_context else None
     original_context = dict(context) if context is not None else None
-    calls = windows(gathering, monkeypatch, [gathering.pd.DataFrame() for _ in range(years)])
+    calls = windows(gathering, monkeypatch, [gathering.pd.DataFrame() for _ in range(years * factor)])
     result = gathering.moex(' RAW_TOKEN ', 'Облигации', years, interval,
                             logging_context=context)
     assert [item[0] for item in calls] == [
         (' RAW_TOKEN ', 'Облигации', lower, upper, interval)
-        for lower, upper in annual_fixture['ordinary_requests'][:years]]
+        for lower, upper in expected]
     assert all(item[1] is context for item in calls)
+    logical = annual_fixture['ordinary_requests'][:years]
+    assert len(calls) == years * factor
+    for i, (lower, upper) in enumerate(logical):
+        group = expected[i*factor:(i+1)*factor]
+        assert group[0][1] == upper and group[-1][0] == lower
     assert clock == [None]
     assert result.empty and result.columns.tolist() == []
     assert context == original_context
@@ -184,12 +192,19 @@ def test_red_synthetic_boundary_models_keep_join_without_claiming_outer_edges(
     model = next(item for item in annual_fixture['endpoint_models'] if item['id'] == model_id)
     keys = annual_fixture['model_begin_keys']
     freeze(gathering, monkeypatch, '2025-03-01')
-    calls = windows(gathering, monkeypatch,
-                    [frame(gathering, [bar(keys[index]) for index in positions])
-                     for positions in model['windows']])
+    physical = json.loads(FIXTURE.with_name('historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    calls = []
+    def endpoint(*args, logging_context=None):
+        calls.append((args, logging_context))
+        lower, upper = args[2:4]
+        lower, upper = lower + ' 00:00:00', upper + ' 00:00:00'
+        selected = [key for key in keys
+                    if (key >= lower if model_id.startswith('closed') else key > lower)
+                    and (key <= upper if model_id.endswith('closed') else key < upper)]
+        return frame(gathering, [bar(key) for key in selected])
+    monkeypatch.setattr(gathering, 'moex_query', endpoint)
     result = gathering.moex('SBER', 'Акции', 2, 1)
-    assert [args[2:4] for args, _ in calls] == [('2024-03-01', '2025-03-01'),
-                                               ('2023-03-01', '2024-03-02')]
+    assert [args[2:4] for args, _ in calls] == [tuple(pair) for pair in physical['2023-03-01/2025-03-01/1']]
     assert_rows(result, [bar(keys[index]) for index in model['expected']])
     assert '2024-03-01 00:00:00' in result.begin.tolist()
     assert '2024-03-02 00:00:00' in result.begin.tolist()
@@ -528,18 +543,34 @@ def test_red_real_csv_halo_extra_page_retry_and_terminal_are_literal(
     wire = annual_fixture['wire']
     header = wire['header']
     payload = lambda rows: header + ''.join(row + '\n' for row in rows)
-    prepared = [response('', 503), response(payload(wire['newer'])), response(header),
-                response(payload(wire['older'][:1])), response(payload(wire['older'][1:2])),
-                response(payload(wire['older'][2:])), response(header)]
+    physical = json.loads(FIXTURE.with_name('historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    factor = {24: 1, 60: 1, 10: 12, 1: 53}[interval]
+    expected = physical[f'1994-03-02/2024-03-02/{interval}'][:2*factor]
+    prepared, expected_records, selected_starts = [], [], []
+    for leaf, (lower, upper) in enumerate(expected):
+        if leaf == 0:
+            responses = [response('', 503), response(payload(wire['newer'])), response(header)]
+            offsets = [0, 0, 3]
+        elif leaf == factor:
+            responses = [response(payload(wire['older'][:1])), response(payload(wire['older'][1:2])),
+                         response(payload(wire['older'][2:])), response(header)]
+            offsets = [0, 1, 2, 3]
+        else:
+            responses, offsets = [response(header)], [0]
+        prepared.extend(responses)
+        expected_records.extend((lower, upper, offset) for offset in offsets)
+        if leaf in (0, factor):
+            selected_starts.extend(offsets)
+    assert selected_starts == wire['starts_with_retry']
     state = http(gathering, monkeypatch, prepared)
     result = gathering.moex('FIXTURE_SHARE', kind, 2, interval)
-    assert [item['start'] for item in state.calls] == wire['starts_with_retry']
-    assert state.sleeps == wire['sleep_with_retry']
-    for position, call in enumerate(state.calls):
+    assert [item['start'] for item in state.calls] == [record[2] for record in expected_records]
+    assert state.sleeps == [3] * len(expected_records)
+    assert len(state.sleeps) == len(wire['sleep_with_retry']) + 2 * factor - 2
+    for position, (call, (lower, upper, offset)) in enumerate(zip(state.calls, expected_records)):
         assert urlsplit(call['url']).path == f'/iss/engines/stock/markets/{market}/securities/FIXTURE_SHARE/candles.csv'
-        assert call['params']['from'] == ['2023-03-02' if position < 3 else '2022-03-02']
-        assert call['params']['till'] == ['2024-03-02' if position < 3 else '2023-03-03']
-        assert call['params']['interval'] == [str(interval)]
+        assert call['params']['from'] == [lower] and call['params']['till'] == [upper]
+        assert call['params']['interval'] == [str(interval)] and call['start'] == offset
         assert call['headers'] == {'User-Agent': 'AGENT_A' if position == 0 else 'AGENT_B',
                                    'Accept-Encoding': 'identity'}
         assert call['verify'] is True and call['allow_redirects'] is False and call['stream'] is True
@@ -575,12 +606,14 @@ def test_red_late_real_query_deadline_preserves_primary_and_has_no_next_window(
     wire = annual_fixture['wire']
     header = wire['header']
     payload = lambda rows: header + ''.join(row + '\n' for row in rows)
-    prepared = [response(payload(wire['newer'])), response(header),
-                response(payload(wire['older'][:1])), response(payload(wire['older'][1:2]))]
+    # Entire first logical year (53 leaves) succeeds before year 2 fails.
+    prepared = [response(payload(wire['newer'])), response(header)] + [
+        response(header) for _ in range(52)] + [
+        response(payload(wire['older'][:1])), response(payload(wire['older'][1:2]))]
     state = http(gathering, monkeypatch, prepared)
     def expire():
-        if len(state.calls) == 4:
-            state.elapsed = 186.0  # Query2 started at6; its own180s budget expires.
+        if len(state.calls) == 56:
+            state.elapsed = 342.0  # Year2's first leaf started at162, expires at342.
     state.after_get = expire
     primaries = []
     original = gathering.moex_query
@@ -595,10 +628,14 @@ def test_red_late_real_query_deadline_preserves_primary_and_has_no_next_window(
         gathering.moex('FIXTURE_SHARE', 'Акции', 3, 1)
     assert primaries and captured.value is primaries[0][0]
     assert captured.value.args == primaries[0][1] == ('A2_ISS_DEADLINE_EXCEEDED',)
-    assert [item['start'] for item in state.calls] == [0, 3, 0, 1]
-    assert state.sleeps == [3, 3, 3] and writers == []
+    assert [item['start'] for item in state.calls] == [0, 3] + [0]*52 + [0, 1]
+    assert state.sleeps == [3]*55 and writers == []
     assert all(item.raw.close_calls == 1 for item in prepared)
 
+    physical = json.loads(FIXTURE.with_name('historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    expected = physical['1994-03-02/2024-03-02/1'][:54]
+    assert [(item['params']['from'][0], item['params']['till'][0]) for item in state.calls] == [
+        tuple(expected[0])]*2 + [tuple(pair) for pair in expected[1:53]] + [tuple(expected[53])]*2
 
 @pytest.mark.parametrize('operation', ['reload', 'update'])
 @pytest.mark.parametrize('with_context', [False, True])
@@ -640,6 +677,7 @@ def test_callers_late_failure_preserves_previous_without_a_new_writer(
     assert all((path.read_bytes(), hashlib.sha256(path.read_bytes()).hexdigest()) == value
                for path, value in previous.items())
 
+    assert calls[0][0][2:4] == (('2023-03-01', '2024-03-01') if operation == 'reload' else ('2024-03-01', '2024-03-02'))
 
 @pytest.mark.parametrize('anchor,lower', [('0002-03-01', '0001-03-01'),
                                         ('1000-03-01', '0999-03-01'),
@@ -680,8 +718,9 @@ def test_red_both_caller_calendar_sites_use_portable_literal_tokens(
 def test_full_reload_zero_years_keeps_listing_and_stopped_precedence(
         gathering, monkeypatch, catalogue, snapshot, fixture_root, writers):
     _, root = fixture_root
-    calls = windows(gathering, monkeypatch, [gathering.pd.DataFrame(), gathering.pd.DataFrame()])
+    physical = json.loads(FIXTURE.with_name('historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    expected = [('MOEX', 'Акции', lo, hi, 24) for lo, hi in physical['2020-02-29/2024-03-01/24']] + [('SBER', 'Акции', lo, hi, 24) for lo, hi in physical['2000-01-03/2024-03-02/24']]
+    calls = windows(gathering, monkeypatch, [gathering.pd.DataFrame()] * len(expected))
     gathering.full_reload(catalogue, 24, 0, 'all_history_sentinel', 'часа', root, snapshot)
-    assert [args for args, _ in calls] == [('MOEX', 'Акции', '2020-02-29', '2024-03-01', 24),
-                                          ('SBER', 'Акции', '2000-01-03', '2024-03-02', 24)]
+    assert [args for args, _ in calls] == expected
     assert writers == []

@@ -17,6 +17,9 @@
 import datetime, pandas as pd, requests, csv, sys, time, os, json, math, re
 import random, socket, errno, calendar, hashlib, uuid
 from io import StringIO
+from contextvars import ContextVar
+from contextlib import contextmanager
+from functools import wraps
 from urllib3 import exceptions as http_errors
 from urllib3._collections import HTTPHeaderDict
 
@@ -460,6 +463,7 @@ def _a2_candle_body(response, checkpoint, resource=None):
         checkpoint()
         if not part:
             return bytes(content)
+        _a3_charge('bytes', len(part))
         content.extend(part)
 
 
@@ -645,21 +649,28 @@ def _a3_assemble(frames, ticker):
     if not frames:
         return pd.DataFrame()
     result = pd.concat(frames, ignore_index=True)
+    _a3_numeric_union(frames, result)
+    result['ticker'] = ticker
+    return result
+
+
+def _a3_numeric_union(frames, result):
+    # Общий audit без переписывания ticker/index у dataset concat.
     for column in ('open', 'close', 'high', 'low', 'value', 'volume'):
         dtype = result[column].dtype
         if not pd.api.types.is_numeric_dtype(dtype):
             raise ValueError('A3_ISS_NUMERIC_ASSEMBLY_LOSS')
-        source_dtypes = [frame[column].dtype for frame in frames]
+        source_dtypes = [frame[column].dtype for frame in frames if column in frame]
         if all(item == source_dtypes[0] for item in source_dtypes) and dtype != source_dtypes[0]:
             raise ValueError('A3_ISS_NUMERIC_ASSEMBLY_LOSS')
         offset = 0
         for frame in frames:
+            if not len(frame):
+                continue
             for before, after in zip(frame[column], result[column].iloc[offset:offset + len(frame)]):
                 if _a3_numeric_identity(before) != _a3_numeric_identity(after):
                     raise ValueError('A3_ISS_NUMERIC_ASSEMBLY_LOSS')
             offset += len(frame)
-    result['ticker'] = ticker
-    return result
 
 
 def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3, *, logging_context=None, retry_jitter=0):
@@ -789,6 +800,7 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         if remaining() <= 0:
             deadline_error = requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')
             raise deadline_error
+        _a3_checkpoint()
 
     def deadline(primary=None, code='A2_ISS_DEADLINE_EXCEEDED', category='TIMEOUT', available=None):
         if (remaining() if available is None else available) <= 0:
@@ -796,6 +808,12 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
                 primary = requests.exceptions.Timeout('A2_ISS_DEADLINE_EXCEEDED')
             emit('ERROR', 'a2_query_failed', 'DEADLINE_EXCEEDED', primary, code, category, final=True)
             raise primary
+        try:
+            _a3_checkpoint(primary)
+        except BaseException as error:
+            if primary is not None:
+                emit('ERROR', 'a2_query_failed', 'DEADLINE_EXCEEDED', primary, code, category, final=True)
+            raise error
 
     deadline()
     emit('INFO', 'a2_query_started', 'QUERY_STARTED')
@@ -845,6 +863,13 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
             available = remaining()
             deadline(primary, code if primary is not None else 'A2_ISS_DEADLINE_EXCEEDED',
                      category if primary is not None else 'TIMEOUT', available=available)
+            try:
+                _a3_charge('gets', 1, primary)
+                _a3_charge('retries', int(attempt > 0), primary)
+            except BaseException:
+                if primary is not None:
+                    emit('ERROR', 'a2_query_failed', 'CAPACITY_EXCEEDED', primary, code, category, final=True)
+                raise
             primary = None
             response = None
             retryable = False
@@ -866,6 +891,13 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
                 checkpoint()
                 content = _a2_candle_body(response, checkpoint, resource)
                 body_bytes = len(content)
+                state = _A3_RANGE_STATE.get()
+                if state is not None:
+                    # До decode/CSV/pandas: wire expansion, Python cells, keys и copies.
+                    job = state['job']
+                    growth = resource['bytes'] * 256 + 16 * 1024**2
+                    _a3_reserve(job.get('collector_bytes', 0) + growth,
+                                job.get('metadata_bytes', 0), growth)
                 phase = 'a3_evidence'
                 capture = _a3_capture(content, page_ordinal, offset, attempt)
                 phase = 'validation'
@@ -879,6 +911,7 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
                 code = 'A2_ISS_RESPONSE_SCHEMA_INVALID'
                 rows = _a2_candle_records(text, local_duplicate)
                 checkpoint()
+                _a3_charge('rows', len(rows))
                 code = 'A2_ISS_PARSE_ERROR'
                 df = pd.read_csv(StringIO(text), sep=';', header=1)
                 checkpoint()
@@ -887,12 +920,17 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
                 page_received = len(rows)
                 rows_received_total += page_received
                 pages_validated += 1
+                _a3_charge('pages', 1)
                 capture['admission_state'] = 'A2_VALIDATED'
                 checkpoint()
             except BaseException as error:
                 primary = error
                 if error is deadline_error:
                     code, category, terminal = 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', 'DEADLINE_EXCEEDED'
+                elif error.args == ('A3_ISS_RANGE_DEADLINE_EXCEEDED',):
+                    code, category, terminal = error.args[0], 'TIMEOUT', 'DEADLINE_EXCEEDED'
+                elif error.args == ('A3_ISS_RANGE_CAPACITY_EXCEEDED',):
+                    code, category, terminal = error.args[0], 'CAPACITY', 'CAPACITY_EXCEEDED'
                 elif phase == 'a3_evidence':
                     code, category, terminal = 'A3_ISS_RAW_CAPTURE_FAILED', 'IO', 'EVIDENCE_FAILED'
                 elif type(error) is ValueError and error.args == ('A3_ISS_QUERY_BYTES_EXCEEDED',):
@@ -1050,6 +1088,10 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         if not failed_emitted and not diagnostic_failed and not success_sleep_interrupted:
             if primary is deadline_error:
                 code, category, outcome = 'A2_ISS_DEADLINE_EXCEEDED', 'TIMEOUT', 'DEADLINE_EXCEEDED'
+            elif primary.args == ('A3_ISS_RANGE_DEADLINE_EXCEEDED',):
+                code, category, outcome = primary.args[0], 'TIMEOUT', 'DEADLINE_EXCEEDED'
+            elif primary.args == ('A3_ISS_RANGE_CAPACITY_EXCEEDED',):
+                code, category, outcome = primary.args[0], 'CAPACITY', 'CAPACITY_EXCEEDED'
             else:
                 _, category, _, _ = _a2_request_policy(primary)
                 code = (primary.args[0] if type(primary) is ValueError and primary.args
@@ -1076,6 +1118,361 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
 ## Функция выгрузки данных через ручку MOEX
 _A3_ANNUAL_EVIDENCE_BYTES = 64 * 1024
 _A3_ANNUAL_METADATA_BYTES = 16 * 1024
+
+# Aggregate ceilings: не меняют native 180s/1000-pages/64MiB и full sleep.
+_A3_RANGE_STATE = ContextVar('a3_range_state', default=None)
+_A3_RANGE_LIMITS = {
+    'job': dict(ranges=8192, gets=262144, bytes=8 * 1024**3, rows=24000000,
+                final_bytes=8 * 1024**3, live_bytes=16 * 1024**3, metadata_bytes=8 * 1024**3),
+    'dataset': dict(ranges=1048576, gets=16777216, bytes=128 * 1024**3, rows=128000000,
+                    final_bytes=16 * 1024**3, live_bytes=32 * 1024**3, metadata_bytes=8 * 1024**3),
+    'run': dict(ranges=4194304, gets=67108864, bytes=512 * 1024**3, rows=512000000,
+                datasets=64, jobs=4096, evidence_bytes=32 * 1024**3 - 1024**2,
+                live_bytes=32 * 1024**3, metadata_bytes=8 * 1024**3),
+}
+_A3_MEMORY_API = None
+_A3_SOURCE_DIAGNOSTIC_LIMITS = dict(seconds=2700, gets=512, bytes=128 * 1024**2,
+    rows=250000, final_bytes=128 * 1024**2, evidence_bytes=256 * 1024**2)
+
+
+def _a3_memory_snapshot():
+    # Read-only Win32 APIs; никакого psutil/dependency или изменения job limits.
+    global _A3_MEMORY_API
+    try:
+        import ctypes
+        from ctypes import wintypes
+        if sys.platform != 'win32' or ctypes.sizeof(ctypes.c_void_p) != 8:
+            return None
+        if _A3_MEMORY_API is None:
+            size = ctypes.c_size_t
+            class Memory(ctypes.Structure):
+                _fields_ = [('length', wintypes.DWORD), ('load', wintypes.DWORD)] + [
+                    (name, ctypes.c_ulonglong) for name in ('total_phys', 'available_phys',
+                    'total_pagefile', 'available_pagefile', 'total_virtual', 'available_virtual', 'reserved')]
+            class Performance(ctypes.Structure):
+                _fields_ = [('length', wintypes.DWORD)] + [(name, size) for name in (
+                    'commit_total', 'commit_limit', 'commit_peak', 'physical_total', 'physical_available',
+                    'cache', 'kernel_total', 'kernel_paged', 'kernel_nonpaged', 'page_size')] + [
+                    (name, wintypes.DWORD) for name in ('handles', 'processes', 'threads')]
+            class Process(ctypes.Structure):
+                _fields_ = [('length', wintypes.DWORD), ('faults', wintypes.DWORD)] + [
+                    (name, size) for name in ('peak_working_set', 'working_set', 'peak_paged', 'paged',
+                    'peak_nonpaged', 'nonpaged', 'pagefile', 'peak_pagefile', 'private_bytes')]
+            class Basic(ctypes.Structure):
+                _fields_ = [('process_time', ctypes.c_longlong), ('job_time', ctypes.c_longlong),
+                    ('flags', wintypes.DWORD), ('minimum_ws', size), ('maximum_ws', size),
+                    ('active_processes', wintypes.DWORD), ('affinity', size),
+                    ('priority', wintypes.DWORD), ('scheduling', wintypes.DWORD)]
+            class Job(ctypes.Structure):
+                _fields_ = [('basic', Basic), ('io', ctypes.c_ulonglong * 6)] + [
+                    (name, size) for name in ('process_memory', 'job_memory', 'peak_process', 'peak_job')]
+            class AppMemory(ctypes.Structure):
+                _fields_ = [(name, ctypes.c_ulonglong) for name in
+                            ('available_commit', 'private_commit', 'peak_private_commit', 'total_commit')]
+            api = ctypes.WinDLL('kernel32.dll', use_last_error=True)
+            signatures = {
+                'GlobalMemoryStatusEx': ([ctypes.POINTER(Memory)], wintypes.BOOL),
+                'K32GetPerformanceInfo': ([ctypes.POINTER(Performance), wintypes.DWORD], wintypes.BOOL),
+                'GetCurrentProcess': ([], wintypes.HANDLE),
+                'K32GetProcessMemoryInfo': ([wintypes.HANDLE, ctypes.POINTER(Process), wintypes.DWORD], wintypes.BOOL),
+                'IsProcessInJob': ([wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL),
+                'GetProcessInformation': ([wintypes.HANDLE, ctypes.c_int, ctypes.POINTER(AppMemory),
+                                           wintypes.DWORD], wintypes.BOOL),
+                'QueryInformationJobObject': ([wintypes.HANDLE, ctypes.c_int, ctypes.POINTER(Job),
+                                               wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL),
+            }
+            for name, (arguments, result) in signatures.items():
+                function = getattr(api, name)
+                function.argtypes, function.restype = arguments, result
+            _A3_MEMORY_API = (api, Memory, Performance, Process, Job, AppMemory)
+        api, Memory, Performance, Process, Job, AppMemory = _A3_MEMORY_API
+        memory, performance, process = Memory(), Performance(), Process()
+        memory.length, performance.length, process.length = map(ctypes.sizeof, (Memory, Performance, Process))
+        handle = api.GetCurrentProcess()
+        if not (api.GlobalMemoryStatusEx(ctypes.byref(memory)) and
+                api.K32GetPerformanceInfo(ctypes.byref(performance), performance.length) and
+                api.K32GetProcessMemoryInfo(handle, ctypes.byref(process), process.length)):
+            return None
+        if performance.page_size <= 0 or performance.commit_total > performance.commit_limit:
+            return None
+        # PageSize переводит страницы PERFORMANCE_INFORMATION в bytes ровно один раз.
+        commit_limit = int(performance.commit_limit) * int(performance.page_size)
+        commit_free = (int(performance.commit_limit) - int(performance.commit_total)) * int(performance.page_size)
+        app = AppMemory()
+        # ProcessAppMemoryInfo=2: additional commit available to this process,
+        # а не попытка вывести ancestor limits из immediate job handle NULL.
+        if not api.GetProcessInformation(handle, 2, ctypes.byref(app), ctypes.sizeof(app)):
+            return None
+        quota = min(int(memory.available_pagefile), int(memory.available_virtual), int(app.available_commit))
+        in_job = wintypes.BOOL()
+        if not api.IsProcessInJob(handle, None, ctypes.byref(in_job)):
+            return None
+        job_peak, job_limit = 0, None
+        if in_job.value:
+            job, returned = Job(), wintypes.DWORD()
+            if not api.QueryInformationJobObject(None, 9, ctypes.byref(job), ctypes.sizeof(job), ctypes.byref(returned)):
+                return None
+            if returned.value != ctypes.sizeof(job):
+                return None
+            if job.basic.flags & 0x100:
+                quota = min(quota, max(0, int(job.process_memory) - int(process.private_bytes)))
+            if job.basic.flags & 0x200:
+                job_limit, job_peak = int(job.job_memory), int(job.peak_job)
+                # Peak >= current: консервативно, без ложного текущего aggregate usage.
+                quota = min(quota, max(0, job_limit - job_peak))
+        return dict(status='AVAILABLE', sampled_at=time.perf_counter(),
+            total_phys=int(memory.total_phys), available_phys=int(memory.available_phys),
+            commit_limit=commit_limit, commit_available=commit_free,
+            process_available=int(memory.available_pagefile), quota_available=quota,
+            private_bytes=int(process.private_bytes), working_set=int(process.working_set),
+            page_size=int(performance.page_size), quotas_verified=not bool(in_job.value),
+            quota_basis='UNKNOWN_ANCESTOR_JOBS' if in_job.value else 'NATIVE_PROCESS_WITHOUT_JOB',
+            app_available_commit=int(app.available_commit),
+            job_member=bool(in_job.value), immediate_job_limit=job_limit, immediate_job_peak=job_peak)
+    except (Exception, MemoryError):
+        return None
+
+
+def _a3_capacity(reason):
+    primary = ValueError('A3_ISS_RANGE_CAPACITY_EXCEEDED')
+    primary.a3_capacity_reason = reason  # fixed local alias, no raw identifiers
+    return primary
+
+
+def _a3_memory_admit(growth_bytes):
+    if type(growth_bytes) is not int or growth_bytes < 0:
+        raise _a3_capacity('MEMORY_GROWTH_UNKNOWN')
+    sample = _a3_memory_snapshot()
+    fields = ('total_phys', 'available_phys', 'commit_limit', 'commit_available',
+              'process_available', 'quota_available', 'private_bytes', 'working_set', 'page_size')
+    if (type(sample) is not dict or sample.get('status') != 'AVAILABLE' or
+            sample.get('quotas_verified') is not True or
+            any(type(sample.get(name)) is not int or sample[name] < 0 for name in fields) or
+            sample['page_size'] <= 0 or type(sample.get('sampled_at')) not in (int, float) or
+            not math.isfinite(sample['sampled_at']) or
+            not 0 <= time.perf_counter() - sample['sampled_at'] <= 1 or
+            not 0 < sample['total_phys'] >= sample['available_phys'] or
+            not 0 < sample['commit_limit'] >= sample['commit_available']):
+        raise _a3_capacity('MEMORY_ADMISSION_UNAVAILABLE')
+    reserve_phys = max(8 * 1024**3, (sample['total_phys'] + 3) // 4)
+    reserve_commit = max(8 * 1024**3, (sample['commit_limit'] + 9) // 10)
+    headroom = min(sample['available_phys'] - reserve_phys,
+                   sample['commit_available'] - reserve_commit,
+                   sample['process_available'], sample['quota_available'])
+    if 2 * growth_bytes + 1024**3 > headroom:
+        raise _a3_capacity('MEMORY_HEADROOM_EXCEEDED')
+    return sample
+
+
+def _a3_charge(counter, amount, primary=None):
+    state = _A3_RANGE_STATE.get()
+    if state is None:
+        return
+    try:
+        if type(amount) is not int or amount < 0:
+            raise _a3_capacity('COUNTER_INVALID')
+        if state.get('scaled_offline') and counter in ('rows', 'bytes'):
+            cap = 100000 if counter == 'rows' else 32 * 1024**2
+            if state['run'].get(counter, 0) + amount > cap:
+                raise _a3_capacity('SCALED_OFFLINE_' + counter.upper())
+        for kind in ('run', 'dataset', 'job'):
+            item = state.get(kind)
+            limit = state.get('limits', _A3_RANGE_LIMITS)[kind].get(counter)
+            if item is not None and limit is not None and item.get(counter, 0) + amount > limit:
+                raise _a3_capacity(kind.upper() + '_' + counter.upper())
+        for kind in ('run', 'dataset', 'job'):
+            if kind in state:
+                state[kind][counter] = state[kind].get(counter, 0) + amount
+    except BaseException:
+        if primary is not None:
+            raise primary
+        raise
+
+
+def _a3_checkpoint(primary=None):
+    state = _A3_RANGE_STATE.get()
+    if state is None:
+        return
+    now = time.perf_counter()
+    if any(now - state[kind]['started'] >= state[kind]['seconds']
+           for kind in ('run', 'dataset', 'job') if kind in state):
+        if primary is not None:
+            raise primary
+        raise requests.exceptions.Timeout('A3_ISS_RANGE_DEADLINE_EXCEEDED')
+
+
+@contextmanager
+def _a3_scope(kind, planned=0):
+    previous = _A3_RANGE_STATE.get()
+    state = dict(previous or {})
+    now = time.perf_counter()
+    if 'run' not in state:
+        state['run'] = dict(started=now, seconds=256 * 86400)
+        # Explicit existing offline report envelope selects only a SMALL profile.
+        # Эти markers не дают live/production authority и не обходят guard.
+        report_root = os.environ.get('MDS_OFFLINE_ROOT')
+        state['scaled_offline'] = (type(report_root) is str and
+            os.path.normcase(os.path.abspath(report_root)) == os.path.normcase(os.path.dirname(os.path.abspath(__file__))) and
+            os.environ.get('MDS_OFFLINE_SOURCE_MODE') in ('commit', 'working-tree') and
+            re.fullmatch(r'[0-9a-f]{32}', os.environ.get('MDS_OFFLINE_RUN_ID', '')) is not None)
+    if kind in ('job', 'dataset') and 'dataset' not in state:
+        state['dataset'] = dict(started=now, seconds=86400, retained_bytes=0)
+        state['run']['datasets'] = state['run'].get('datasets', 0) + 1
+        if state['run']['datasets'] > _A3_RANGE_LIMITS['run']['datasets']:
+            raise _a3_capacity('RUN_DATASETS')
+    if kind == 'job':
+        seconds = min(96 * 3600, 180 * planned + 6 * 3600)
+        state['job'] = dict(started=now, seconds=seconds, planned=planned, rows=0, ranges=0)
+        state['dataset']['seconds'] = min(96 * 86400, state['dataset']['seconds'] + seconds)
+    token = _A3_RANGE_STATE.set(state)
+    try:
+        if kind == 'job':
+            _a3_charge('jobs', 1)
+            for scope in ('job', 'dataset', 'run'):
+                if state[scope].get('ranges', 0) + planned > state.get('limits', _A3_RANGE_LIMITS)[scope]['ranges']:
+                    raise _a3_capacity(scope.upper() + '_PLANNED_RANGES')
+        _a3_checkpoint()
+        yield state
+    finally:
+        _A3_RANGE_STATE.reset(token)
+
+
+def _a3_operation(kind):
+    # wraps сохраняет public signature; без нового public resource argument.
+    def decorate(function):
+        @wraps(function)
+        def bounded(*args, **kwargs):
+            with _a3_scope(kind):
+                return function(*args, **kwargs)
+        return bounded
+    return decorate
+
+
+def _a3_reserve(frame_bytes, metadata_bytes, growth):
+    state = _A3_RANGE_STATE.get()
+    if state is None:
+        return
+    if 'job' in state:
+        state['job']['frame_bytes'] = frame_bytes
+        state['job']['metadata_bytes'] = metadata_bytes
+    retained = state.get('dataset', {}).get('retained_bytes', 0)
+    for kind in ('run', 'dataset', 'job'):
+        if kind not in state:
+            continue
+        live = frame_bytes + (0 if kind == 'job' else retained)
+        limits = state.get('limits', _A3_RANGE_LIMITS)[kind]
+        if live > limits['live_bytes'] or metadata_bytes > limits['metadata_bytes']:
+            raise _a3_capacity(kind.upper() + '_LIVE_MEMORY')
+        state[kind]['peak_frame_bytes'] = max(state[kind].get('peak_frame_bytes', 0), live)
+        state[kind]['peak_metadata_bytes'] = max(state[kind].get('peak_metadata_bytes', 0), metadata_bytes)
+    _a3_allocation_admit(growth, frame_bytes + retained, metadata_bytes)
+
+
+def _a3_allocation_admit(growth, live=0, metadata=0):
+    state = _A3_RANGE_STATE.get()
+    if state is not None and state.get('scaled_offline'):
+        # Заведомо bounded fixtures, не production capacity admission.
+        if growth > 128 * 1024**2 or live > 128 * 1024**2 or metadata > 64 * 1024**2:
+            raise _a3_capacity('SCALED_OFFLINE_MEMORY')
+        return
+    _a3_memory_admit(growth)
+
+
+def _a3_final_payload(frame, kind):
+    payload = int(frame.memory_usage(index=True, deep=True).sum())
+    state = _A3_RANGE_STATE.get()
+    limits = state.get('limits', _A3_RANGE_LIMITS) if state else _A3_RANGE_LIMITS
+    if payload > limits[kind]['final_bytes']:
+        raise _a3_capacity(kind.upper() + '_FINAL_PAYLOAD')
+    if state is not None and state.get('scaled_offline') and payload > 64 * 1024**2:
+        raise _a3_capacity('SCALED_OFFLINE_PAYLOAD')
+    return payload
+
+
+def _a3_range_event(context, event, ticker, interval, planned, returned=None):
+    state = _A3_RANGE_STATE.get()
+    job = state['job']
+    outcome = 'RANGE_PLAN_STARTED' if returned is None else 'CLIENT_PLAN_COMPLETE_SOURCE_UNVERIFIED'
+    fields = dict(stage='data_gathering', fields={}, outcome=outcome,
+        counts=dict(rows_received=job.get('rows', 0), rows_accepted=None, rows_quarantined=None,
+            pages=job.get('pages', 0), instruments=1,
+            null_reasons={'rows_accepted': 'NOT_ASSESSED', 'rows_quarantined': 'NOT_ASSESSED'}))
+    if type(ticker) is str:
+        fields['instrument'] = ticker
+    if type(interval) is int and interval > 0:
+        fields['interval'] = interval
+    if type(context) is dict:
+        for key in ('snapshot_id', 'dataset_id', 'file', 'artifact_id', 'target_id', 'page'):
+            value = context.get(key)
+            if type(value) is str and len(value) <= 256 or key == 'page' and type(value) is int and value >= 0:
+                fields[key] = value
+    message = (f'История {outcome}; planned={planned}; completed={job.get("ranges", 0)}; '
+               f'get={job.get("gets", 0)}; retry={job.get("retries", 0)}; '
+               f'bytes={job.get("bytes", 0)}; rows={job.get("rows", 0)}')
+    _a2_diagnostic(context, 'INFO', event, message, fields)
+
+
+def _a3_source_diagnostic_plan():
+    # Это protocol data, не live permission и не source availability inventory.
+    dates = {24: ('2023-02-27', '2024-03-02'), 60: ('2023-02-27', '2024-03-02'),
+             10: ('2024-01-30', '2024-03-02'), 1: ('2024-02-23', '2024-03-02')}
+    return [dict(ticker=ticker, interval=interval, from_date=dates[interval][0],
+                 till_date=dates[interval][1], authority='SEPARATE_LIVE_GRANT_REQUIRED')
+            for ticker in ('SBER', 'MOEX') for interval in (24, 60, 10, 1)]
+
+
+@contextmanager
+def _a3_source_diagnostic_scope():
+    # Accounting envelope only. Это не live grant и не обход transport guard.
+    if _A3_RANGE_STATE.get() is not None:
+        raise ValueError('A3_DIAGNOSTIC_NESTING_REJECTED')
+    with _a3_scope('run') as state:
+        limits = {kind: dict(values) for kind, values in _A3_RANGE_LIMITS.items()}
+        limits['run'].update({key: value for key, value in _A3_SOURCE_DIAGNOSTIC_LIMITS.items()
+                              if key not in ('seconds', 'final_bytes')})
+        for kind in ('job', 'dataset'):
+            limits[kind]['final_bytes'] = _A3_SOURCE_DIAGNOSTIC_LIMITS['final_bytes']
+        state['limits'] = limits
+        state['run']['seconds'] = _A3_SOURCE_DIAGNOSTIC_LIMITS['seconds']
+        yield state
+
+
+def _a3_range_failure(context, ticker, interval, primary):
+    code = primary.args[0] if primary.args and type(primary.args[0]) is str and primary.args[0] in (
+        'A3_ISS_RANGE_CAPACITY_EXCEEDED', 'A3_ISS_RANGE_DEADLINE_EXCEEDED',
+        'A3_ISS_ANNUAL_KEY_CONFLICT', 'A3_ISS_RANGE_KEY_CONFLICT',
+        'A3_ISS_NUMERIC_ASSEMBLY_LOSS') else 'A3_ISS_RANGE_FAILED'
+    if code == 'A3_ISS_RANGE_FAILED':
+        # Native query/logger уже доставил свой primary; не дублируем его.
+        return
+    category = ('CAPACITY' if code == 'A3_ISS_RANGE_CAPACITY_EXCEEDED' else
+                'TIMEOUT' if code == 'A3_ISS_RANGE_DEADLINE_EXCEEDED' else 'SOURCE')
+    nullable = ('run_id', 'snapshot_id', 'dataset_id', 'instrument', 'interval',
+                'page', 'file', 'artifact_id', 'target_id', 'endpoint', 'attempt', 'exception_type')
+    error = dict(category=category, code=code, stage='data_gathering',
+                 retryable=False, final=True, message='Отказ всей истории: ' + code)
+    error.update({key: None for key in nullable})
+    fields = dict(stage='data_gathering', fields={}, outcome='RANGE_PLAN_REFUSED')
+    if type(ticker) is str:
+        fields['instrument'] = ticker
+    if type(interval) is int and interval > 0:
+        fields['interval'] = interval
+    if type(context) is dict:
+        for key in nullable:
+            if key not in ('exception_type', 'attempt', 'endpoint'):
+                value = context.get(key)
+                if type(value) is str and len(value) <= 256 or key == 'page' and type(value) is int and value >= 0:
+                    error[key] = value
+                    if key != 'run_id':
+                        fields[key] = value
+    error.update(instrument=fields.get('instrument'), interval=fields.get('interval'),
+                 endpoint='ISS_CANDLES', exception_type='Timeout' if isinstance(primary, requests.Timeout)
+                 else 'ValueError' if isinstance(primary, ValueError) else 'Exception')
+    error['null_reasons'] = {key: 'NOT_AVAILABLE_OR_NOT_APPLICABLE'
+                             for key in nullable if error[key] is None}
+    fields['error'] = error
+    _a2_diagnostic(context, 'ERROR', 'a3_ranges_failed', 'Отказ всей истории: ' + code,
+                   fields, primary)
 
 
 def _a3_calendar_anniversary(anchor, years):
@@ -1159,6 +1556,199 @@ def _a3_annual_evidence(primary, request, pairs, logging_context=None):
         _a3_evidence_note(primary)
 
 
+def _a3_range_date(value):
+    try:
+        if type(value) is not str or len(value) != 10:
+            raise ValueError()
+        parsed = datetime.datetime.strptime(value, '%Y-%m-%d').date()
+        if parsed.isoformat() != value:
+            raise ValueError()
+        return parsed
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError('A3_ISS_RANGE_BOUNDS_INVALID') from None
+
+
+def _a3_month_boundary(anchor, months):
+    # Всегда от исходного anchor: Jan31 восстанавливается после Feb28/29.
+    ordinal = (anchor.year - 1) * 12 + anchor.month - 1 - months
+    year, month = divmod(ordinal, 12)
+    if year < 0:
+        raise ValueError('A3_ISS_RANGE_BOUNDS_INVALID')
+    year, month = year + 1, month + 1
+    return anchor.replace(year=year, month=month,
+                          day=min(anchor.day, calendar.monthrange(year, month)[1]))
+
+
+def _a3_physical_plan(cores, interval):
+    if type(interval) is not int or interval not in (24, 60, 10, 1):
+        raise ValueError('A3_ISS_RANGE_INTERVAL_UNSUPPORTED')
+    plan = []
+    for logical, (lower, upper, requested_upper) in enumerate(cores, 1):
+        boundary = upper
+        step = 0
+        while True:
+            if lower == upper:
+                following = lower
+            elif interval in (24, 60):
+                following = lower
+            elif interval == 10:
+                step += 1
+                available_months = (upper.year - 1) * 12 + upper.month - 1
+                following = lower if step > available_months else max(lower, _a3_month_boundary(upper, step))
+            else:
+                following = lower if (boundary - lower).days <= 7 else boundary - datetime.timedelta(days=7)
+            # Сначала сравнение; date.max + day никогда не вычисляется.
+            physical_upper = requested_upper if boundary >= requested_upper else min(
+                requested_upper, boundary + datetime.timedelta(days=1))
+            plan.append(dict(logical_ordinal=logical, physical_ordinal=len(plan) + 1,
+                from_date=following.isoformat(), till_date=physical_upper.isoformat(),
+                core_lower=following.isoformat(), core_upper=boundary.isoformat(),
+                logical_lower=lower.isoformat(), logical_upper=requested_upper.isoformat()))
+            if len(plan) > _A3_RANGE_LIMITS['job']['ranges']:
+                raise ValueError('A3_ISS_RANGE_CAPACITY_EXCEEDED')
+            if following == lower:
+                break
+            boundary = following
+    return plan
+
+
+def _a3_range_plan(lower, upper, interval):
+    lower, upper = _a3_range_date(lower), _a3_range_date(upper)
+    if lower > upper:
+        raise ValueError('A3_ISS_RANGE_BOUNDS_INVALID')
+    cores = []
+    previous, ordinal = upper, 1
+    while True:
+        boundary = lower if ordinal >= upper.year else max(lower, _a3_calendar_anniversary(upper, ordinal))
+        requested_upper = upper if previous == upper else min(upper, previous + datetime.timedelta(days=1))
+        cores.append((boundary, previous, requested_upper))
+        if boundary == lower:
+            break
+        previous, ordinal = boundary, ordinal + 1
+    return _a3_physical_plan(cores, interval)
+
+
+def _a3_range_evidence(primary, request, pairs, logging_context):
+    # Parsed scalar evidence не выдаётся за raw CSV/page SHA.
+    if hasattr(primary, 'a3_range_evidence'):
+        return
+    try:
+        _a3_annual_evidence(primary, request,
+            tuple((row, leaf['logical_ordinal'], leaf['from_date'], leaf['till_date'])
+                  for row, leaf in pairs), logging_context)
+        source = primary.a3_annual_evidence
+        metadata = dict(source['metadata'], format='A3_RANGE_TYPED_ROWS_V1',
+                        reason='RANGE_KEY_CONFLICT')
+        metadata['rows'] = [dict(previous, logical_ordinal=leaf['logical_ordinal'],
+            physical_ordinal=leaf['physical_ordinal'], logical_lower=leaf['logical_lower'],
+            logical_upper=leaf['logical_upper'])
+            for previous, (_, leaf) in zip(source['metadata']['rows'], pairs)]
+        encoded = json.dumps(metadata, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        if len(encoded) > _A3_ANNUAL_METADATA_BYTES:
+            raise ValueError('A3_RANGE_EVIDENCE_METADATA_LIMIT')
+        primary.a3_range_evidence = dict(metadata=metadata, typed_rows=source['typed_rows'])
+    except BaseException:
+        _a3_evidence_note(primary)
+
+
+def _a3_acquire(ticker_in, ticker_type, plan, interval, logging_context):
+    market = 'bonds' if ticker_type in ['Облигации', 'Еврооблигации'] else 'shares'
+    request = dict(market=market, security=f'{ticker_in}', interval=f'{interval}')
+    identity = ('ISS_CANDLES_BOARDLESS', 'stock', market, request['security'], request['interval'])
+    frames, seen, positions = [], {}, []
+    offset, frame_bytes, metadata_bytes = 0, 0, 0
+    with _a3_scope('job', len(plan)):
+        try:
+            _a3_range_event(logging_context, 'a3_ranges_started', ticker_in, interval, len(plan))
+            for leaf in plan:
+                _a3_checkpoint()
+                _a3_reserve(frame_bytes, metadata_bytes, 16 * 1024**2)
+                _A3_RANGE_STATE.get()['job']['collector_bytes'] = frame_bytes
+                _a3_charge('ranges', 1)
+                before_rows = _A3_RANGE_STATE.get()['job']['rows']
+                df = moex_query(ticker_in, ticker_type, leaf['from_date'], leaf['till_date'], interval,
+                                logging_context=logging_context)
+                # Real query charges originals before pandas parsing; mocks still audit rows.
+                if _A3_RANGE_STATE.get()['job']['rows'] == before_rows:
+                    _a3_charge('rows', len(df))
+                _a3_checkpoint()
+                if len(df) == 0:
+                    continue
+                frame_bytes += int(df.memory_usage(index=True, deep=True).sum())
+                _a3_reserve(frame_bytes, metadata_bytes, 0)
+                frames.append(df)
+                for position in range(len(df)):
+                    row = _a3_annual_row(df, position)
+                    key = identity + (row['values'][6],)
+                    if key in seen:
+                        previous_frame, previous_position, previous_leaf = seen[key]
+                        previous = _a3_annual_row(frames[previous_frame], previous_position)
+                        same = (all(_a3_numeric_identity(before) == _a3_numeric_identity(after)
+                                    for before, after in zip(previous['values'][:6], row['values'][:6]))
+                                and previous['values'][6:] == row['values'][6:])
+                        if not same:
+                            code = ('A3_ISS_ANNUAL_KEY_CONFLICT' if previous_leaf['logical_ordinal'] !=
+                                    leaf['logical_ordinal'] else 'A3_ISS_RANGE_KEY_CONFLICT')
+                            primary = ValueError(code)
+                            try:
+                                _a3_range_evidence(primary, request, ((previous, previous_leaf), (row, leaf)),
+                                                   logging_context)
+                            except BaseException:
+                                _a3_evidence_note(primary)
+                            raise primary
+                    else:
+                        # Только locator; ранний exact repeat не заменяет первого.
+                        seen[key] = (len(frames) - 1, position, leaf)
+                        positions.append(offset + position)
+                        metadata_bytes += (sys.getsizeof(key) + sum(sys.getsizeof(item) for item in key)
+                                           + sys.getsizeof(seen[key]) + sys.getsizeof(positions[-1]) + 64)
+                _a3_reserve(frame_bytes, metadata_bytes + sys.getsizeof(seen) + sys.getsizeof(positions), 0)
+                offset += len(df)
+            seen.clear()
+            # Flat originals всех logical/physical leafs до dedup, включая exact repeats.
+            growth = frame_bytes * 4 + sum(len(frame) for frame in frames) * 512 + 16 * 1024**2
+            _a3_reserve(frame_bytes + growth, sys.getsizeof(positions), growth)
+            result = _a3_assemble(frames, ticker_in)
+            if frames:
+                result = result.iloc[positions].sort_values(by='begin', kind='stable').reset_index(drop=True)
+            _a3_final_payload(result, 'job')
+            _a3_checkpoint()
+            _a3_range_event(logging_context, 'a3_ranges_returned', ticker_in, interval, len(plan), len(result))
+            return result
+        except BaseException as primary:
+            _a3_range_failure(logging_context, ticker_in, interval, primary)
+            raise
+
+def _a3_history(ticker_in, ticker_type, lower, upper, interval, *, logging_context=None):
+    return _a3_acquire(ticker_in, ticker_type, _a3_range_plan(lower, upper, interval),
+                       interval, logging_context)
+
+
+def _a3_dataset_append(frames, frame):
+    # Empty frames участвуют в pandas dtype rules, как в прежнем concat.
+    state = _A3_RANGE_STATE.get()
+    payload = int(frame.memory_usage(index=True, deep=True).sum())
+    retained = state['dataset'].get('retained_bytes', 0) + payload
+    state['dataset']['retained_bytes'] = retained
+    _a3_reserve(0, len(frames) * 128, 16 * 1024**2)
+    frames.append(frame)
+
+
+def _a3_dataset_union(frames):
+    state = _A3_RANGE_STATE.get()
+    retained = state['dataset'].get('retained_bytes', 0)
+    growth = retained * 4 + sum(len(frame) for frame in frames) * 512 + 16 * 1024**2
+    _a3_reserve(growth, len(frames) * 128, growth)
+    _a3_checkpoint()
+    # full_reload сохраняет исходные ticker indices; update reset делает ниже.
+    result = pd.concat(frames) if frames else pd.DataFrame()
+    if len(result):
+        _a3_numeric_union(frames, result)
+    _a3_final_payload(result, 'dataset')
+    _a3_checkpoint()
+    return result
+
+
 def moex (ticker_in, ticker_type, years, interval, *, logging_context=None):
     global exception_list
     today = datetime.datetime.now().date()
@@ -1166,52 +1756,13 @@ def moex (ticker_in, ticker_type, years, interval, *, logging_context=None):
     count = range(1, years).stop
     if isinstance(years, bool) or count <= 0:
         return pd.DataFrame()
-
-    # Полный календарь до первого GET, включая возможный underflow года.
     anniversaries = [today] + [_a3_calendar_anniversary(today, i) for i in range(1, count + 1)]
-    bounds = [(anniversaries[i].isoformat(),
-               (today if i == 1 else min(today, anniversaries[i - 1] + datetime.timedelta(days=1))).isoformat())
-              for i in range(1, count + 1)]
-    market = 'bonds' if ticker_type in ['Облигации', 'Еврооблигации'] else 'shares'
-    request = dict(market=market, security=f'{ticker_in}', interval=f'{interval}')
-    identity = ('ISS_CANDLES_BOARDLESS', 'stock', market, request['security'], request['interval'])
-    frames, seen, positions = [], {}, []
-    offset = 0
+    cores = [(anniversaries[i], anniversaries[i - 1],
+              today if i == 1 else min(today, anniversaries[i - 1] + datetime.timedelta(days=1)))
+             for i in range(1, count + 1)]
+    plan = _a3_physical_plan(cores, interval)
     try:
-        for window, (lower, upper) in enumerate(bounds, 1):
-            df = moex_query(ticker_in, ticker_type, lower, upper, interval,
-                            logging_context=logging_context)
-            if len(df) == 0:
-                continue
-            frames.append(df)
-            for position in range(len(df)):
-                row = _a3_annual_row(df, position)
-                key = identity + (row['values'][6],)
-                if key in seen:
-                    previous, previous_window, previous_lower, previous_upper = seen[key]
-                    same = (all(_a3_numeric_identity(before) == _a3_numeric_identity(after)
-                                for before, after in zip(previous['values'][:6], row['values'][:6]))
-                            and previous['values'][6:] == row['values'][6:])
-                    if not same:
-                        primary = ValueError('A3_ISS_ANNUAL_KEY_CONFLICT')
-                        try:
-                            _a3_annual_evidence(primary, request,
-                                ((previous, previous_window, previous_lower, previous_upper),
-                                 (row, window, lower, upper)), logging_context)
-                        except BaseException:
-                            _a3_evidence_note(primary)
-                        raise primary
-                else:
-                    # Ранний exact repeat не заменяет исходного представителя.
-                    seen[key] = (row, window, lower, upper)
-                    positions.append(offset + position)
-            offset += len(df)
-        # Все исходные scalars/dtypes, включая exact repeats, проверяются до удаления.
-        result = _a3_assemble(frames, ticker_in)
-        if not frames:
-            return result
-        result = result.iloc[positions].sort_values(by='begin', kind='stable')
-        return result.reset_index(drop=True)
+        return _a3_acquire(ticker_in, ticker_type, plan, interval, logging_context)
     except BaseException as primary:
         try:
             exception_list.append(ticker_in)
@@ -1382,6 +1933,7 @@ def build_tickers_dates(all_stocks_ru, current_path):
 
 # %%
 ### Функция для выгрузки данных с нуля
+@_a3_operation('dataset')
 def full_reload (all_stocks_ru, interval, years, filename, word, current_path, tickers_dates, *, logging_context=None):
     operation_started = time.perf_counter()
     active_fields = dict(dataset_id=filename, interval=interval, file=filename + '.csv')
@@ -1391,7 +1943,7 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
         all_stocks_ru = _prepare_ticker_catalogue(all_stocks_ru)
         _a1_event(logging_context, 'INFO', 'a1_catalogue_prepared',
             dict(active_fields, counts=_a1_counts(input_rows, len(all_stocks_ru), len(all_stocks_ru))))
-        df_full = pd.DataFrame()
+        frames = []
         today = datetime.datetime.now()
         start_date = today
 
@@ -1425,16 +1977,18 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
                 _a1_event(logging_context, 'INFO', 'a1_instrument_started',
                     dict(dataset_id=filename, interval=interval, instrument=ticker_in, file=filename + '.csv'))
                 query_started = time.perf_counter()
-                df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+                df = _a3_history(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
                                 logging_context=logging_context)
                 _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
                     dict(active_fields, outcome='RETURNED',
                          duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
                          counts=_a1_counts(len(df), len(df), 1)))
-                if len(df) > 0: df_full = pd.concat([df_full,df])
+                if len(df) > 0:
+                    _a3_dataset_append(frames, df)
             else:
                 print(ticker_in)
 
+        df_full = _a3_dataset_union(frames)
         print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, len(df_full)))
         active_fields = dict(dataset_id=filename, interval=interval, file=filename + '.xlsx')
         if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename + '.xlsx')),index = False)
@@ -1450,6 +2004,7 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
 
 # %%
 ### Функция для обновления текущих датасетов по конфигу
+@_a3_operation('run')
 def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_context=None):
     operation_started = time.perf_counter()
     active_fields = {}
@@ -1470,113 +2025,128 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_
 
         ## обновление готовых файлов
         for j in range(0,len(config)):
-            filename_j = config[j]['filename']
-            interval = config[j]['interval']
-            years = config[j]['years']
-            word = config[j]['word']
-            active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv')
-            _a1_event(logging_context, 'INFO', 'a1_dataset_started', active_fields)
+            with _a3_scope('dataset'):
+                filename_j = config[j]['filename']
+                interval = config[j]['interval']
+                years = config[j]['years']
+                word = config[j]['word']
+                active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv')
+                _a1_event(logging_context, 'INFO', 'a1_dataset_started', active_fields)
 
-            dataset_path = current_path + "datasets/{}.csv".format(filename_j)
+                dataset_path = current_path + "datasets/{}.csv".format(filename_j)
 
-            # проверка что файл существует
-            if os.path.isfile(dataset_path) == False:
-                print("Файл текущего набора отсутствует, не могу его обновить")
-                print("Начинаю выгружать его с нуля")
-                _a1_event(logging_context, 'INFO', 'a1_cold_start',
-                    dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv', outcome='MISSING_DATASET'))
-                full_reload (all_stocks_ru, interval, years, filename_j, word, current_path, tickers_dates,
-                             logging_context=logging_context)
+                # проверка что файл существует
+                if os.path.isfile(dataset_path) == False:
+                    print("Файл текущего набора отсутствует, не могу его обновить")
+                    print("Начинаю выгружать его с нуля")
+                    _a1_event(logging_context, 'INFO', 'a1_cold_start',
+                        dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv', outcome='MISSING_DATASET'))
+                    full_reload (all_stocks_ru, interval, years, filename_j, word, current_path, tickers_dates,
+                                 logging_context=logging_context)
 
-            else:
-                if dataset_path.endswith('csv') and "~$" not in dataset_path:
-                    df = pd.read_csv(dataset_path)
-                elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
-                    df = pd.read_excel(dataset_path)
+                else:
+                    # Bounded admission до чтения previous; deep payload не RSS oracle.
+                    previous_bytes = os.path.getsize(dataset_path)
+                    _a3_allocation_admit(previous_bytes * 256 + 16 * 1024**2)
+                    if dataset_path.endswith('csv') and "~$" not in dataset_path:
+                        df = pd.read_csv(dataset_path)
+                    elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
+                        df = pd.read_excel(dataset_path)
 
-                _check_stored_ticker_identity(df, catalogue_keys)
-                print("Записей до обновления: {}".format(len(df)))
+                    _check_stored_ticker_identity(df, catalogue_keys)
+                    print("Записей до обновления: {}".format(len(df)))
 
-                # убираем ненужные колонки теханализа - их потом с нуля пересчитаем
-                ## ПРОВЕРИТЬ ЧТО ЕСЛИ ЭТО НЕ ДЕЛАТЬ
-                columns = df.columns
-                white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
-                    'ticker']
-                columns_to_remove = [i for i in columns if i not in white_list_columns]
-                columns_to_remove
-                df.drop(columns_to_remove, axis=1,inplace=True)
-                # df.head(2)
+                    # убираем ненужные колонки теханализа - их потом с нуля пересчитаем
+                    ## ПРОВЕРИТЬ ЧТО ЕСЛИ ЭТО НЕ ДЕЛАТЬ
+                    columns = df.columns
+                    white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
+                        'ticker']
+                    columns_to_remove = [i for i in columns if i not in white_list_columns]
+                    columns_to_remove
+                    df.drop(columns_to_remove, axis=1,inplace=True)
+                    _a3_charge('rows', len(df))
+                    frames = []
+                    _a3_dataset_append(frames, df)
+                    ticker_list_actual_dataset = set(df['ticker'])
+                    # df.head(2)
 
-                # для каждого тикера выбираем последнюю дату за которую есть выгрузка
-                df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
-                df_last_date = df_last_date.loc[:,['end','ticker']]
-                df_last_date.drop_duplicates(inplace=True)
-                df_last_date.reset_index(inplace=True,drop=True)
+                    # для каждого тикера выбираем последнюю дату за которую есть выгрузка
+                    df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
+                    df_last_date = df_last_date.loc[:,['end','ticker']]
+                    df_last_date.drop_duplicates(inplace=True)
+                    df_last_date.reset_index(inplace=True,drop=True)
 
-                # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
-                filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
-                df_last_date = df_last_date[df_last_date['end'] >= filter_date]
-
-
-
-                # обновление текущих данных
-                for i in range(0,len(df_last_date)):
-                    end_date = df_last_date.iloc[i]['end']
-                    ticker_in = df_last_date.iloc[i]['ticker']
-                    active_fields = dict(dataset_id=filename_j, interval=interval,
-                                         instrument=ticker_in, file=filename_j + '.csv')
-                    start_date = today
-                    ticker_type = lookup[lookup['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
-
-                    start_date_mx = start_date.strftime('%Y-%m-%d')
-                    end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
-
-                    _a1_event(logging_context, 'INFO', 'a1_instrument_started',
-                        dict(dataset_id=filename_j, interval=interval, instrument=ticker_in, file=filename_j + '.csv'))
-                    query_started = time.perf_counter()
-                    df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
-                                          logging_context=logging_context)
-                    _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
-                        dict(active_fields, outcome='RETURNED',
-                             duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
-                             counts=_a1_counts(len(df_ticker), len(df_ticker), 1)))
-                    df = pd.concat([df, df_ticker])
+                    # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
+                    filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+                    df_last_date = df_last_date[df_last_date['end'] >= filter_date]
 
 
-                ### Проверка не появилось ли новых тикеров с момента последнего обновления
 
-                ticker_list_actual = all_stocks_ru['TRADE_CODE'].to_list()
-                ticker_list_actual_dataset = set(df['ticker'].to_list())
-                delta = [ticker for ticker in ticker_list_actual if ticker not in ticker_list_actual_dataset]
-                if len(delta) > 0:
-                    for t in range (0,len(delta)):
-                        ticker_in = delta[t]
+                    # обновление текущих данных
+                    for i in range(0,len(df_last_date)):
+                        end_date = df_last_date.iloc[i]['end']
+                        ticker_in = df_last_date.iloc[i]['ticker']
                         active_fields = dict(dataset_id=filename_j, interval=interval,
                                              instrument=ticker_in, file=filename_j + '.csv')
-                        start_date_mx = today.date().isoformat()
-                        end_date_mx = _a3_calendar_anniversary(today.date(), 1).isoformat()
+                        start_date = today
                         ticker_type = lookup[lookup['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
+
+                        start_date_mx = start_date.date().isoformat()
+                        end_date_mx = datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S').date().isoformat()
 
                         _a1_event(logging_context, 'INFO', 'a1_instrument_started',
                             dict(dataset_id=filename_j, interval=interval, instrument=ticker_in, file=filename_j + '.csv'))
                         query_started = time.perf_counter()
-                        df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+                        df_ticker = _a3_history(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
                                               logging_context=logging_context)
                         _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
                             dict(active_fields, outcome='RETURNED',
                                  duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
                                  counts=_a1_counts(len(df_ticker), len(df_ticker), 1)))
-                        df = pd.concat([df, df_ticker])
+                        _a3_dataset_append(frames, df_ticker)
+                        if len(df_ticker):
+                            ticker_list_actual_dataset.update(df_ticker['ticker'])
 
-                df.sort_values(by=['ticker','begin'],inplace=True)
-                df.drop_duplicates(inplace=True)
-                df.reset_index(inplace=True,drop=True)
-                print("Записей после обновления: {}".format(len(df)))
 
-                active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.xlsx')
-                if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
-                active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv')
-                if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+                    ### Проверка не появилось ли новых тикеров с момента последнего обновления
+
+                    ticker_list_actual = all_stocks_ru['TRADE_CODE'].to_list()
+                    delta = [ticker for ticker in ticker_list_actual if ticker not in ticker_list_actual_dataset]
+                    if len(delta) > 0:
+                        for t in range (0,len(delta)):
+                            ticker_in = delta[t]
+                            active_fields = dict(dataset_id=filename_j, interval=interval,
+                                                 instrument=ticker_in, file=filename_j + '.csv')
+                            start_date_mx = today.date().isoformat()
+                            end_date_mx = _a3_calendar_anniversary(today.date(), 1).isoformat()
+                            ticker_type = lookup[lookup['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
+
+                            _a1_event(logging_context, 'INFO', 'a1_instrument_started',
+                                dict(dataset_id=filename_j, interval=interval, instrument=ticker_in, file=filename_j + '.csv'))
+                            query_started = time.perf_counter()
+                            df_ticker = _a3_history(ticker_in, ticker_type, end_date_mx, start_date_mx, interval,
+                                                  logging_context=logging_context)
+                            _a1_event(logging_context, 'INFO', 'a1_instrument_returned',
+                                dict(active_fields, outcome='RETURNED',
+                                     duration_ms=max(0, (time.perf_counter() - query_started) * 1000),
+                                     counts=_a1_counts(len(df_ticker), len(df_ticker), 1)))
+                            _a3_dataset_append(frames, df_ticker)
+
+                    df = _a3_dataset_union(frames)
+                    df.sort_values(by=['ticker','begin'],inplace=True)
+                    df.drop_duplicates(inplace=True)
+                    df.reset_index(inplace=True,drop=True)
+                    _a3_checkpoint()
+                    # Inputs прошли audit; не держим предыдущий dataset до нового read.
+                    frames.clear()
+                    df_ticker = df_last_date = None
+                    print("Записей после обновления: {}".format(len(df)))
+
+                    active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.xlsx')
+                    if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
+                    active_fields = dict(dataset_id=filename_j, interval=interval, file=filename_j + '.csv')
+                    if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+                    df = None
         _a1_event(logging_context, 'INFO', 'a1_data_update_returned',
             dict(outcome='RETURNED',
                  duration_ms=max(0, (time.perf_counter() - operation_started) * 1000)))
@@ -1586,6 +2156,7 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, *, logging_
         raise
 
 # %%
+@_a3_operation('run')
 def main(current_path, force_reload = False, *, logging_context=None):
     global exception_list
     global config
