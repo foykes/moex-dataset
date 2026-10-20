@@ -648,3 +648,237 @@ def test_disposable_ten_thousand_row_benchmark(gathering, monkeypatch):
     pd.testing.assert_frame_equal(result,source)
     print('A3_DISPOSABLE_BENCHMARK=' + json.dumps(dict(rows=10000,seconds=elapsed,
         frame_bytes=int(result.memory_usage(index=True,deep=True).sum()), wire_bytes=0, source='MOCKED')))
+
+
+def linux_memory_fixture(gathering, monkeypatch, version='v2'):
+    # Literal kernel-file fixtures; no host /proc, cgroup mount or live data.
+    facts = dict(namespace_inode=4026531835, namespace_link='cgroup:[4026531835]',
+        page_size=4096, rlimit_as=(34359738368, 34359738368),
+        rlimit_data=(17179869184, 17179869184))
+    files = {
+        '/proc/meminfo': ('MemTotal: 67108864 kB\nMemAvailable: 50331648 kB\n'
+            'CommitLimit: 134217728 kB\nCommitted_AS: 67108864 kB\nSwapTotal: 16777216 kB\n'),
+        '/proc/self/status': 'VmSize: 2097152 kB\nVmData: 1048576 kB\nVmRSS: 524288 kB\n',
+        '/proc/sys/vm/overcommit_memory': '0\n',
+        '/proc/cgroups': '#subsys_name hierarchy num_cgroups enabled\nmemory 0 3 1\n',
+        '/proc/self/cgroup': '0::/team/leaf\n',
+        '/proc/self/mountinfo': '30 23 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n',
+        '/sys/fs/cgroup/cgroup.controllers': 'cpu memory pids\n',
+        '/sys/fs/cgroup/cgroup.subtree_control': 'memory\n',
+        '/sys/fs/cgroup/team/cgroup.subtree_control': 'memory\n',
+        '/sys/fs/cgroup/team/memory.max': '42949672960\n',
+        '/sys/fs/cgroup/team/memory.current': '8589934592\n',
+        '/sys/fs/cgroup/team/memory.swap.max': '17179869184\n',
+        '/sys/fs/cgroup/team/memory.swap.current': '2147483648\n',
+        '/sys/fs/cgroup/team/leaf/memory.max': '25769803776\n',
+        '/sys/fs/cgroup/team/leaf/memory.current': '4294967296\n',
+        '/sys/fs/cgroup/team/leaf/memory.swap.max': '4294967296\n',
+        '/sys/fs/cgroup/team/leaf/memory.swap.current': '1073741824\n',
+    }
+    if version == 'v1':
+        files['/proc/cgroups'] = 'memory 5 3 1\n'
+        files['/proc/self/cgroup'] = '5:memory:/team/leaf\n'
+        files['/proc/self/mountinfo'] = '30 23 0:28 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n'
+        for suffix, limit, used, memsw_limit, memsw_used in (
+                ('team', '42949672960', '8589934592', '60129542144', '10737418240'),
+                ('team/leaf', '25769803776', '4294967296', '30064771072', '5368709120')):
+            path = '/sys/fs/cgroup/memory/' + suffix
+            files[path+'/memory.limit_in_bytes'] = limit+'\n'
+            files[path+'/memory.usage_in_bytes'] = used+'\n'
+            files[path+'/memory.memsw.limit_in_bytes'] = memsw_limit+'\n'
+            files[path+'/memory.memsw.usage_in_bytes'] = memsw_used+'\n'
+    calls = []
+    def read(path):
+        calls.append(path)
+        if path not in files:
+            raise FileNotFoundError('SYNTHETIC_KERNEL_FILE_MISSING')
+        return files[path]
+    monkeypatch.setattr(gathering, '_a3_linux_read', read, raising=False)
+    monkeypatch.setattr(gathering, '_a3_linux_runtime', lambda: dict(facts), raising=False)
+    return facts, files, calls
+
+
+@pytest.mark.parametrize('version', ['v1', 'v2'])
+def test_review_linux_admission_success_and_literal_units(gathering, monkeypatch, version):
+    facts, files, calls = linux_memory_fixture(gathering, monkeypatch, version)
+    sample = gathering._a3_linux_memory_snapshot()
+    assert sample['platform'] == 'linux' and sample['quotas_verified'] is True
+    assert sample['total_phys'] == 68719476736 and sample['available_phys'] == 51539607552
+    assert sample['commit_limit'] == 137438953472 and sample['commit_available'] == 68719476736
+    assert sample['vm_size_bytes'] == 2147483648 and sample['vm_data_bytes'] == 1073741824
+    assert sample['working_set'] == 536870912 and sample['private_bytes'] is None
+    assert sample['process_available'] == 16106127360 and sample['quota_available'] == 16106127360
+    assert sample['cgroup_version'] == version and sample['page_size'] == 4096
+    assert '/proc/self/mountinfo' in calls and calls.count('/proc/self/cgroup') == 2
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', lambda: sample)
+    assert gathering._a3_memory_admit(GiB) is sample
+    with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+        gathering._a3_memory_admit(8*GiB)
+
+
+@pytest.mark.parametrize('failure', ['namespace', 'partial-mount', 'missing-parent', 'missing-swap',
+    'invalid-units', 'invalid-number', 'invalid-page', 'invalid-rlimit', 'unknown-controller', 'race', 'stale'])
+def test_review_linux_unknown_invalid_stale_has_no_get_or_writer(gathering, monkeypatch, writers, failure):
+    facts, files, _ = linux_memory_fixture(gathering, monkeypatch)
+    if failure == 'namespace':
+        facts['namespace_inode'] = 4026533000
+        facts['namespace_link'] = 'cgroup:[4026533000]'
+    elif failure == 'partial-mount':
+        files['/proc/self/mountinfo'] = '30 23 0:28 /hidden /sys/fs/cgroup rw - cgroup2 cgroup rw\n'
+    elif failure == 'missing-parent':
+        del files['/sys/fs/cgroup/team/memory.max']
+    elif failure == 'missing-swap':
+        del files['/sys/fs/cgroup/team/memory.swap.max']
+    elif failure == 'invalid-units':
+        files['/proc/meminfo'] = files['/proc/meminfo'].replace('MemTotal: 67108864 kB', 'MemTotal: 67108864 MB')
+    elif failure == 'invalid-number':
+        files['/sys/fs/cgroup/team/memory.current'] = '-1\n'
+    elif failure == 'invalid-page':
+        facts['page_size'] = 0
+    elif failure == 'invalid-rlimit':
+        facts['rlimit_as'] = (34359738368, 1024)
+    elif failure == 'unknown-controller':
+        files['/proc/cgroups'] = 'memory 7 3 1\n'
+    elif failure == 'race':
+        original = gathering._a3_linux_read
+        seen = []
+        def read(path):
+            if path == '/proc/self/cgroup':
+                seen.append(path)
+                if len(seen) == 2:
+                    return '0::/moved\n'
+            return original(path)
+        monkeypatch.setattr(gathering, '_a3_linux_read', read)
+    else:
+        clock = iter([100., 102., 102., 102., 102.])
+        monkeypatch.setattr(gathering, 'time', SimpleNamespace(perf_counter=lambda: next(clock, 102.)))
+    sample = gathering._a3_linux_memory_snapshot()
+    if failure != 'stale':
+        assert sample is None
+    else:
+        assert sample['sampled_at'] == 100.
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', lambda: sample)
+    # Remove only the source's test-profile observation; native guard stays active.
+    calls = mock_queries(gathering, monkeypatch, [])
+    with monkeypatch.context() as observation:
+        observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+            gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
+    assert calls == [] and writers == []
+
+
+@pytest.mark.parametrize('version', ['v1', 'v2'])
+def test_review_linux_exhausted_ancestor_refuses_before_get(gathering, monkeypatch, writers, version):
+    _, files, _ = linux_memory_fixture(gathering, monkeypatch, version)
+    if version == 'v2':
+        files['/sys/fs/cgroup/team/memory.max'] = '8589934592\n'
+    else:
+        files['/sys/fs/cgroup/memory/team/memory.limit_in_bytes'] = '8589934592\n'
+    sample = gathering._a3_linux_memory_snapshot()
+    assert sample['quota_available'] == 0 and sample['quotas_verified'] is True
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', lambda: sample)
+    calls = mock_queries(gathering, monkeypatch, [])
+    with monkeypatch.context() as observation:
+        observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+            gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
+    assert calls == [] and writers == []
+
+
+def test_review_linux_known_unlimited_and_disabled_controller(gathering, monkeypatch):
+    facts, files, _ = linux_memory_fixture(gathering, monkeypatch)
+    facts['rlimit_as'] = facts['rlimit_data'] = (-1, -1)
+    files['/proc/cgroups'] = 'memory 0 1 0\n'
+    files['/sys/fs/cgroup/cgroup.controllers'] = 'cpu pids\n'
+    files['/sys/fs/cgroup/cgroup.subtree_control'] = ''
+    files['/sys/fs/cgroup/team/cgroup.subtree_control'] = ''
+    sample = gathering._a3_linux_memory_snapshot()
+    assert sample['quotas_verified'] is True and sample['cgroup_version'] == 'disabled'
+    assert sample['process_available'] == sample['quota_available'] == 68719476736
+
+
+@pytest.mark.parametrize('identity', ['absent', 'fake-module', 'unfinished-bootstrap', 'finished', 'foreign-root', 'uninstalled'])
+def test_review_environment_alone_never_selects_scaled_profile(gathering, monkeypatch, writers, identity):
+    import types
+    real = gathering.sys.modules['mds_offline_guard']
+    context = real._CONTEXT
+    # Restore the observation before pytest/guard report hooks run.
+    with monkeypatch.context() as observation:
+        observation.setenv('MDS_OFFLINE_ROOT', str(Path(gathering.__file__).parent))
+        observation.setenv('MDS_OFFLINE_SOURCE_MODE', context.source_mode)
+        observation.setenv('MDS_OFFLINE_RUN_ID', context.run_id)
+        if identity == 'absent':
+            observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        elif identity == 'fake-module':
+            fake = types.ModuleType('mds_offline_guard')
+            fake.__file__, fake._INSTALLED, fake._CONTEXT = real.__file__, True, copy.copy(context)
+            observation.setitem(gathering.sys.modules, 'mds_offline_guard', fake)
+        else:
+            altered = copy.copy(context)
+            observation.setattr(real, '_CONTEXT', altered)
+            if identity == 'unfinished-bootstrap':
+                altered.started = False
+            elif identity == 'finished':
+                altered.finished = True
+            elif identity == 'foreign-root':
+                altered.root = altered.root / 'unrelated'
+            else:
+                observation.setattr(real, '_INSTALLED', False)
+                altered.native_counts = None
+        primary = MemoryError('NATIVE_ADMISSION_PRIMARY')
+        def refuse(growth):
+            raise primary
+        observation.setattr(gathering, '_a3_memory_admit', refuse)
+        with gathering._a3_scope('job', 1) as state:
+            assert state['scaled_offline'] is False
+            with pytest.raises(MemoryError) as captured:
+                gathering._a3_allocation_admit(1024)
+            assert captured.value is primary and primary.args == ('NATIVE_ADMISSION_PRIMARY',)
+    assert writers == []
+
+
+def test_review_evidence_runtime_and_reference_budgets_are_separate(gathering):
+    assert all('evidence_bytes' not in caps for caps in gathering._A3_RANGE_LIMITS.values())
+    assert gathering._A3_SOURCE_DIAGNOSTIC_LIMITS == dict(
+        seconds=2700, gets=512, bytes=134217728, rows=250000, final_bytes=134217728)
+    assert gathering._A3_SOURCE_DIAGNOSTIC_REFERENCE_LIMITS == dict(evidence_bytes=268435456)
+    with gathering._a3_source_diagnostic_scope() as state:
+        assert 'evidence_bytes' not in state['limits']['run']
+
+
+@pytest.mark.parametrize('cross_annual', [False, True])
+def test_review_conflict_evidence_scope_preserves_first_and_late(gathering, monkeypatch, writers, cross_annual):
+    first, repeat, late = candle(), candle(), candle(number=100.5)
+    calls = mock_queries(gathering, monkeypatch, [first, repeat, late])
+    low = '2022-03-02' if cross_annual else '2024-02-10'
+    interval = 24 if cross_annual else 1
+    code = 'A3_ISS_ANNUAL_KEY_CONFLICT' if cross_annual else 'A3_ISS_RANGE_KEY_CONFLICT'
+    # Cross-annual needs three logical windows to exercise an early exact repeat.
+    if cross_annual:
+        low = '2021-03-02'
+    with pytest.raises(ValueError, match=code) as captured:
+        gathering._a3_history('SBER', 'Акции', low, '2024-03-02', interval)
+    primary = captured.value
+    evidence = primary.a3_range_evidence
+    assert primary.args == (code,) and len(calls) == 3 and writers == []
+    assert hasattr(primary, 'a3_annual_evidence') is cross_annual
+    assert evidence['metadata']['conflict_scope'] == ('CROSS_ANNUAL' if cross_annual else 'INTERNAL_PHYSICAL')
+    assert [row['physical_ordinal'] for row in evidence['metadata']['rows']] == [1, 3]
+    assert [row['logical_ordinal'] for row in evidence['metadata']['rows']] == ([1, 3] if cross_annual else [1, 1])
+    assert evidence['typed_rows'][0][0]['hex'] == '0x1.9000000000000p+6'
+    assert evidence['typed_rows'][1][0]['hex'] == '0x1.9200000000000p+6'
+    assert evidence['metadata']['cell_bytes'] <= 65536
+    assert len(json.dumps(evidence['metadata'],ensure_ascii=True,sort_keys=True,separators=(',',':')).encode()) <= 16384
+
+
+def test_review_internal_evidence_failure_keeps_native_primary(gathering, monkeypatch, writers):
+    primary = ValueError('A3_ISS_RANGE_KEY_CONFLICT')
+    row = gathering._a3_annual_row(candle(), 0)
+    leaf = dict(logical_ordinal=1, physical_ordinal=1, from_date='2024-02-23', till_date='2024-03-02',
+        logical_lower='2024-02-10', logical_upper='2024-03-02')
+    monkeypatch.setattr(gathering, '_a3_numeric_identity', lambda value: (_ for _ in ()).throw(MemoryError('SECONDARY_TYPED_CAPTURE')))
+    gathering._a3_range_evidence(primary, dict(market='shares', security='SBER', interval='1'),
+        ((row, leaf), (row, dict(leaf, physical_ordinal=3))), None)
+    assert type(primary) is ValueError and primary.args == ('A3_ISS_RANGE_KEY_CONFLICT',)
+    assert not hasattr(primary, 'a3_annual_evidence') and not hasattr(primary, 'a3_range_evidence')
+    assert writers == []
