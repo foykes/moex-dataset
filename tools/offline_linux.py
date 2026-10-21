@@ -337,7 +337,7 @@ D2_TESTS = ('tests/d2/test_supervision.py', 'tests/d2/test_targets.py',
             'tests/d2/test_logging_contract.py', 'tests/d2/test_guard_admission.py')
 D2_SOURCE_PATHS = tuple(dict.fromkeys(SOURCE_PATHS + D2_PATHS))
 D2_DEVELOPMENT_BASE = '25dee502a68128aea752f24ff67dfcb16b615a36'
-D2_NODE_IDS_SHA256 = 'b3a53cc16ecab1b6beb9b65bedad8f7811b6e348aeffc6d10b07a8749d8ad7bf'
+D2_NODE_IDS_SHA256 = '4072cf243d4fc1a556a68b8ad923d23d8b4168bb10aa57d56649b42aefa67a3f'
 
 
 def d2_validate_authority(value, sha):
@@ -496,8 +496,8 @@ def d2_run_tests(ticket, repo):
         positions = {node: index + 1 for index, node in enumerate(counts.collected_ids)}
         failed_node_ids = (sorted('d2-node-{:06d}'.format(positions[node]) for node in counts.failed_ids)
                            if inventory_known else None)
-        complete = (complete and counts.collected == 297 and len(counts.native_ids) == 56
-            and len(set(counts.collected_ids)) == 297
+        complete = (complete and counts.collected == 300 and len(counts.native_ids) == 56
+            and len(set(counts.collected_ids)) == 300
             and counts.collected_ids == expected.get('expected_node_ids')
             and node_ids_digest == expected.get('expected_node_ids_sha256') == D2_NODE_IDS_SHA256)
         complete = complete and all(item.get('controller', {}).get('settled') is True

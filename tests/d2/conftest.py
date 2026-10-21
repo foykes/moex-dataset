@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import json
 import os
+import stat
 from pathlib import Path
 import sys
 import types
@@ -69,6 +70,29 @@ def helper():
     # network authority, and does not execute a consumer or collect its tests.
     foundation = load_source(ROOT / 'tests/linux_bootstrap/conftest.py', 'd2_foundation_definitions')
     return foundation.load_definitions(ROOT / '.github/lnx02/verify_env.py', 'd2_portable_helper')
+
+
+@pytest.fixture
+def dispose_fault_leaf():
+    """Explicit disposal only; never an automatic test/native finalizer."""
+    def dispose(path, identity, *, scope, target=None, target_identity=None, target_bytes=None):
+        path, scope = Path(path), Path(scope)
+        assert path.parent == scope and scope.resolve(strict=True) == scope.absolute()
+        current = path.lstat()
+        assert (current.st_dev, current.st_ino, current.st_mode, current.st_rdev) == (
+            identity.st_dev, identity.st_ino, identity.st_mode, identity.st_rdev)
+        if stat.S_ISDIR(current.st_mode):
+            path.rmdir()
+        else:
+            path.unlink()
+        assert not os.path.lexists(path)
+        if target is not None:
+            after = Path(target).lstat()
+            assert stat.S_ISREG(after.st_mode)
+            assert (after.st_dev, after.st_ino) == (target_identity.st_dev, target_identity.st_ino)
+            assert after.st_nlink == target_identity.st_nlink
+            assert Path(target).read_bytes() == target_bytes
+    return dispose
 
 
 @pytest.fixture

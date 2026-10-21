@@ -160,6 +160,9 @@
     "tests/d2/test_guard_admission.py::test_full_inventory_refuses_live_phase_before_metadata",
     "tests/d2/test_guard_admission.py::test_go_visibility_is_recorded_before_interrupted_second_release",
     "tests/d2/test_guard_admission.py::test_identical_checkpoint_reread_is_valid",
+    "tests/d2/test_guard_admission.py::test_legacy_cleanup_refuses_unsafe_leaf_until_explicit_fixture_disposal[fifo]",
+    "tests/d2/test_guard_admission.py::test_legacy_cleanup_refuses_unsafe_leaf_until_explicit_fixture_disposal[hardlink]",
+    "tests/d2/test_guard_admission.py::test_legacy_cleanup_refuses_unsafe_leaf_until_explicit_fixture_disposal[symlink]",
     "tests/d2/test_guard_admission.py::test_linux_policy_does_not_admit_d2_child_as_arbitrary_command",
     "tests/d2/test_guard_admission.py::test_parent_live_checkpoint_refused_before_open",
     "tests/d2/test_guard_admission.py::test_partial_failed_stage_remains_exportable_without_unobserved_proofs",
@@ -375,7 +378,7 @@
     "tests/d2/test_targets.py::test_source_open_failure_is_before_mutation",
     "tests/d2/test_targets.py::test_symlink_source_alias_is_rejected"
   ],
-  "expected_node_ids_sha256": "b3a53cc16ecab1b6beb9b65bedad8f7811b6e348aeffc6d10b07a8749d8ad7bf",
+  "expected_node_ids_sha256": "4072cf243d4fc1a556a68b8ad923d23d8b4168bb10aa57d56649b42aefa67a3f",
   "historical_windows_base": "42830d91b4c701b899cbadb5ebdf8829eec6b5cf",
   "development_base": "25dee502a68128aea752f24ff67dfcb16b615a36",
   "cache_source_sha256": {

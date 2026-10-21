@@ -201,6 +201,15 @@ The native fixture also verifies that every D2-owned lease is closed and disjoin
 from the cache. Unknown provenance fails closed. Destructive substitution controls
 use their own Heap/Arena and the same custody predicate; they never close or
 mutate the borrowed global allocator. Historical raw mismatches remain recorded.
+The fixture enforces five literal Python source hashes plus the issued upload
+source hash. Its mmap extension hash is an observation, not an independently
+enforced pin. Runtime identity trusts the existing toolcache; it does not
+revalidate CPython source archive bytes.
+
+Portable alias/special-file tests dispose only the leaves they created, after
+their refusal and preservation assertions. They restore the original target's
+bytes/link count before the unchanged strict outer cleanup. This is fixture
+teardown, not native application cleanup or an upgrade of a failed outcome.
 
 The serialization fault fixture keeps the original exception alive through real
 teardown and late collection. Cleanup relinquishes only the completed, direct

@@ -5455,8 +5455,8 @@ def d2_validate_tests(tests, sha, complete=False):
                     or any(not 1 <= int(node[8:]) <= len(nodes) for node in failed_nodes)):
                 raise PolicyError('d2-linux-failed-node-ledger-mismatch')
         d2_validate_native_cases(tests['native_cases'], require_complete=passed)
-        if passed and (tests['collected'] != 297 or tests['native_collected'] != 56
-                or tests['node_ids_sha256'] != 'b3a53cc16ecab1b6beb9b65bedad8f7811b6e348aeffc6d10b07a8749d8ad7bf'):
+        if passed and (tests['collected'] != 300 or tests['native_collected'] != 56
+                or tests['node_ids_sha256'] != '4072cf243d4fc1a556a68b8ad923d23d8b4168bb10aa57d56649b42aefa67a3f'):
             raise PolicyError('d2-linux-node-inventory-mismatch')
     return tests
 

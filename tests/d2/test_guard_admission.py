@@ -58,7 +58,7 @@ def test_export_negative_canary_oracle_rejects_each_surface(repo, private):
 
 def test_expected_node_inventory_is_unique_source_bound_and_closed(oracle):
     identifiers = oracle['expected_node_ids']
-    assert len(identifiers) == 297
+    assert len(identifiers) == 300
     assert len(identifiers) == len(set(identifiers))
     assert all(name.startswith('tests/d2/test_') and '::test_' in name for name in identifiers)
     assert {name.split('::', 1)[0] for name in identifiers} == {
@@ -304,11 +304,12 @@ def test_identical_checkpoint_reread_is_valid(upload, tmp_path):
 
 
 @pytest.mark.parametrize('fault', ['hardlink', 'symlink', 'directory', 'fifo'])
-def test_checkpoint_reader_rejects_aliases_and_special_files(upload, tmp_path, fault):
+def test_checkpoint_reader_rejects_aliases_and_special_files(upload, tmp_path, dispose_fault_leaf, fault):
     assert sys.platform == 'linux', 'native no-follow/special-file oracle requires Linux'
     path = tmp_path / 'checkpoint.json'
     target = tmp_path / 'real.json'
     target.write_bytes(b'{}\n')
+    target_identity, target_bytes = target.lstat(), target.read_bytes()
     if fault == 'hardlink':
         os.link(target, path)
     elif fault == 'symlink':
@@ -317,8 +318,13 @@ def test_checkpoint_reader_rejects_aliases_and_special_files(upload, tmp_path, f
         path.mkdir()
     else:
         os.mkfifo(path)
-    with pytest.raises(Exception):
-        upload._d2_read_json(path, 65536)
+    identity = path.lstat()
+    try:
+        with pytest.raises(Exception):
+            upload._d2_read_json(path, 65536)
+    finally:
+        dispose_fault_leaf(path, identity, scope=tmp_path, target=target,
+            target_identity=target_identity, target_bytes=target_bytes)
 
 
 def test_full_inventory_refuses_live_phase_before_metadata(upload, tmp_path, monkeypatch):
@@ -333,16 +339,23 @@ def test_full_inventory_refuses_live_phase_before_metadata(upload, tmp_path, mon
 
 
 @pytest.mark.parametrize('fault', ['pending', 'unknown', 'hardlink'])
-def test_final_full_inventory_rejects_residue_and_aliases(upload, tmp_path, fault):
+def test_final_full_inventory_rejects_residue_and_aliases(upload, tmp_path, dispose_fault_leaf, fault):
     path = tmp_path / ('parent-result.json.pending' if fault == 'pending' else 'unexpected.json' if fault == 'unknown' else 'parent-result.json')
     if fault == 'hardlink':
         original = tmp_path / 'plan.json'
         original.write_bytes(b'{}\n')
+        target_identity, target_bytes = original.lstat(), original.read_bytes()
         os.link(original, path)
     else:
         path.write_bytes(b'{}\n')
-    with pytest.raises(Exception):
-        upload._d2_run_inventory(tmp_path, upload._d2_validate_limits(), settled=True)
+    identity = path.lstat()
+    try:
+        with pytest.raises(Exception):
+            upload._d2_run_inventory(tmp_path, upload._d2_validate_limits(), settled=True)
+    finally:
+        if fault == 'hardlink':
+            dispose_fault_leaf(path, identity, scope=tmp_path, target=original,
+                target_identity=target_identity, target_bytes=target_bytes)
 
 
 def test_run_inventory_reduced_byte_boundary_and_plus_one(upload, tmp_path):
@@ -528,13 +541,14 @@ def test_go_visibility_is_recorded_before_interrupted_second_release(upload, mon
 
 
 @pytest.mark.parametrize('fault', ['own_oversize', 'own_hardlink', 'own_symlink'])
-def test_slot_writer_preserves_own_invalid_file_without_replacement(upload, tmp_path, fault):
+def test_slot_writer_preserves_own_invalid_file_without_replacement(upload, tmp_path, dispose_fault_leaf, fault):
     assert sys.platform == 'linux'
     root = tmp_path / 'google'
     root.mkdir(mode=0o700)
     destination = root / 'checkpoint.json'
     target = tmp_path / 'old-evidence.json'
     target.write_bytes(b'old evidence must remain\n')
+    target_identity, target_bytes = target.lstat(), target.read_bytes()
     if fault == 'own_oversize':
         destination.write_bytes(b'x' * 65537)
     elif fault == 'own_hardlink':
@@ -542,10 +556,16 @@ def test_slot_writer_preserves_own_invalid_file_without_replacement(upload, tmp_
     else:
         destination.symlink_to(target)
     before = destination.read_bytes()
+    identity = destination.lstat()
     document, items = _checkpoint(upload)
-    with pytest.raises(Exception):
-        upload._d2_slot_atomic_json(tmp_path, 'google', document, upload._d2_validate_limits())
-    assert destination.read_bytes() == before
+    try:
+        with pytest.raises(Exception):
+            upload._d2_slot_atomic_json(tmp_path, 'google', document, upload._d2_validate_limits())
+        assert destination.read_bytes() == before
+    finally:
+        if fault != 'own_oversize':
+            dispose_fault_leaf(destination, identity, scope=root, target=target,
+                target_identity=target_identity, target_bytes=target_bytes)
 
 
 def _authority():
@@ -711,3 +731,33 @@ def test_failed_test_inventory_rejects_unbound_ambiguous_or_missing_node_refs(he
         value['failed_node_ids'] = []
     with pytest.raises(helper.PolicyError):
         helper.d2_validate_tests(value, 'a' * 40)
+
+
+@pytest.mark.parametrize('fault', ['hardlink', 'symlink', 'fifo'])
+def test_legacy_cleanup_refuses_unsafe_leaf_until_explicit_fixture_disposal(
+        helper, tmp_path, dispose_fault_leaf, fault):
+    root, nonce = helper.new_scratch(tmp_path)
+    target = tmp_path / 'preserved-reference'
+    target.write_bytes(b'fixture reference must survive strict cleanup\n')
+    target_identity, target_bytes = target.lstat(), target.read_bytes()
+    path = root / 'self-created-fault-leaf'
+    if fault == 'hardlink':
+        os.link(target, path)
+    elif fault == 'symlink':
+        path.symlink_to(target)
+    else:
+        os.mkfifo(path)
+    identity = path.lstat()
+    try:
+        with pytest.raises(helper.PolicyError):
+            helper.cleanup(root, nonce)
+        assert root.is_dir() and os.path.lexists(path)
+        assert target.read_bytes() == target_bytes
+        assert (path.lstat().st_dev, path.lstat().st_ino) == (identity.st_dev, identity.st_ino)
+    finally:
+        dispose_fault_leaf(path, identity, scope=root, target=target,
+            target_identity=target_identity, target_bytes=target_bytes)
+    helper.cleanup(root, nonce)
+    assert not os.path.lexists(root)
+    assert target.read_bytes() == target_bytes
+    assert target.lstat().st_nlink == target_identity.st_nlink

@@ -82,17 +82,31 @@ def test_casefold_collision_is_rejected(upload, source):
         upload._d2_build_source_plan(str(source['project']))
 
 
-def test_hardlink_source_alias_is_rejected(upload, source):
-    os.link(source['datasets'] / 'README.md', source['datasets'] / 'alias.txt')
-    with pytest.raises(Exception):
-        upload._d2_build_source_plan(str(source['project']))
+def test_hardlink_source_alias_is_rejected(upload, source, dispose_fault_leaf):
+    target, alias = source['datasets'] / 'README.md', source['datasets'] / 'alias.txt'
+    target_identity, target_bytes = target.lstat(), target.read_bytes()
+    os.link(target, alias)
+    identity = alias.lstat()
+    try:
+        with pytest.raises(Exception):
+            upload._d2_build_source_plan(str(source['project']))
+    finally:
+        dispose_fault_leaf(alias, identity, scope=source['datasets'], target=target,
+            target_identity=target_identity, target_bytes=target_bytes)
 
 
-def test_symlink_source_alias_is_rejected(upload, source):
+def test_symlink_source_alias_is_rejected(upload, source, dispose_fault_leaf):
     assert sys.platform == 'linux', 'this no-follow oracle requires the admitted Linux suite'
-    (source['datasets'] / 'alias').symlink_to(source['datasets'] / 'README.md')
-    with pytest.raises(Exception):
-        upload._d2_build_source_plan(str(source['project']))
+    target, alias = source['datasets'] / 'README.md', source['datasets'] / 'alias'
+    target_identity, target_bytes = target.lstat(), target.read_bytes()
+    alias.symlink_to(target)
+    identity = alias.lstat()
+    try:
+        with pytest.raises(Exception):
+            upload._d2_build_source_plan(str(source['project']))
+    finally:
+        dispose_fault_leaf(alias, identity, scope=source['datasets'], target=target,
+            target_identity=target_identity, target_bytes=target_bytes)
 
 
 def test_output_count_512_and_513_never_truncates(upload, source):
