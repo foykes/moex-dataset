@@ -1423,6 +1423,7 @@ class _F07Response:
         self.body = bytearray()
         self.closed = False
         self.eof = False
+        self.read_primary = None
 
     def read(self, amount, *, decode_content=False):
         self.harness.check()
@@ -1438,7 +1439,16 @@ class _F07Response:
         if take <= 0:
             self.harness.failed = True
             raise _F07Refusal("F07_BODY_CAPACITY")
-        part = self.response.raw.read(take, decode_content=False)
+        try:
+            part = self.response.raw.read(take, decode_content=False)
+        except BaseException as primary:
+            # A2 may keep this error in a local and close outside its except
+            # block. sys.exception() then cannot identify the pending source
+            # fault; retain its exact identity without declaring capture failed.
+            self.read_primary = primary
+            self.record['source_error_type'] = type(primary).__name__
+            self.record['read_failed'] = True
+            raise
         if not isinstance(part, bytes) or len(part) > take:
             self.harness.failed = True
             raise _F07Refusal("F07_TRANSPORT_READ_CONTRACT")
@@ -1468,15 +1478,18 @@ class _F07Response:
         if primary is None:
             primary = _f07_sys.exception()
         self.closed = True
-        pending = primary
+        observed_read_only = primary is None and self.read_primary is not None
+        pending = self.read_primary if observed_read_only else primary
+        cleanup_failed = False
         self.record["body_complete"] = self.eof
-        if primary is not None:
-            self.record["source_error_type"] = type(primary).__name__
+        if pending is not None:
+            self.record["source_error_type"] = type(pending).__name__
         elif self.status_code == 200 and not self.eof:
             pending = _F07Refusal("F07_SUCCESS_BODY_NOT_COMPLETE")
         try:
             self.response.close()
         except BaseException as close_error:
+            cleanup_failed = True
             if pending is None:
                 pending = close_error
                 self.record["source_error_type"] = type(close_error).__name__
@@ -1485,6 +1498,7 @@ class _F07Response:
         try:
             self.harness._retain(self.record, bytes(self.body))
         except BaseException as evidence_error:
+            cleanup_failed = True
             if pending is None:
                 pending = evidence_error
             else:
@@ -1493,6 +1507,12 @@ class _F07Response:
             self.harness.active = None
             self.body.clear()
         if pending is not None and pending is not primary:
+            # The real caller already owns the read error. A clean close must
+            # return normally so its existing retry policy remains effective.
+            # Secondary cleanup/evidence failure still signals that same error
+            # to native A2, which stops rather than starting another GET.
+            if observed_read_only and not cleanup_failed:
+                return
             self.harness.failed = True
             raise pending
 
