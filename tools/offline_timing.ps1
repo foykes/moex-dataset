@@ -21,6 +21,13 @@ $owned = @{}
 $helperCpu = 0.0
 $helperPeakRss = 0L
 $resourceGap = $false
+# Fixed partitions: 5*524280 + 32*8184 + 1048576 + 262144 + 37*8 = 4 MiB.
+$metadataBytes = 0L
+$finalReceiptBytes = 0L
+$metadataLimit = 262144L
+$finalReceiptReserve = 4096L
+$control = $null
+$controlTrusted = $false
 
 function Assert-PlainPath([string]$Path, [string]$Boundary) {
     $full = [IO.Path]::GetFullPath($Path)
@@ -64,14 +71,29 @@ function Write-Observation([hashtable]$Record) {
     # Whitelist all public fields. Never serialize context, environment or exceptions.
     $Record.mono_ticks = $clock.ElapsedTicks
     $payload = [Text.Encoding]::UTF8.GetBytes(($Record | ConvertTo-Json -Compress -Depth 4) + "`n")
-    if ($script:bytes + $payload.Length -gt 1031168) { throw 'TELEMETRY_BUDGET' }
+    if ($script:bytes + $payload.Length -gt 1048576) { throw 'TELEMETRY_BUDGET' }
     $script:trace.Write($payload)
     $script:trace.Flush()
     $script:bytes += $payload.Length
 }
 
+function Write-TimingMetadata([string]$Path, [byte[]]$Payload, [switch]$Final) {
+    # Reserve the terminal ABORTED receipt before any generated metadata write.
+    if ($Final) {
+        # The remaining 1 KiB reserves the closed stdout verdict projection.
+        if ($script:finalReceiptBytes + $Payload.Length -gt $finalReceiptReserve-1024) { throw 'METADATA_BUDGET' }
+        $script:finalReceiptBytes += $Payload.Length
+    } else {
+        if ($script:metadataBytes + $Payload.Length -gt $metadataLimit-$finalReceiptReserve) { throw 'METADATA_BUDGET' }
+        $script:metadataBytes += $Payload.Length
+    }
+    $stream = [IO.File]::Open($Path,'CreateNew','Write','None')
+    try { $stream.Write($Payload); $stream.Flush($true) } finally { $stream.Dispose() }
+}
+
 function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
-        [object[]]$Records, [hashtable]$External, [hashtable]$Starts, [hashtable]$Binding) {
+        [object[]]$Records, [hashtable]$External, [hashtable]$Starts, [hashtable]$Binding,
+        [object[]]$Auxiliary = @()) {
     # Pure post-quiescence checker. Claims in workload records never fill an
     # absent OS observation. This function does not reconcile native outcomes.
     $errors = New-Object 'Collections.Generic.HashSet[string]'
@@ -81,7 +103,8 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
     $workloadProcesses = New-Object 'Collections.Generic.HashSet[string]'
     $childEvents = @('ticket_issued','child_launch','popen_begin','popen_end',
         'job_assigned','gate_released','communicate_begin','communicate_end',
-        'communicate_timeout','cleanup_end','exit_written','child_reconciled')
+        'communicate_timeout','cleanup_end','exit_written','child_reconciled','native_buffers')
+    $allIssuers = @($Writers) + @($Auxiliary)
     try {
         $resolveRuntime = {
             param($launch)
@@ -96,7 +119,7 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
                 $children[0].image_sha256 -cne $Binding.base_python_sha256) { return $null }
             return $children[0]
         }
-        foreach ($writer in $Writers) {
+        foreach ($writer in $allIssuers) {
             if ($writerMap.ContainsKey($writer.ticket_id)) { [void]$errors.Add('DUPLICATE_WRITER'); continue }
             $writerMap[$writer.ticket_id] = $writer
             $key = '{0}:{1}' -f $writer.pid,$writer.creation_100ns
@@ -127,6 +150,12 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
                 $ticket.source_digest -cne $Binding.source_digest -or $ticket.lane -cne 'f3') {
                 [void]$errors.Add('FOREIGN_TICKET')
             }
+        }
+        foreach ($issuer in $Auxiliary) {
+            $id = $issuer.ticket_id
+            if (-not $ticketMap.ContainsKey($id) -or -not $Starts.ContainsKey($id) -or
+                $ticketMap[$id].native -or $ticketMap[$id].role -cne $issuer.role -or
+                $Starts[$id].pid -ne $issuer.pid) { [void]$errors.Add('FOREIGN_AUXILIARY_ISSUER') }
         }
         foreach ($record in $Records) {
             if ($record.event -cnotin $childEvents) { continue }
@@ -229,10 +258,18 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
                 if ($record.PSObject.Properties['child_pid'] -and
                     ($record.child_pid -ne $child.pid -or $record.child_creation_100ns -ne $child.creation -or
                      $record.child_parent_pid -ne $child.parent)) { [void]$errors.Add('FOREIGN_CHILD_IDENTITY') }
+                if ($record.event -ceq 'exit_written' -and
+                    (-not $record.PSObject.Properties['child_exit_100ns'] -or
+                     $record.child_exit_100ns -ne $child.exit_creation -or
+                     $record.child_exit_100ns -lt $child.creation)) { [void]$errors.Add('FOREIGN_CHILD_LIFETIME') }
+            }
+            $buffers = @($Records | Where-Object { $_.event -ceq 'native_buffers' -and $_.child_id -ceq $id })
+            if ($buffers.Count -ne 1 -or $buffers[0].value -ne 1 -or $buffers[0].phase -ne 1) {
+                [void]$errors.Add('MISSING_OR_INCOMPLETE_NATIVE_BUFFERS')
             }
             $covered++
         }
-        foreach ($writer in $Writers) {
+        foreach ($writer in $allIssuers) {
             if ($writer.role -cne 'supervisor' -and -not $ticketMap.ContainsKey($writer.ticket_id)) {
                 [void]$errors.Add('FOREIGN_WRITER_TICKET')
             } elseif ($writer.role -cne 'supervisor' -and
@@ -426,6 +463,14 @@ public static class F3TimingNative {
     if ($git -ine $spec.git_executable) { throw 'GIT_EXECUTABLE' }
     Assert-Hash $git $spec.git_sha256
     $control = [IO.Path]::GetDirectoryName($contextPath)
+    $controlTrusted = $true
+    foreach ($file in Get-ChildItem -LiteralPath $control -Recurse -File -Force) {
+        Assert-PlainPath $file.FullName $control | Out-Null
+        if ($file.Name -cin @('observer.jsonl','native.stdout','native.stderr','bundle-manifest.json',
+                'SEALED.sha256','diagnostic.json','ABORTED.json')) { throw 'RUN_ALREADY_EXISTS' }
+        $metadataBytes += $file.Length
+    }
+    if ($metadataBytes -gt $metadataLimit-$finalReceiptReserve) { throw 'METADATA_BUDGET' }
     # Three closed, pinned read-only Git metadata helpers. Their CPU and OS peak
     # RSS enter the observer budget; output goes to files, never workload pipes.
     $metadata = @{}
@@ -447,12 +492,17 @@ public static class F3TimingNative {
             if ($git.Contains('"') -or $source.Contains('"')) { throw 'ARGV_QUOTING' }
             $command='"'+$git+'" -C "'+$source+'" '+$queries[$query]
             $outputPath=Join-Path $control ('metadata-'+$query+'.stdout')
+            $errorPath=Join-Path $control ('metadata-'+$query+'.stderr')
             $helper=[F3TimingNative]::Launch($git,$command,$source,$outputPath,
-                (Join-Path $control ('metadata-'+$query+'.stderr')))
+                $errorPath)
             while ([F3TimingNative]::WaitForSingleObject($helper.process,0) -ne 0) {
                 if ($clock.Elapsed.TotalSeconds -ge 10) { throw 'PREFLIGHT_BUDGET' }
                 [Threading.Thread]::Sleep(5)
             }
+            # Native helper writes are not an OS quota/sandbox. Retain every
+            # byte, measure immediately and refuse workload launch on overflow.
+            $metadataBytes += (Get-Item -LiteralPath $outputPath).Length + (Get-Item -LiteralPath $errorPath).Length
+            if ($metadataBytes -gt $metadataLimit-$finalReceiptReserve) { throw 'METADATA_BUDGET' }
             $measurement=[F3TimingNative]::Read($helper.process)
             if ($measurement.exit -ne 0 -or $measurement.peakRss -lt 0) { throw 'METADATA_OR_RESOURCE_GAP' }
             $helperCpu+=($measurement.user+$measurement.kernel)/10000000.0
@@ -582,7 +632,7 @@ public static class F3TimingNative {
     $settledNs = [decimal]([Diagnostics.Stopwatch]::GetTimestamp()) * 1000000000 / [Diagnostics.Stopwatch]::Frequency
     foreach ($slot in $slots) {
         $writerBytes += $slot.Length
-        if ($slot.Length -gt 524280) { throw 'WRITER_BUDGET' }
+        if ($slot.Name -cnotmatch '^slot-0[0-4]\.jsonl$' -or $slot.Length -gt 524280) { throw 'WRITER_BUDGET' }
         $sequence = 0
         $previous = -1L
         $events = @{}
@@ -619,6 +669,44 @@ public static class F3TimingNative {
             complete=($events.ContainsKey('writer_end')) }
     }
     if ($roles.supervisor -ne 1 -or $roles['lane-worker'] -ne 1 -or $roles.command -ne 3) { $invalid=$true }
+    # AUX supplies only nonprofile issuer provenance, never another detailed
+    # command stream or an exemption from authoritative all-ticket coverage.
+    $auxiliaryIdentities = New-Object 'Collections.Generic.List[object]'
+    $auxiliaryBytes = 0L
+    $auxiliary = @(Get-ChildItem -LiteralPath (Join-Path $run 'timing') -Filter 'aux-*.jsonl')
+    if ($auxiliary.Count -gt 32) { throw 'AUXILIARY_BUDGET' }
+    $existingRoles = @('entry','worker','supervisor','lane-worker','notebook-check','f2-probe','f2-preflight',
+        'f2-script','f2-notebook','f2-hook','f2-precommit','f2-hook-check','f2-spawn','flog-probe',
+        'flog-worker','native-git','f3-control','command','d1-worker')
+    foreach ($slot in $auxiliary) {
+        if ($slot.Name -cnotmatch '^aux-(0[0-9]|[12][0-9]|3[01])\.jsonl$' -or $slot.Length -gt 8184) { throw 'AUXILIARY_BUDGET' }
+        $auxiliaryBytes += $slot.Length
+        $sequence=0; $previous=-1L; $events=@{}; $identity=$null
+        foreach ($line in [IO.File]::ReadLines($slot.FullName)) {
+            if ([Text.Encoding]::UTF8.GetByteCount($line) -gt 4096) { throw 'TRACE_RECORD_BUDGET' }
+            $row = $line | ConvertFrom-Json
+            $writerRecords.Add($row)
+            if ($null -eq $identity) { $identity=$row }
+            $sequence++
+            foreach ($field in @('seq','mono_ns','pid','creation_100ns','value','phase')) {
+                if ($row.$field -isnot [int] -and $row.$field -isnot [long]) { $invalid=$true }
+            }
+            if ($row.seq -ne $sequence -or $row.mono_ns -lt $previous -or $row.mono_ns -gt $settledNs -or
+                $row.run_id -cne $spec.run_id -or $row.tested_sha -cne $spec.tested_sha -or
+                $row.source_digest -cne $spec.source_digest -or $row.lane -cne 'f3' -or
+                $row.ticket_id -cnotmatch '^[0-9a-f]{32}$' -or $row.ticket_id -cne $identity.ticket_id -or
+                $row.role -cnotin $existingRoles -or $row.role -cne $identity.role -or
+                $row.pid -le 0 -or $row.pid -ne $identity.pid -or
+                $row.creation_100ns -le 0 -or $row.creation_100ns -ne $identity.creation_100ns -or
+                $row.event -cnotin @('bootstrap','ticket_issued','child_launch','exit_written','native_buffers','writer_end')) { $invalid=$true }
+            $previous=$row.mono_ns; $events[$row.event]=$true
+            if ($row.event -ceq 'writer_end' -and $row.value -gt 1000000000) { throw 'SYNC_BUDGET' }
+        }
+        if ($null -eq $identity -or -not $events.ContainsKey('bootstrap') -or -not $events.ContainsKey('writer_end')) { $invalid=$true }
+        else { $auxiliaryIdentities.Add($identity) }
+        Write-Observation @{ event='auxiliary_checked'; records=$sequence; bytes=$slot.Length;
+            complete=($events.ContainsKey('writer_end')) }
+    }
     # Completeness includes explicit native coverage/gaps. Missing native reports
     # are facts of the original failure, never synthesized by this observer.
     $missingStart=0; $missingFinal=0; $missingExit=0; $missingBuffers=0
@@ -649,7 +737,8 @@ public static class F3TimingNative {
     }
     if ($missingBuffers) { $invalid=$true }
     $coverage = Test-TimingCoverage -Tickets @($authoritativeTickets.ToArray()) -Writers @($writerIdentities.ToArray()) `
-        -Records @($writerRecords.ToArray()) -External $owned -Starts $nativeStarts -Binding @{
+        -Records @($writerRecords.ToArray()) -External $owned -Starts $nativeStarts `
+        -Auxiliary @($auxiliaryIdentities.ToArray()) -Binding @{
             run_id=$spec.run_id; tested_sha=$spec.tested_sha; source_digest=$spec.source_digest;
             custody_pid=$custody.pid; custody_creation_100ns=$custody.creation; observer_pid=$PID;
             runtime=$runtime; console=$console; runtime_sha256=$spec.runtime_sha256;
@@ -686,19 +775,30 @@ public static class F3TimingNative {
     $seal.Add(@{ store='control'; name='observer.jsonl'; bytes=(Get-Item -LiteralPath $observerPath).Length;
         sha256=(Get-FileHash -LiteralPath $observerPath -Algorithm SHA256).Hash.ToLowerInvariant() })
     $manifestBytes = [Text.Encoding]::UTF8.GetBytes(($seal | ConvertTo-Json -Depth 4 -Compress) + "`n")
-    $contextBytes = (Get-Item -LiteralPath $contextPath).Length
-    $abortBytes = (@(Get-ChildItem -LiteralPath (Join-Path $run 'timing') -Filter '*.aborted') | Measure-Object Length -Sum).Sum
-    if ($bytes + $manifestBytes.Length + $contextBytes + 128 -gt 1048576 -or
-        $bytes + $manifestBytes.Length + $contextBytes + 128 + $writerBytes + $abortBytes -gt 4194304) { throw 'SEAL_BUDGET' }
+    $abortBytes = 0L; $abortCount = 0
+    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $run 'timing') -Recurse -File -Force) {
+        $relative = [IO.Path]::GetRelativePath((Join-Path $run 'timing'),$file.FullName).Replace('\','/')
+        if ($relative -cmatch '^native/[0-9a-f]{32}\.(stdout|stderr)$') { continue } # Original raw native bytes, not telemetry.
+        if ($relative -cmatch '^(slot-0[0-4]|aux-(0[0-9]|[12][0-9]|3[01]))\.jsonl$') { continue }
+        if ($relative -cnotmatch '^(slot-0[0-4]|aux-(0[0-9]|[12][0-9]|3[01]))\.aborted$' -or $file.Length -gt 8) {
+            throw 'UNCLASSIFIED_TELEMETRY'
+        }
+        $abortBytes += $file.Length; $abortCount++
+    }
+    if ($abortCount -gt 37 -or $abortBytes -gt 296 -or $abortCount -ne 0) { throw 'WRITER_ABORTED' }
     $manifestPath = Join-Path $control 'bundle-manifest.json'
-    $stream = [IO.File]::Open($manifestPath,'CreateNew','Write','None')
-    try { $stream.Write($manifestBytes); $stream.Flush($true) } finally { $stream.Dispose() }
+    Write-TimingMetadata $manifestPath $manifestBytes
     $sealPath = Join-Path $control 'SEALED.sha256'
-    $stream = [IO.File]::Open($sealPath,'CreateNew','Write','None')
-    try {
-        $payload=[Text.Encoding]::ASCII.GetBytes((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()+"`n")
-        $stream.Write($payload); $stream.Flush($true)
-    } finally { $stream.Dispose() }
+    $payload=[Text.Encoding]::ASCII.GetBytes((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()+"`n")
+    Write-TimingMetadata $sealPath $payload
+    $actualMetadataBytes = 0L
+    foreach ($file in Get-ChildItem -LiteralPath $control -Recurse -File -Force) {
+        if ($file.Name -cin @('native.stdout','native.stderr','observer.jsonl')) { continue }
+        $actualMetadataBytes += $file.Length
+    }
+    if ($actualMetadataBytes -ne $metadataBytes -or $metadataBytes+$finalReceiptReserve -gt $metadataLimit -or
+        $writerBytes -gt 2621400 -or $auxiliaryBytes -gt 261888 -or $bytes -gt 1048576 -or
+        $writerBytes+$auxiliaryBytes+$bytes+$abortBytes+$metadataBytes+$finalReceiptReserve -gt 4194304) { throw 'SEAL_BUDGET' }
     foreach ($store in @($control,$run)) {
         foreach ($file in Get-ChildItem -LiteralPath $store -Recurse -File -Force) { $file.IsReadOnly=$true }
     }
@@ -710,7 +810,8 @@ public static class F3TimingNative {
         'OBSERVER_EXECUTABLE','RUNTIME_EXECUTABLE','STDLIB_NOT_REVIEWED','PARENT_CUSTODY','CPU_CAPACITY',
         'GIT_EXECUTABLE','ARGV_QUOTING','PREFLIGHT_BUDGET','METADATA_OR_RESOURCE_GAP','SOURCE_HEAD_OR_DIRTY',
         'RUN_ALREADY_EXISTS','PROCESS_IDENTITY','RESOURCE_BUDGET','WRITER_ABORTED','OBSERVER_WATCHDOG',
-        'WRITER_BUDGET','TRACE_RECORD_BUDGET','SYNC_BUDGET','SEAL_BUDGET')
+        'WRITER_BUDGET','AUXILIARY_BUDGET','METADATA_BUDGET','UNCLASSIFIED_TELEMETRY',
+        'TRACE_RECORD_BUDGET','SYNC_BUDGET','SEAL_BUDGET')
     if ($_.Exception.Message -cin $known) { $reason=$_.Exception.Message }
     # Exception payloads, private paths and raw native output stay out of summaries.
 } finally {
@@ -730,6 +831,38 @@ public static class F3TimingNative {
         [F3TimingNative]::CloseHandle($custody.job) | Out-Null
     }
     if ($null -ne $trace) { $trace.Dispose() }
+}
+# This terminal receipt binds the immutable manifest rather than hashing itself.
+# A reserved ABORTED receipt wins over a partial/failed diagnostic.json write.
+if ($controlTrusted) {
+    try {
+        $record = [ordered]@{ NATIVE_VERDICT=$(if ($null -eq $nativeExit) {'NOT_AVAILABLE'} else {$nativeExit});
+            DIAGNOSTIC_VERDICT=$diagnostic; REASON=$reason; run_id=$spec.run_id; tested_sha=$spec.tested_sha;
+            metadata_bytes_before_final=$metadataBytes;
+            raw_native_and_original_reports='SEPARATE_BUDGET_CLASS_NOT_RETENTION_VERDICT' }
+        if ($diagnostic -ne 'ABORTED') { $record.manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $control 'bundle-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant() }
+        $payload = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress)+"`n")
+        $terminal = Join-Path $control $(if ($diagnostic -eq 'ABORTED') {'ABORTED.json'} else {'diagnostic.json'})
+        Write-TimingMetadata $terminal $payload -Final
+        (Get-Item -LiteralPath $terminal).IsReadOnly=$true
+        # Include finalization, sealing and receipt cost in observer limits too.
+        if ($diagnostic -ne 'ABORTED') {
+            $self.Refresh()
+            $endCpu=$self.TotalProcessorTime.TotalSeconds+$helperCpu
+            $endSeconds=$clock.Elapsed.TotalSeconds
+            if ($self.PeakWorkingSet64+$helperPeakRss -gt 134217728 -or
+                100*($endCpu-$initialCpu)/($endSeconds*$capacity) -gt 1 -or
+                ($endSeconds-$bucketWall -ge 10 -and
+                 100*($endCpu-$bucketCpu)/(($endSeconds-$bucketWall)*$capacity) -gt 1)) { throw 'RESOURCE_BUDGET' }
+        }
+    } catch {
+        $diagnostic='ABORTED'; $reason='FINAL_RECEIPT_STORAGE_OR_BUDGET'
+        if ($_.Exception.Message -ceq 'RESOURCE_BUDGET') { $reason='RESOURCE_BUDGET' }
+        try {
+            $payload=[Text.Encoding]::ASCII.GetBytes('{"DIAGNOSTIC_VERDICT":"ABORTED","REASON":"FINAL_RECEIPT_STORAGE_OR_BUDGET"}'+"`n")
+            Write-TimingMetadata (Join-Path $control 'ABORTED.json') $payload -Final
+        } catch { } # stdout remains ABORTED; no storage success is fabricated.
+    }
 }
 # Return codes belong to the diagnostic controller; native result is separate.
 [ordered]@{ NATIVE_VERDICT=$(if ($null -eq $nativeExit) {'NOT_AVAILABLE'} else {$nativeExit});

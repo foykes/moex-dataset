@@ -71,6 +71,23 @@ def test_timing_identity_binds_run_lane_role_sha():
             ticket, launch, issuer, [observed], {**interpreter, **changed})
     assert 'CONSOLE_WRAPPER' in guard.timing_child_errors(
         dict(ticket, profile=2), launch, issuer, [observed], interpreter)
+    # A non-profile Python issuer and its ordinary native Git child have the
+    # same identity requirements; a detailed command stream is not an oracle.
+    native_ticket = dict(ticket, profile=0, native=True, role='native-git')
+    native_issuer = dict(issuer, role='f3-control')
+    native_child = dict(observed, image='git', image_bound=True)
+    assert guard.timing_child_errors(native_ticket, launch, native_issuer, [native_child]) == []
+    assert guard.timing_child_errors(native_ticket, launch, native_issuer, []) == ['MISSING_IDENTITY']
+    assert 'ACTUAL_PARENT' in guard.timing_child_errors(native_ticket, launch,
+        dict(native_issuer, exit_100ns=599), [native_child])
+    assert 'FOREIGN_IDENTITY' in guard.timing_child_errors(native_ticket, launch,
+        native_issuer, [dict(native_child, creation_100ns=601)])
+    assert guard.timing_auxiliary('f3-control', 0)
+    assert guard.timing_auxiliary('f2-probe', 0)
+    assert guard.timing_auxiliary('command', 0)
+    for role, profile in (('supervisor', 0), ('lane-worker', 4),
+                          ('command', 1), ('command', 2), ('command', 3), ('FOREIGN', 0)):
+        assert not guard.timing_auxiliary(role, profile)
 
 
 def test_timing_trace_rejects_missing_corrupt_or_foreign_records():
@@ -156,6 +173,12 @@ def test_timing_budget_boundaries_and_abort_use_fake_clock():
     with pytest.raises(ValueError, match='TIMING_BYTES'):
         guard.timing_store(sink, b'5', 4, 4)
     assert sink.getvalue() == b'1234'
+    # Five original detailed streams, finite AUX pool, observer, all new
+    # metadata and one eight-byte abort marker per stream share exactly 4 MiB.
+    assert guard._TIMING_WRITER_BYTES == 524280
+    assert guard._TIMING_AUX_BYTES == 8184
+    assert (5 * guard._TIMING_WRITER_BYTES + 32 * guard._TIMING_AUX_BYTES
+            + 1048576 + 262144 + 37 * 8) == 4194304
 
 
 def test_timing_storage_failure_is_not_complete():
@@ -172,6 +195,20 @@ def test_timing_storage_failure_is_not_complete():
             guard.timing_store(store, b'fixture', 0, 4096)
         assert guard.timing_verdict(0, stored=False) == {
             'NATIVE_VERDICT': 0, 'DIAGNOSTIC_VERDICT': 'ABORTED'}
+    # These are original communicate-return buffers, not an encoding of text or
+    # an invented empty stream. The numeric outcomes are independent literals.
+    pair = (b'F3_NATIVE_STDOUT\x00\xff', b'')
+    assert guard.timing_buffer_phase(*pair) == 1
+    assert guard.timing_buffer_phase(b'', b'') == 1
+    assert guard.timing_buffer_phase(*pair, previous=pair) == 1
+    assert guard.timing_buffer_phase(None, b'') == 2
+    assert guard.timing_buffer_phase(b'', None) == 2
+    assert guard.timing_buffer_phase('decoded stdout', '') == 3
+    assert guard.timing_buffer_phase(*pair, complete=False) == 4
+    assert guard.timing_buffer_phase(*pair, previous=(b'other bytes', b'')) == 6
+    for values in ((None, b''), ('decoded stdout', ''), (b'', None)):
+        assert guard.timing_verdict(0, valid=guard.timing_buffer_phase(*values) == 1) == {
+            'NATIVE_VERDICT': 0, 'DIAGNOSTIC_VERDICT': 'INVALID'}
 
 
 def test_timing_public_report_excludes_synthetic_private_values():
@@ -191,3 +228,9 @@ def test_timing_public_report_excludes_synthetic_private_values():
     projected = guard.timing_public(binding)
     assert all(value not in str(projected) for value in (
         'PRIVATE_CHILD_CANARY', 'PRIVATE_ISSUER_CANARY', 'PRIVATE_PID_CANARY', 'PRIVATE_PARENT_CANARY'))
+    auxiliary = dict(record, role='f3-control', event='native_buffers', value=1, phase=1)
+    projected = guard.timing_public(auxiliary)
+    assert projected['role'] == 'f3-control'
+    assert projected['event'] == 'native_buffers'
+    assert all(value not in str(projected) for value in (
+        'F3_SYNTHETIC_SECRET', 'C:/synthetic/private', 'TOKEN', 'RAW_SYNTHETIC_OUTPUT'))

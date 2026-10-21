@@ -52,6 +52,7 @@ _D1_CONTROLLER_ACTIVE = False
 
 # Opt-in observation only. These objects never participate in native verdicts.
 _TIMING = None
+_TIMING_PENDING = None
 _TIMING_EVENTS = frozenset({
     'bootstrap', 'guard_ready', 'start_written', 'ticket_issued', 'popen_begin',
     'popen_end', 'job_assigned', 'gate_released', 'communicate_begin',
@@ -60,16 +61,21 @@ _TIMING_EVENTS = frozenset({
     'pytest_return', 'session_finish', 'pytest_report_begin', 'pytest_report_end',
     'reconcile_begin', 'reconcile_end', 'final_begin', 'final_end', 'atexit',
     'command_report_read', 'native_result', 'writer_end', 'substantive_progress',
-    'pytest_import_begin', 'pytest_import_end', 'child_launch',
+    'pytest_import_begin', 'pytest_import_end', 'child_launch', 'native_buffers',
 })
 _TIMING_ID_KEYS = ('run_id', 'lane', 'role', 'ticket_id', 'tested_sha',
                    'source_digest', 'pid', 'creation_100ns')
 _TIMING_CHILD_EVENTS = frozenset({
     'ticket_issued', 'child_launch', 'popen_begin', 'popen_end', 'job_assigned',
     'gate_released', 'communicate_begin', 'communicate_end',
-    'communicate_timeout', 'cleanup_end', 'exit_written', 'child_reconciled',
+    'communicate_timeout', 'cleanup_end', 'exit_written', 'child_reconciled', 'native_buffers',
 })
-_TIMING_WRITER_BYTES = 512 * 1024 - 8  # Six slots + 1 MiB observer <= 4 MiB.
+_TIMING_WRITER_BYTES = 512 * 1024 - 8
+_TIMING_AUX_BYTES = 8192 - 8
+_TIMING_AUX_EVENTS = frozenset({'bootstrap', 'ticket_issued', 'child_launch',
+                               'exit_written', 'native_buffers', 'writer_end'})
+# Five full writers, 32 AUX writers, observer, all new metadata and markers
+# partition exactly 4 MiB. Original retained native byte buffers are private.
 
 
 def timing_public(record):
@@ -78,7 +84,7 @@ def timing_public(record):
             'read_calls', 'read_ns', 'ticket_calls', 'ticket_ns', 'reconcile_ns',
             'setup', 'call', 'teardown', 'passed', 'failed', 'skipped', 'child_id',
             'setup_ns', 'call_ns', 'teardown_ns', 'clock_error_ns', 'issuer_id',
-            'child_pid', 'child_creation_100ns', 'child_parent_pid'}
+            'child_pid', 'child_creation_100ns', 'child_parent_pid', 'child_exit_100ns'}
     public = {}
     for key, value in record.items():
         if key not in keys:
@@ -93,7 +99,7 @@ def timing_public(record):
             if value in _TIMING_EVENTS:
                 public[key] = value
         elif key in {'lane', 'role'}:
-            if value in ({'f3'} if key == 'lane' else {'supervisor', 'lane-worker', 'command'}):
+            if value in ({'f3'} if key == 'lane' else ROLES):
                 public[key] = value
         elif type(value) is int:
             public[key] = value
@@ -258,12 +264,21 @@ def _timing_profile(ticket):
 
 def _timing_open(c):
     """No permission is obtained from this opt-in reference; guard policy is intact."""
-    global _TIMING
+    global _TIMING, _TIMING_PENDING
     reference = os.environ.get('MDS_OFFLINE_TIMING_CONTEXT')
-    if not reference or c.lane != 'f3' or c.role not in {'supervisor', 'lane-worker', 'command'}:
+    if not reference or c.lane != 'f3' or c.role not in ROLES:
         return
-    if c.role == 'command' and not _timing_profile(c.ticket):
+    if timing_auxiliary(c.role, _timing_profile(c.ticket or {})):
+        # The reference is not authority. Leaf processes do no observation I/O;
+        # an actual issuer must first validate it before opening a bounded AUX.
+        _TIMING_PENDING = (c, reference)
         return
+    _TIMING_PENDING = _timing_prepare(c, reference)
+    _timing_activate()
+
+
+def _timing_prepare(c, reference):
+    """Validate a closed context before any writer/query use, with self-cost."""
     opening = time.perf_counter_ns()
     try:
         clock_error = 0
@@ -289,43 +304,72 @@ def _timing_open(c):
         if creation is None:
             raise ValueError('TIMING_PROCESS_IDENTITY')
         directory = checked_path(c.report_dir / 'timing', c.report_dir)
-        with _internal():
-            directory.mkdir(exist_ok=True)
-            # Exclusive finite slots impose a run-wide budget without a graph index.
-            slot = None
-            for number in range(6):
-                try:
-                    slot = directory / ('slot-%02d.jsonl' % number)
-                    stream = _ORIGINAL_OPEN(slot, 'xb')
-                    break
-                except FileExistsError:
-                    slot = None
-            if slot is None:
-                raise ValueError('TIMING_SLOTS')
-        _TIMING = dict(stream=stream, directory=directory, slot=slot, seq=0, size=0,
+        state = dict(stream=None, directory=directory, slot=None, seq=0, size=0,
             identity=dict(run_id=c.run_id, lane=c.lane, role=c.role, ticket_id=c.process_id,
                           tested_sha=c.tested_sha, source_digest=c.source_digest,
                           pid=os.getpid(), creation_100ns=creation),
             sync_ns=0, clock_error_ns=clock_error, read_calls=0, read_ns=0, ticket_calls=0, ticket_ns=0,
             reconcile_ns=0, setup=0, call=0, teardown=0, passed=0, failed=0, skipped=0,
             setup_ns=0, call_ns=0, teardown_ns=0,
-            invalid=False, closed=False)
+            invalid=False, closed=False, children={}, auxiliary=timing_auxiliary(c.role, _timing_profile(c.ticket or {})))
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)
         kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         kernel.WaitForSingleObject.restype = ctypes.c_ulong
-        _TIMING['kernel'] = kernel
+        state['kernel'] = kernel
         kernel.GetProcessTimes.argtypes = [ctypes.c_void_p, *([ctypes.c_void_p] * 4)]
         kernel.GetProcessTimes.restype = ctypes.c_int
         native = ctypes.WinDLL('ntdll', use_last_error=True)
         native.NtQueryInformationProcess.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
             ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
         native.NtQueryInformationProcess.restype = ctypes.c_long
-        _TIMING['process_basic'] = native.NtQueryInformationProcess
-        _TIMING['sync_ns'] = time.perf_counter_ns() - opening + 2 * clock_error
-        timing_event('bootstrap')
+        state['process_basic'] = native.NtQueryInformationProcess
+        state['sync_ns'] = time.perf_counter_ns() - opening + 2 * clock_error
+        return state
     except BaseException:
         # Missing writer/start is INVALID to the observer, never a native success.
-        _TIMING = None
+        return None
+
+
+def timing_auxiliary(role, profile):
+    """Pure observation classification; never permission or child admission."""
+    return role in ROLES and role != 'supervisor' and not (
+        role == 'lane-worker' or role == 'command' and profile in {1, 2, 3})
+
+
+def _timing_activate():
+    """Open one exclusive bounded writer for an already-validated context."""
+    global _TIMING, _TIMING_PENDING
+    if _TIMING is not None:
+        return _TIMING
+    state = _TIMING_PENDING
+    if type(state) is tuple:
+        state = _timing_prepare(*state)
+        _TIMING_PENDING = state
+    if state is None:
+        return None
+    began = time.perf_counter_ns()
+    try:
+        with _internal():
+            state['directory'].mkdir(exist_ok=True)
+            prefix, count = ('aux', 32) if state['auxiliary'] else ('slot', 5)
+            for number in range(count):
+                slot = state['directory'] / ('%s-%02d.jsonl' % (prefix, number))
+                try:
+                    stream = _ORIGINAL_OPEN(slot, 'xb')
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise ValueError('TIMING_SLOTS')
+        state.update(stream=stream, slot=slot)
+        _TIMING, _TIMING_PENDING = state, None
+        timing_event('bootstrap')
+        return state
+    except BaseException:
+        _TIMING_PENDING = None
+        return None
+    finally:
+        state['sync_ns'] += time.perf_counter_ns() - began + 2 * state['clock_error_ns']
 
 
 def _timing_creation():
@@ -351,6 +395,8 @@ def _timing_emit(event, value=0, phase=0, binding=None):
     state = _TIMING
     if state is None or state['invalid'] or state['closed']:
         return
+    if state['auxiliary'] and event not in _TIMING_AUX_EVENTS:
+        return
     if event in _TIMING_CHILD_EVENTS and binding is None:
         return
     began = time.perf_counter_ns()
@@ -367,7 +413,8 @@ def _timing_emit(event, value=0, phase=0, binding=None):
                 'setup_ns', 'call_ns', 'teardown_ns', 'clock_error_ns')})
         payload = (json.dumps(timing_public(record), sort_keys=True) + '\n').encode('ascii')
         with _internal():
-            size = timing_store(state['stream'], payload, state['size'], _TIMING_WRITER_BYTES)
+            limit = _TIMING_AUX_BYTES if state['auxiliary'] else _TIMING_WRITER_BYTES
+            size = timing_store(state['stream'], payload, state['size'], limit)
         state['seq'] += 1
         state['size'] = size
     except BaseException:
@@ -391,11 +438,16 @@ def _timing_child_binding(ticket):
 
 
 def _timing_ticket_issued(ticket):
+    _timing_activate()
     if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
         return
     began = time.perf_counter_ns()
     try:
-        _timing_emit('ticket_issued', _timing_profile(ticket), binding=_timing_child_binding(ticket))
+        child = _timing_child_entry(ticket)
+        if child['issued']:
+            raise ValueError('TIMING_DUPLICATE_TICKET')
+        child['issued'] = True
+        _timing_emit('ticket_issued', _timing_profile(ticket), binding=child['binding'])
     except BaseException:
         _timing_abort()
     finally:
@@ -403,11 +455,12 @@ def _timing_ticket_issued(ticket):
 
 
 def _timing_child_begin(ticket):
+    _timing_activate()
     if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
         return
     began = time.perf_counter_ns()
     try:
-        _TIMING['child_binding'] = _timing_child_binding(ticket)
+        _TIMING['child_binding'] = _timing_child_entry(ticket)['binding']
     except BaseException:
         _TIMING['child_binding'] = None
         _timing_abort()
@@ -415,28 +468,75 @@ def _timing_child_begin(ticket):
         _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
 
 
+def _timing_child_entry(ticket):
+    binding = _timing_child_binding(ticket)
+    children = _TIMING['children']
+    identifier = binding['child_id']
+    if identifier not in children:
+        children[identifier] = dict(binding=binding, issued=False, process=None,
+            launched=False, ended=False, buffers=None, buffer_phase=5, buffer_emitted=False,
+            reader_result=None)
+    return children[identifier]
+
+
+def _timing_process_identity(process):
+    """Query the existing retained handle only; no open/duplicate/wait/poll."""
+    handle = int(process._handle)
+    times = [ctypes.c_ulonglong() for _ in range(4)]
+    if not _TIMING['kernel'].GetProcessTimes(handle, *(ctypes.byref(v) for v in times)):
+        raise ValueError('TIMING_CHILD_PROCESS')
+    basic = (ctypes.c_void_p * 6)()
+    if _TIMING['process_basic'](handle, 0, basic, ctypes.sizeof(basic), None) != 0:
+        raise ValueError('TIMING_CHILD_PARENT')
+    if int(basic[4] or 0) != process.pid or not times[0].value or not basic[5]:
+        raise ValueError('TIMING_CHILD_IDENTITY')
+    return dict(child_pid=process.pid, child_creation_100ns=times[0].value,
+                child_parent_pid=int(basic[5]), child_exit_100ns=times[1].value)
+
+
 def _timing_child_launch(ticket, process):
     """Read only the already-owned Popen handle; never poll/wait/admit a child."""
+    _timing_activate()
     if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
         return
     began = time.perf_counter_ns()
     try:
-        binding = _timing_child_binding(ticket)
-        handle = int(process._handle)
-        times = [ctypes.c_ulonglong() for _ in range(4)]
-        if not _TIMING['kernel'].GetProcessTimes(handle, *(ctypes.byref(v) for v in times)):
-            raise ValueError('TIMING_CHILD_PROCESS')
-        # PROCESS_BASIC_INFORMATION is six pointer-sized fields on this pinned
-        # Windows runtime. Its last two fields are the actual PID and OS parent.
-        basic = (ctypes.c_void_p * 6)()
-        if _TIMING['process_basic'](handle, 0, basic, ctypes.sizeof(basic), None) != 0:
-            raise ValueError('TIMING_CHILD_PARENT')
-        if int(basic[4] or 0) != process.pid or not times[0].value or not basic[5]:
-            raise ValueError('TIMING_CHILD_IDENTITY')
-        binding.update(child_pid=process.pid, child_creation_100ns=times[0].value,
-                       child_parent_pid=int(basic[5]))
+        child = _timing_child_entry(ticket)
+        observed = _timing_process_identity(process)
+        binding = dict(child['binding'], **{key: value for key, value in observed.items()
+                                         if key != 'child_exit_100ns'})
+        if child['launched']:
+            if child['binding'] != binding:
+                raise ValueError('TIMING_CHANGED_CHILD')
+            return
+        child.update(binding=binding, launched=True, process=weakref.ref(process))
         _TIMING['child_binding'] = binding
         _timing_emit('child_launch', _timing_profile(ticket), binding=binding)
+    except BaseException:
+        _timing_abort()
+    finally:
+        _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
+
+
+def _timing_exit_written(ticket, exit_code):
+    if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
+        return
+    began = time.perf_counter_ns()
+    try:
+        child = _timing_child_entry(ticket)
+        if child['ended']:
+            return
+        process = child['process']() if child['process'] is not None else None
+        if process is None or not child['launched']:
+            raise ValueError('TIMING_MISSING_RETAINED_CHILD')
+        observed = _timing_process_identity(process)
+        if (any(observed[key] != child['binding'][key]
+                for key in ('child_pid', 'child_creation_100ns', 'child_parent_pid'))
+                or observed['child_exit_100ns'] < observed['child_creation_100ns']):
+            raise ValueError('TIMING_CHILD_LIFETIME')
+        binding = dict(child['binding'], child_exit_100ns=observed['child_exit_100ns'])
+        _timing_emit('exit_written', exit_code, binding=binding)
+        child['ended'] = True
     except BaseException:
         _timing_abort()
     finally:
@@ -496,6 +596,7 @@ def timing_phase(phase, outcome, duration_ns=0):
 
 def timing_close():
     if _TIMING is not None and not _TIMING['closed']:
+        _timing_buffers_close()
         timing_event('writer_end', _TIMING['sync_ns'])
         try:
             began = time.perf_counter_ns()
@@ -509,12 +610,105 @@ def timing_close():
         _TIMING['closed'] = True
 
 
-def timing_native_bundle(ticket, stdout, stderr):
-    """Retain the SAME buffers already returned by the sole communicate reader."""
-    if _TIMING is None:
+def timing_buffer_phase(stdout, stderr, *, complete=True, previous=None):
+    """Pure original-buffer classification, with no encoding or empty fallback."""
+    if not complete:
+        return 4
+    if isinstance(stdout, str) or isinstance(stderr, str):
+        return 3
+    if type(stdout) is not bytes or type(stderr) is not bytes:
+        return 2
+    if previous is not None and previous != (stdout, stderr):
+        return 6
+    return 1
+
+
+def _timing_passive(function, *args):
+    """Observation failures have no exception path back into native behavior."""
+    try:
+        function(*args)
+    except BaseException:
+        try:
+            _timing_abort()
+        except BaseException:
+            pass
+
+
+def _timing_native_return(ticket, result):
+    _timing_activate()
+    if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
+        return
+    began = time.perf_counter_ns()
+    child = _timing_child_entry(ticket)
+    try:
+        if type(result) is not tuple or len(result) != 2:
+            _timing_native_unknown(ticket, 2)
+        else:
+            child['reader_result'] = result
+            timing_native_bundle(ticket, result[0], result[1])
+    finally:
+        child['reader_result'] = None
+        _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
+
+
+def _timing_native_unknown(ticket, phase):
+    if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
         return
     began = time.perf_counter_ns()
     try:
+        child = _timing_child_entry(ticket)
+        if child['buffers'] is None:
+            child['buffer_phase'] = phase
+        else:
+            _timing_abort()
+    except BaseException:
+        _timing_abort()
+    finally:
+        _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
+
+
+def _timing_buffers_close():
+    """Unresolved original reader coverage is UNKNOWN, never synthesized raw."""
+    began = time.perf_counter_ns()
+    try:
+        for child in _TIMING['children'].values():
+            if not child['buffer_emitted']:
+                _timing_emit('native_buffers', 0, child['buffer_phase'], child['binding'])
+                child['buffer_emitted'] = True
+    except BaseException:
+        _timing_abort()
+    finally:
+        _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
+
+
+def timing_native_bundle(ticket, stdout, stderr):
+    """Retain the SAME buffers already returned by the sole communicate reader."""
+    _timing_activate()
+    if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
+        return
+    began = time.perf_counter_ns()
+    try:
+        child = _timing_child_entry(ticket)
+        witness = child['reader_result']
+        if witness is None or witness[0] is not stdout or witness[1] is not stderr:
+            if child['buffers'] is None:
+                child['buffer_phase'] = 8  # Manual bytes are not reader evidence.
+            else:
+                _timing_abort()
+            return
+        phase = timing_buffer_phase(stdout, stderr)
+        if phase != 1:
+            if child['buffers'] is None:
+                child['buffer_phase'] = phase
+            else:
+                _timing_abort()
+            return
+        fingerprint = tuple((len(payload), hashlib.sha256(payload).digest())
+                            for payload in (stdout, stderr))
+        if child['buffers'] is not None:
+            if child['buffers'] != fingerprint:
+                _timing_abort()
+            return  # The exact completed pair is already retained; no rewrite.
         directory = checked_path(_CONTEXT.report_dir / 'timing/native', _CONTEXT.report_dir)
         with _internal():
             directory.mkdir(exist_ok=True)
@@ -524,6 +718,8 @@ def timing_native_bundle(ticket, stdout, stderr):
                     stream.write(payload)
                     stream.flush()
                     os.fsync(stream.fileno())
+        child.update(buffers=fingerprint, buffer_phase=1, buffer_emitted=True)
+        _timing_emit('native_buffers', 1, 1, child['binding'])
     except BaseException:
         _timing_abort()
     finally:
@@ -1330,15 +1526,18 @@ def record_child_exit(ticket, exit_code, timed_out=False):
         if (existing.get('actual_exit') != exit_code or existing.get('ticket_id') != ticket['ticket_id']
                 or existing.get('run_id') != ticket['run_id']):
             raise ValueError('OFFLINE_CHILD_EXIT_CHANGED')
+        _timing_passive(_timing_exit_written, ticket, exit_code)
         return
     exclusive_json(path, dict(ticket_id=ticket['ticket_id'], run_id=ticket['run_id'],
                               actual_exit=exit_code, timed_out=bool(timed_out)))
-    timing_event('exit_written', exit_code)
+    _timing_passive(_timing_exit_written, ticket, exit_code)
 
 
 def attach_process(process, ticket):
     """Preserve Popen class/protocol, observe only this admitted instance."""
     original_wait, original_communicate, original_poll = process.wait, process.communicate, process.poll
+    _timing_passive(_timing_child_begin, ticket)
+    _timing_passive(_timing_child_launch, ticket, process)
 
     def observe(code):
         if code is not None:
@@ -1359,11 +1558,13 @@ def attach_process(process, ticket):
         try:
             result = original_communicate(*a, **kw)
         except subprocess.TimeoutExpired:
+            _timing_passive(_timing_native_unknown, ticket, 4)
             _close_child_job(ticket, terminate=True)
             process.kill()
             original_wait(timeout=5)
             record_child_exit(ticket, process.returncode, timed_out=True)
             raise
+        _timing_passive(_timing_native_return, ticket, result)
         observe(process.returncode)
         return result
 
@@ -3133,7 +3334,7 @@ def run_child(argv, role='f3-control', roots=None, timeout=30, expected_counts=N
             bits, phase = _TIMING.pop('timeout_snapshot')
             timing_event('communicate_timeout', bits, phase)
             timing_event('cleanup_end', time.perf_counter_ns() - _TIMING.pop('cleanup_began', time.perf_counter_ns()))
-    timing_native_bundle(ticket, stdout, stderr)
+    _timing_passive(_timing_native_return, ticket, (stdout, stderr))
     measured = timing_clock()
     errors, final = _validate_ticket(ticket)
     timing_cost('ticket', measured)
