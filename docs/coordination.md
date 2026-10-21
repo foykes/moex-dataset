@@ -749,3 +749,78 @@ grants in finally with actual readback. Existing Windows/notebook/syntax trigger
 are authorized; cancelled/skipped jobs are not PASS. Old revoked grants and night
 counters are not reused. Stage B, main merge/push, issue closure, production and
 remote publication remain unauthorized; the separate main recovery HOLD is kept.
+
+## D2 Linux Stage B — owner delivery grant and scoped H, 2026-10-22
+
+This append records the new owner decision without changing historical entries.
+Accepted plan is D2_LINUX_STAGE_B_PLAN_R2 plus unchanged PLAN_V1. The owner now
+permits DEVELOPMENT_AND_PRELIMINARY_CODE_REVIEW before prerequisite #117 merges.
+Development base is accepted #117 HEAD 25dee502a68128aea752f24ff67dfcb16b615a36,
+tree de00f0531ad03749155ada752ddf3fc7c38e803a; it is not current main. Observed
+main e3d4d2af23d217af54683ca7a1141ce77276ea12 has disjoint A/B changes relative
+to the protected Stage B interfaces. No automatic rebase or main integration.
+
+Owner delivery attachment SHA256 is
+8c35ad68be596d95589031ec228c38865182506c2518e034bbe438af0206e807.
+Actual F/coordinator H is FCOORD-D2-LINUX-STAGEB-H-20261022-25dee502, issued
+2026-10-21T21:45:28Z and independently read, sealed-manifest verified and ACKed
+by D2. Before first source write the new owning checkout/branch/base/tree and all
+17 existing/absent blob pins were rechecked clean. The full scoped scan found no
+competing edit outside frozen Windows D2; F3 expressly has no writer in this
+scope. These are point-in-time observations rather than an OS lease.
+
+Sole Stage B owner is D2 in `.worktrees/mds-d2-linux-stage-b`, branch
+`codex/mds-d2-linux-stage-b`. One stacked Draft PR uses base
+`codex/d2-fixture-p6` and states Depends on #117; the prerequisite branch/head
+and six fixtures remain read-only. Preliminary review readiness is not merge
+readiness or integration acceptance.
+
+Exact write boundary, including indivisible upload pair:
+
+```text
+upload.py
+upload.ipynb
+main.py
+.github/lnx02/verify_env.py
+.github/workflows/d2-linux-offline.yml
+tools/offline_linux.py
+tools/offline_guard_linux.py
+tests/d2/conftest.py
+tests/d2/d2_worker.py
+tests/d2/test_supervision.py
+tests/d2/test_targets.py
+tests/d2/test_logging_contract.py
+tests/d2/test_guard_admission.py
+tests/fixtures/d2/expected.json
+docs/d2_supervision.md
+docs/testing.md
+docs/coordination.md
+```
+
+Named boundaries: main runtime admission/upload/F-LOG/completion only; helper
+adds a separate closed MDS_D2_LINUX family; workflow adds isolated D2 routing/job;
+Linux runner/guard add only closed D2 fixtures, preserving the existing foundation.
+Testing docs are D2-only and this coordination section is append-only. No foreign
+reservation is acquired. Windows runner/guard/workflows, F-LOG/dataset writer,
+locks/settings/datasets, A/B/C/Workspace and other notebook pairs remain read-only.
+Frozen Windows D2 and all historical source/environment/evidence seals remain
+preserved. Closed H03 and separate U-P2/F07/TIME01 permissions are not reused.
+
+The owner permits ordinary own-branch commits/pushes, one stacked Draft PR,
+hash-locked hosted SETUP and at most six Linux candidate cycles (discovery plus
+exact authorized attempt two, twelve attempts total), four substantive repairs,
+eight full local D2 runs and one final syntax dispatch. Counters live in the
+delivery evidence ledger. No empty-commit retries or timeout/oracle weakening.
+Only fresh exact-identity D2 grants are created, read back and revoked in finally;
+legacy variables and other live grants are not changed. Existing authorized
+Windows/notebook side effects retain their true failed/cancelled conclusions.
+
+No D1/F3 waiver applies to Stage B. #117's narrow D1 waiver remains confined to
+its unchanged six-path prerequisite. Eventual integration requires accepted
+prerequisite, current source tuple, real mandatory gates and independent review.
+Any eventual merge additionally needs owner authorization and exact post-merge
+D2/LNX-03/LNX-02 verification with separate grants. No Stage B merge, issue
+closure, production/staging, MOEX/Google/FTP writes, cron, full reload, D4/D5/D6
+or Windows recovery is authorized by this append. Rollback needs an explicit
+controlled revert with publication stopped; it restores old D2 defects, not a
+production recovery. Worktrees, immutable environments and evidence are retained.

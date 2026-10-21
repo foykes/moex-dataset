@@ -1,4 +1,4 @@
-"""Closed LNX-03 fixture admission. This is not a production uploader adapter.
+"""Closed LNX-03 fixtures and D2 test admission, separate from publication.
 
 Popen is the sole reaper. Multiprocessing contributes only its attested spawn
 serialization of the real F-LOG Queue/Pipe/RawValue objects. No Process._popen
@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 
 
 NATIVE_CASES = (
@@ -796,3 +797,432 @@ def _run_native_case(case, repo, scratch, attestation):
 def _fd_identity(descriptor):
     info = os.fstat(descriptor)
     return info.st_dev, info.st_ino, info.st_mode, info.st_rdev
+
+
+# Stage B has a separate closed authority. None of these names extend the
+# LNX-03 fixture cases, source manifest, runner ticket or native launcher.
+D2_CASES = (
+    'success', 'google_error', 'ftp_error', 'exit23', 'system_exit0',
+    'system_exit_string', 'abnormal_before_ready', 'abnormal_after_final',
+    'normal_without_final', 'final_then_exit23', 'start_google_before',
+    'start_ftp_before', 'start_google_after_native', 'start_ftp_after_native',
+    'constructor_error', 'hang_google', 'hang_ftp', 'cleanup_unsettled',
+    'partial_google', 'partial_ftp', 'checkpoint_missing', 'checkpoint_corrupt',
+    'checkpoint_oversize', 'checkpoint_stale_run', 'checkpoint_stale_pid',
+    'checkpoint_stale_sequence', 'listener_failure', 'ack_failure',
+    'bootstrap_replay_failure', 'bootstrap_import_failure',
+    'bootstrap_unpickle_failure', 'foreign_fd', 'canary_positive_control',
+    'parent_finalization_raises', 'parent_finalization_incomplete',
+    'postseal_cleanup_failure', 'cancel_google', 'cancel_ftp',
+    'ticket_ftp_failure', 'pidfd_google_failure', 'identity_google_failure',
+    'registry_google_failure', 'registration_google_failure',
+    'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
+)
+D2_BASELINE_CASES = (
+    'baseline_google_swallowed', 'baseline_ftp_root_swallowed',
+    'baseline_ftp_dividends_swallowed', 'baseline_ftp_tickers_swallowed',
+    'baseline_exit23', 'baseline_hang',
+)
+D2_SOURCE_PATHS = (
+    'upload.py', 'upload.ipynb', 'main.py', '.github/lnx02/verify_env.py',
+    '.github/workflows/d2-linux-offline.yml', 'tools/offline_linux.py',
+    'tools/offline_guard_linux.py', 'tests/d2/conftest.py',
+    'tests/d2/d2_worker.py', 'tests/d2/test_supervision.py',
+    'tests/d2/test_targets.py', 'tests/d2/test_logging_contract.py',
+    'tests/d2/test_guard_admission.py', 'tests/fixtures/d2/expected.json',
+    'docs/d2_supervision.md', 'docs/testing.md', 'docs/coordination.md',
+)
+D2_CONTROLLER_SECONDS = 75
+_d2_controller = None
+_d2_profile = None
+_d2_runner = None
+_d2_case_lock = threading.Lock()
+_d2_legacy_issued = {}
+_d2_worker_launches = set()
+
+
+def _d2_require(value, code):
+    if not value:
+        raise NativeAdmissionError(code)
+
+
+def _d2_path(value, directory=False):
+    path = Path(os.path.abspath(value))
+    for component in (path, *path.parents):
+        info = component.lstat()
+        _d2_require(not stat.S_ISLNK(info.st_mode), 'D2_NATIVE_PATH_ALIAS')
+    info = path.lstat()
+    _d2_require(path.resolve() == path and info.st_uid == os.getuid(), 'D2_NATIVE_PATH_OWNER')
+    _d2_require(stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode),
+                'D2_NATIVE_PATH_KIND')
+    if not directory:
+        _d2_require(info.st_nlink == 1, 'D2_NATIVE_PATH_LINK')
+    return path
+
+
+def _d2_read(path, maximum=1024 * 1024):
+    path = _d2_path(path)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        handle = os.fdopen(descriptor, 'rb')
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with handle:
+        info = os.fstat(handle.fileno())
+        _d2_require(info.st_nlink == 1 and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= maximum,
+                    'D2_NATIVE_RECORD_BOUND')
+        data = handle.read(maximum + 1)
+    _d2_require(len(data) <= maximum, 'D2_NATIVE_RECORD_BOUND')
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            _d2_require(key not in value, 'D2_NATIVE_RECORD_DUPLICATE')
+            value[key] = item
+        return value
+    def constant(value):
+        raise NativeAdmissionError('D2_NATIVE_RECORD_CONSTANT')
+    return json.loads(data, object_pairs_hook=pairs, parse_constant=constant)
+
+
+def _d2_ticks(pid):
+    fields = Path('/proc/' + str(pid) + '/stat').read_text(encoding='ascii').rsplit(')', 1)[1].split()
+    return int(fields[19])
+
+
+def _d2_sources(repo):
+    return {name: hashlib.sha256(_d2_path(repo / name).read_bytes()).hexdigest()
+            for name in D2_SOURCE_PATHS}
+
+
+def d2_runner_admission(ticket):
+    """Bind the one-use runner ticket, not an environment-only test switch."""
+    global _d2_runner
+    _d2_require(_d2_runner is None, 'D2_NATIVE_RUNNER_REUSED')
+    path = _d2_path(os.environ.get('MDS_D2_LINUX_RUN_TICKET', '/d2-undeclared'))
+    raw = path.read_bytes()
+    _d2_require(hashlib.sha256(raw).hexdigest() == os.environ.get('MDS_D2_LINUX_RUN_TICKET_SHA256')
+                and _d2_read(path, 65536) == ticket, 'D2_NATIVE_RUNNER_TICKET')
+    root = _d2_path(ticket['root'], True)
+    authority = ticket['authority']
+    _d2_require(ticket['schema_version'] == 'd2-linux-runner-ticket-v1'
+                and ticket['phase'] == 'application' and ticket['parent_pid'] == os.getppid()
+                and path == root / 'jobs' / 'application-application-ticket.json'
+                and path.with_suffix('.claimed').is_file()
+                and _d2_read(root / '.lnx02-owner.json', 65536) == {'nonce': ticket['nonce'], 'purpose': 'D2-LINUX'}
+                and authority['approved'] is True and authority['consumer'] == authority['job'] == 'd2-linux'
+                and authority['sha'] == ticket['source_sha'] == os.environ.get('MDS_D2_SOURCE_SHA')
+                and authority['actor'] == authority['triggering_actor'] == 'foykes'
+                and authority['attempt'] == 2 and type(authority['attempt']) is int,
+                'D2_NATIVE_RUNNER_IDENTITY')
+    repo = _d2_path(ticket['repo'], True)
+    _d2_require(repo == Path(__file__).absolute().parents[1]
+                and all(ticket['source_files_sha256'].get(name) == digest
+                        for name, digest in _d2_sources(repo).items())
+                and stat.S_IMODE(root.stat().st_mode) == 0o700
+                and ticket['native_root'] == str(root / 'fixtures' / 'd2'), 'D2_NATIVE_RUNNER_SOURCE')
+    _d2_runner = dict(pid=os.getpid(), start_ticks=_d2_ticks(os.getpid()), root=str(root),
+        native_root=ticket['native_root'], repo=str(repo), source_sha=ticket['source_sha'],
+        source_files_sha256=_d2_sources(repo))
+    return True
+
+
+def d2_controller_admission(ticket):
+    """Called only by the fixed, source-bound controller before vendor imports."""
+    global _d2_controller
+    _d2_require(_d2_controller is None, 'D2_NATIVE_CONTROLLER_REUSED')
+    root = _d2_path(os.environ.get('MDS_D2_CONTROLLER_ROOT', '/d2-undeclared'), True)
+    path = root / 'controller.ticket.json'
+    raw = path.read_bytes()
+    _d2_require(hashlib.sha256(raw).hexdigest() == os.environ.get('MDS_D2_CONTROLLER_TICKET_SHA256')
+                and _d2_read(path, 65536) == ticket, 'D2_NATIVE_CONTROLLER_TICKET')
+    keys = {'schema_version', 'role', 'case', 'repo_root', 'scratch', 'source_sha',
+            'parent_pid', 'nonce', 'source_files_sha256', 'result'}
+    _d2_require(type(ticket) is dict and set(ticket) == keys
+                and ticket['schema_version'] == 'd2-controller-ticket-v1'
+                and ticket['role'] == 'controller'
+                and ticket['case'] in D2_CASES + D2_BASELINE_CASES
+                and ticket['parent_pid'] == os.getppid()
+                and ticket['scratch'] == str(root)
+                and ticket['result'] == str(root / 'controller-result.json')
+                and re.fullmatch('[0-9a-f]{32}', ticket['nonce'])
+                and ticket['source_sha'] == os.environ.get('MDS_D2_SOURCE_SHA'),
+                'D2_NATIVE_CONTROLLER_IDENTITY')
+    repo = _d2_path(ticket['repo_root'], True)
+    _d2_require(repo == Path(__file__).absolute().parents[1]
+                and _d2_sources(repo) == ticket['source_files_sha256']
+                and stat.S_IMODE(root.stat().st_mode) == 0o700,
+                'D2_NATIVE_CONTROLLER_SOURCE')
+    claim = os.open(root / 'controller.claim', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    os.close(claim)
+    install_process_guard()
+    _d2_controller = dict(ticket, controller_pid=os.getpid(), controller_start_ticks=_d2_ticks(os.getpid()))
+    return dict(_d2_controller)
+
+
+def issue_d2_profile(repo, scratch, case, vendor_root):
+    global _d2_profile
+    _d2_require(_d2_controller is not None and _d2_profile is None
+                and case in D2_CASES and case == _d2_controller['case'], 'D2_NATIVE_PROFILE_REFUSED')
+    repo, scratch, vendor = (_d2_path(repo, True), _d2_path(scratch, True), _d2_path(vendor_root, True))
+    owner = _d2_path(_d2_controller['scratch'], True)
+    _d2_require(repo == Path(_d2_controller['repo_root']) and scratch.is_relative_to(owner)
+                and vendor.is_relative_to(owner), 'D2_NATIVE_PROFILE_ROOT')
+    names = {path.name for path in vendor.iterdir()}
+    _d2_require(names == {'pygsheets.py', 'ftplib.py', 'scenario.json'}, 'D2_NATIVE_VENDOR_FILES')
+    files = {name: hashlib.sha256(_d2_path(vendor / name).read_bytes()).hexdigest() for name in sorted(names)}
+    _d2_profile = dict(schema_version='d2-test-profile-v1', case=case, repo_root=str(repo),
+        scratch=str(scratch), vendor_root=str(vendor), vendor_files_sha256=files,
+        source_files_sha256=_d2_sources(repo), controller_pid=os.getpid(),
+        controller_start_ticks=_d2_ticks(os.getpid()), nonce=_d2_controller['nonce'], deadline_seconds=15)
+    return dict(_d2_profile)
+
+
+def _d2_profile_identity(profile, worker=False):
+    keys = {'schema_version', 'case', 'repo_root', 'scratch', 'vendor_root', 'vendor_files_sha256',
+            'source_files_sha256', 'controller_pid', 'controller_start_ticks', 'nonce', 'deadline_seconds'}
+    _d2_require(type(profile) is dict and set(profile) == keys
+                and profile['schema_version'] == 'd2-test-profile-v1'
+                and profile['case'] in D2_CASES and profile['deadline_seconds'] == 15
+                and type(profile['controller_pid']) is int
+                and profile['controller_pid'] == (os.getppid() if worker else os.getpid())
+                and profile['controller_start_ticks'] == _d2_ticks(profile['controller_pid'])
+                and re.fullmatch('[0-9a-f]{32}', profile['nonce']), 'D2_NATIVE_PROFILE_IDENTITY')
+    repo = _d2_path(profile['repo_root'], True)
+    scratch, vendor = _d2_path(profile['scratch'], True), _d2_path(profile['vendor_root'], True)
+    _d2_require(repo == Path(__file__).absolute().parents[1]
+                and _d2_sources(repo) == profile['source_files_sha256']
+                and vendor.is_relative_to(scratch.parent)
+                and profile['vendor_files_sha256']
+                and set(profile['vendor_files_sha256']) == {'pygsheets.py', 'ftplib.py', 'scenario.json'},
+                'D2_NATIVE_PROFILE_SOURCE')
+    for name, digest in profile['vendor_files_sha256'].items():
+        _d2_require(hashlib.sha256(_d2_path(vendor / name).read_bytes()).hexdigest() == digest,
+                    'D2_NATIVE_VENDOR_CHANGED')
+
+
+def verify_d2_profile(profile):
+    try:
+        _d2_require(_d2_controller is not None and profile == _d2_profile,
+                    'D2_NATIVE_PROFILE_UNISSUED')
+        _d2_profile_identity(profile)
+        return True
+    except BaseException:
+        return False
+
+
+@contextmanager
+def d2_launch_scope(command, inherited, ticket):
+    """Permit only the fixed production entry and issued controller profile."""
+    value = _d2_read(ticket, 65536)
+    _d2_require(verify_d2_profile(value.get('profile'))
+                and value.get('schema') == 'd2-worker-ticket-v1'
+                and value.get('role') in {'google', 'ftp', 'tracker'}
+                and value.get('parent_pid') == os.getpid()
+                and value.get('parent_start_ticks') == _d2_ticks(os.getpid()),
+                'D2_NATIVE_LAUNCH_TICKET')
+    repo = _d2_path(value['repo_root'], True)
+    run_root = _d2_path(value['run_root'], True)
+    _d2_require(Path(ticket).absolute() == run_root / (value['role'] + '.ticket.json')
+                and run_root.is_relative_to(Path(value['profile']['scratch']))
+                and str(Path(ticket).absolute()) not in _d2_worker_launches,
+                'D2_NATIVE_LAUNCH_REPLAY_OR_ROOT')
+    expected = (str(Path(sys.executable).absolute()), '-I', '-S', '-B', '-X', 'utf8',
+                str(repo / 'upload.py'), '--d2-worker', str(Path(ticket).absolute()))
+    _d2_require(tuple(command) == expected and set(inherited) == set(value['expected_fds'])
+                and len(set(inherited)) == len(inherited), 'D2_NATIVE_LAUNCH_ARGUMENTS')
+    _admit_descriptors(set(value['expected_fds']), set(inherited))
+    guard = install_process_guard()
+    _d2_require(guard.command is None, 'D2_NATIVE_LAUNCH_BUSY')
+    _d2_worker_launches.add(str(Path(ticket).absolute()))
+    guard.command, guard.owner = expected, threading.get_ident()
+    try:
+        yield
+    finally:
+        guard.command, guard.owner = None, None
+
+
+def d2_worker_admission(ticket):
+    """A test worker receives no process/network permission after bootstrap."""
+    _d2_require(type(ticket) is dict and ticket.get('schema') == 'd2-worker-ticket-v1'
+                and ticket.get('role') in {'google', 'ftp', 'tracker'}, 'D2_NATIVE_WORKER_TICKET')
+    _d2_profile_identity(ticket.get('profile'), worker=True)
+    _d2_require(ticket['parent_pid'] == os.getppid()
+                and ticket['parent_start_ticks'] == _d2_ticks(os.getppid()), 'D2_NATIVE_WORKER_PARENT')
+    install_process_guard()
+    return True
+
+
+def _d2_launch_fixed(repo, ticket, environment, *, owner=None):
+    guard = install_process_guard()
+    command = (str(Path(sys.executable).absolute()), '-I', '-S', '-B', '-X', 'utf8',
+               str(repo / 'tests/d2/d2_worker.py'), '--ticket', str(ticket))
+    _d2_require(guard.command is None, 'D2_NATIVE_LAUNCH_BUSY')
+    guard.command, guard.owner = command, threading.get_ident()
+    process = descriptor = None
+    external_owner = owner is not None
+    if owner is None:
+        owner = {}
+    owner.update(process=None, pidfd=None, identity=None, birth_attempted=False,
+                 birth_unknown=False, pidfd_bound=False)
+    try:
+        owner['birth_attempted'] = True
+        process = subprocess.Popen(command, executable=command[0], cwd=repo, env=environment,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, start_new_session=True)
+        owner['process'] = process
+        descriptor = os.pidfd_open(process.pid, 0)
+        owner.update(pidfd=descriptor, pidfd_bound=True)
+        owner['identity'] = _process_identity(process.pid)
+        return owner
+    except BaseException:
+        owner['birth_unknown'] = owner['birth_attempted'] and process is None
+        if process is not None:
+            try:
+                process.kill()
+                process.wait(timeout=10)
+            except BaseException:
+                pass
+        if descriptor is not None and not external_owner:
+            os.close(descriptor)
+            owner['pidfd'] = None
+        raise
+    finally:
+        guard.command, guard.owner = None, None
+
+
+def run_d2_case(case, repo_root, scratch):
+    _d2_require(_d2_runner is not None and _d2_runner['pid'] == os.getpid()
+                and _d2_runner['start_ticks'] == _d2_ticks(os.getpid()), 'D2_NATIVE_RUNNER_UNISSUED')
+    _d2_require(_d2_case_lock.acquire(blocking=False), 'D2_NATIVE_CONCURRENT_CASE')
+    try:
+        return _run_d2_case(case, repo_root, scratch)
+    finally:
+        _d2_case_lock.release()
+
+
+def _run_d2_case(case, repo_root, scratch):
+    """One fixed controller lifetime per case; its OS result is never invented."""
+    _d2_require(case in D2_CASES + D2_BASELINE_CASES, 'D2_NATIVE_CASE_INVALID')
+    attest_runtime()
+    repo, scratch = _d2_path(repo_root, True), _d2_path(scratch, True)
+    native = _d2_path(_d2_runner['native_root'], True)
+    _d2_require(scratch.is_relative_to(native) and str(repo) == _d2_runner['repo']
+                and _d2_sources(repo) == _d2_runner['source_files_sha256'],
+                'D2_NATIVE_CASE_ROOT')
+    sha = os.environ.get('MDS_D2_SOURCE_SHA', '')
+    _d2_require(sha == _d2_runner['source_sha'] and re.fullmatch('[0-9a-f]{40}', sha),
+                'D2_NATIVE_SOURCE_IDENTITY')
+    work = scratch / ('controller-' + uuid.uuid4().hex)
+    work.mkdir(mode=0o700)
+    path = work / 'controller.ticket.json'
+    value = dict(schema_version='d2-controller-ticket-v1', role='controller', case=case,
+        repo_root=str(repo), scratch=str(work), source_sha=sha, parent_pid=os.getpid(),
+        nonce=uuid.uuid4().hex, source_files_sha256=_d2_sources(repo), result=str(work / 'controller-result.json'))
+    _ticket(path, value)
+    environment = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
+        'MDS_D2_CONTROLLER_ROOT': str(work), 'MDS_D2_CONTROLLER_TICKET_SHA256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'MDS_D2_SOURCE_SHA': sha}
+    result = dict(schema_version='d2-native-case-v1', case=case,
+        controller=dict(started=False, pid=None, pidfd_bound=False, exitcode=None,
+                        settled=False, timed_out=False, birth_attempted=False, birth_unknown=False), observation=None)
+    record = {}
+    try:
+        _d2_launch_fixed(repo, path, environment, owner=record)
+        process = record['process']
+        result['controller'].update(started=True, pid=process.pid, pidfd_bound=True)
+        try:
+            process.wait(timeout=D2_CONTROLLER_SECONDS)
+        except subprocess.TimeoutExpired:
+            result['controller']['timed_out'] = True
+            _settle([record], timeout=10)
+        result['controller'].update(exitcode=process.poll(),
+            settled=process.returncode is not None and bool(select.select([record['pidfd']], [], [], 0)[0]))
+        if result['controller']['settled'] and Path(value['result']).exists():
+            public = Path(value['result']).read_bytes()
+            _d2_require(len(public) <= 1024 * 1024 and b'D2_PRIVATE_CANARY_4c1e11' not in public
+                and re.search(rb'(?i)(https?://|file://|Traceback [(]most recent|[A-Z]:[\\/])', public) is None
+                and re.search(rb'(?:"|[\s])/[-A-Za-z0-9_.]', public) is None, 'D2_NATIVE_EXPORT_REFUSED')
+            result['observation'] = _d2_read(value['result'])
+    except BaseException:
+        # Preserve actual birth observations even if binding/registration did
+        # not finish. No no-birth proof follows from a constructor exception.
+        pass
+    finally:
+        process = record.get('process')
+        result['controller'].update(birth_attempted=record.get('birth_attempted', False),
+                                    birth_unknown=record.get('birth_unknown', False))
+        if record.get('birth_unknown'):
+            result['controller']['started'] = None
+        if process is not None:
+            if process.poll() is None:
+                _settle([record], timeout=10)
+            result['controller'].update(started=True, pid=process.pid,
+                pidfd_bound=record['pidfd_bound'], exitcode=process.poll(),
+                settled=process.returncode is not None and (record['pidfd'] is None
+                    or bool(select.select([record['pidfd']], [], [], 0)[0])))
+        if record.get('pidfd') is not None:
+            os.close(record['pidfd'])
+            record['pidfd'] = None
+    return result
+
+
+def issue_d2_legacy_ticket(repo, scratch, case, role, original_sha256):
+    _d2_require(_d2_controller is not None and case == _d2_controller['case']
+                and case in D2_BASELINE_CASES and role in {'baseline-google', 'baseline-ftp'},
+                'D2_NATIVE_BASELINE_REFUSED')
+    repo, scratch = _d2_path(repo, True), _d2_path(scratch, True)
+    _d2_require(repo == Path(_d2_controller['repo_root'])
+                and scratch.is_relative_to(Path(_d2_controller['scratch']))
+                and re.fullmatch('[0-9a-f]{64}', original_sha256), 'D2_NATIVE_BASELINE_SOURCE')
+    fixture = json.loads((repo / 'tests/fixtures/d2/expected.json').read_bytes())
+    _d2_require(original_sha256 == fixture.get('baseline_upload_sha256')
+                == '95945e89d8bc766f934132270a8ee5df75d5382cad86ff44771eb352d5e5acb1'
+                and fixture.get('baseline_upload_git_blob') == 'dc1f12bc63eadebe589a666ffcb6a0a2bb908747'
+                and fixture.get('baseline_upload_bytes') == 7210, 'D2_NATIVE_BASELINE_SOURCE')
+    path = scratch / (role + '.ticket.json')
+    value = dict(schema_version='d2-baseline-ticket-v1', role=role, case=case,
+        repo_root=str(repo), scratch=str(scratch), parent_pid=os.getpid(),
+        parent_start_ticks=_d2_ticks(os.getpid()), original_sha256=original_sha256,
+        controller_root=_d2_controller['scratch'], source_files_sha256=_d2_sources(repo))
+    _ticket(path, value)
+    _d2_legacy_issued[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return path
+
+
+def launch_d2_legacy(ticket):
+    value = _d2_read(ticket, 65536)
+    _d2_require(_d2_controller is not None and value['case'] == _d2_controller['case']
+                and value['parent_pid'] == os.getpid()
+                and value['parent_start_ticks'] == _d2_ticks(os.getpid()), 'D2_NATIVE_BASELINE_PARENT')
+    expected = _d2_legacy_issued.pop(str(Path(ticket)), None)
+    _d2_require(expected is not None and expected == hashlib.sha256(Path(ticket).read_bytes()).hexdigest()
+                and value['schema_version'] == 'd2-baseline-ticket-v1'
+                and value['role'] in {'baseline-google', 'baseline-ftp'}
+                and value['controller_root'] == _d2_controller['scratch']
+                and value['source_files_sha256'] == _d2_sources(Path(value['repo_root'])),
+                'D2_NATIVE_BASELINE_UNISSUED')
+    root = Path(_d2_controller['scratch'])
+    environment = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
+        'MDS_D2_CONTROLLER_ROOT': str(root),
+        'MDS_D2_CONTROLLER_TICKET_SHA256': os.environ['MDS_D2_CONTROLLER_TICKET_SHA256'],
+        'MDS_D2_SOURCE_SHA': os.environ['MDS_D2_SOURCE_SHA']}
+    return _d2_launch_fixed(Path(value['repo_root']), Path(ticket), environment)
+
+
+def settle_d2_legacy(records):
+    _settle(records, timeout=10)
+    complete = True
+    for record in records:
+        if record.get('pidfd') is None:
+            if record['process'].returncode is None or not record.get('pidfd_exit_observed'):
+                complete = False
+            continue
+        if record['process'].returncode is None or not select.select([record['pidfd']], [], [], 0)[0]:
+            complete = False
+        elif record.get('pidfd') is not None:
+            record['pidfd_exit_observed'] = True
+            os.close(record['pidfd'])
+            record['pidfd'] = None
+    return complete
