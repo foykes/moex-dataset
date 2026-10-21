@@ -109,6 +109,15 @@ def test_timing_trace_rejects_missing_corrupt_or_foreign_records():
     assert 'FOREIGN_CHILD' in guard.timing_trace_errors(stale, identity, child_required, 40)
     duplicate = [*child_records, dict(child_records[1], seq=5, mono_ns=40)]
     assert 'DUPLICATE_CHILD' in guard.timing_trace_errors(duplicate, identity, child_required, 40)
+    second = dict(ticket, ticket_id='6' * 32)
+    two_children = dict(_identity(), issued_children={'5' * 32: ticket, '6' * 32: second})
+    alias = [*child_records[:2], dict(child_records[0], child_id='6' * 32),
+             dict(child_records[1], child_id='6' * 32), *child_records[2:]]
+    alias = [dict(row, seq=n, mono_ns=n * 10) for n, row in enumerate(alias, 1)]
+    assert 'REUSED_CHILD_IDENTITY' in guard.timing_trace_errors(alias, two_children, child_required, 60)
+    distinct = [dict(row) for row in alias]
+    distinct[3].update(child_pid=235, child_creation_100ns=700)
+    assert guard.timing_trace_errors(distinct, two_children, child_required, 60) == []
 
 
 def test_timing_result_cannot_override_native_failure():

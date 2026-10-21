@@ -151,6 +151,18 @@ def timing_trace_errors(records, identity, required, deadline_ns):
                 errors.add('MISSING_CHILD')
             if len(identifiers) != len(set(identifiers)):
                 errors.add('DUPLICATE_CHILD')
+        processes = {}
+        for record in records:
+            if not isinstance(record, dict) or record.get('event') != 'child_launch':
+                continue
+            process = (record.get('child_pid'), record.get('child_creation_100ns'))
+            if any(type(value) is not int or value <= 0 for value in process):
+                errors.add('CORRUPT')
+                continue
+            child_id = record.get('child_id')
+            if process in processes and processes[process] != child_id:
+                errors.add('REUSED_CHILD_IDENTITY')
+            processes[process] = child_id
     return sorted(errors)
 
 

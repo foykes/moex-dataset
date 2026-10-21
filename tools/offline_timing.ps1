@@ -76,6 +76,9 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
     # absent OS observation. This function does not reconcile native outcomes.
     $errors = New-Object 'Collections.Generic.HashSet[string]'
     $ticketMap = @{}; $writerMap = @{}; $covered = 0
+    $writerProcesses = New-Object 'Collections.Generic.HashSet[string]'
+    $launchProcesses = New-Object 'Collections.Generic.HashSet[string]'
+    $workloadProcesses = New-Object 'Collections.Generic.HashSet[string]'
     $childEvents = @('ticket_issued','child_launch','popen_begin','popen_end',
         'job_assigned','gate_released','communicate_begin','communicate_end',
         'communicate_timeout','cleanup_end','exit_written','child_reconciled')
@@ -97,6 +100,7 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
             if ($writerMap.ContainsKey($writer.ticket_id)) { [void]$errors.Add('DUPLICATE_WRITER'); continue }
             $writerMap[$writer.ticket_id] = $writer
             $key = '{0}:{1}' -f $writer.pid,$writer.creation_100ns
+            if (-not $writerProcesses.Add($key)) { [void]$errors.Add('REUSED_WRITER_IDENTITY') }
             if (-not $External.ContainsKey($key)) { [void]$errors.Add('MISSING_WRITER_IDENTITY'); continue }
             $observed = $External[$key]
             if ($observed.image_kind -cne 'base_runtime' -or $observed.image_sha256 -cne $Binding.base_python_sha256) {
@@ -162,6 +166,9 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
                 [void]$errors.Add('MISSING_EXTERNAL_IDENTITY'); continue
             }
             $parent = $External[$issuerKey]; $child = $External[$childKey]
+            if (-not $launchProcesses.Add($childKey)) {
+                [void]$errors.Add('REUSED_EXTERNAL_IDENTITY'); continue
+            }
             if ($launch.child_parent_pid -ne $child.parent -or $child.parent -ne $parent.pid -or
                 $parent.creation -gt $child.creation -or
                 ($parent.exit_creation -ne 0 -and $parent.exit_creation -lt $child.creation)) {
@@ -198,6 +205,10 @@ function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
                     $workload = & $resolveRuntime $child
                     if ($null -eq $workload) { [void]$errors.Add('MISSING_OR_FOREIGN_RUNTIME_EDGE'); continue }
                 }
+            }
+            $workloadKey = '{0}:{1}' -f $workload.pid,$workload.creation
+            if (-not $workloadProcesses.Add($workloadKey)) {
+                [void]$errors.Add('REUSED_WORKLOAD_IDENTITY'); continue
             }
             if ($writerMap.ContainsKey($id) -and
                 ($writerMap[$id].pid -ne $workload.pid -or
