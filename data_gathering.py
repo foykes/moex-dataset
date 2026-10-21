@@ -1137,18 +1137,43 @@ _A3_SOURCE_DIAGNOSTIC_LIMITS = dict(seconds=2700, gets=512, bytes=128 * 1024**2,
 _A3_SOURCE_DIAGNOSTIC_REFERENCE_LIMITS = dict(evidence_bytes=256 * 1024**2)
 
 
+def _a3_linux_fs_type(descriptor):
+    import ctypes
+    if sys.maxsize <= 2**32 or os.uname().machine != 'x86_64':
+        raise ValueError('A3_MEMORY_ARCH_UNKNOWN')
+    # Linux x86_64 statfs UAPI: fixed 64-bit words, fsid is two 32-bit words.
+    class StatFS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_int64) for name in (
+            'f_type', 'f_bsize', 'f_blocks', 'f_bfree', 'f_bavail', 'f_files', 'f_ffree')]
+        _fields_ += [('f_fsid', ctypes.c_int32 * 2)]
+        _fields_ += [(name, ctypes.c_int64) for name in ('f_namelen', 'f_frsize', 'f_flags')]
+        _fields_ += [('f_spare', ctypes.c_int64 * 4)]
+    if ctypes.sizeof(StatFS) != 120 or ctypes.sizeof(ctypes.c_void_p) != 8:
+        raise ValueError('A3_MEMORY_ARCH_UNKNOWN')
+    function = ctypes.CDLL(None, use_errno=True).fstatfs
+    function.argtypes = [ctypes.c_int, ctypes.POINTER(StatFS)]
+    function.restype = ctypes.c_int
+    sample = StatFS()
+    if function(descriptor, ctypes.byref(sample)) != 0:
+        raise OSError(ctypes.get_errno(), 'A3_MEMORY_FILESYSTEM_UNAVAILABLE')
+    return int(sample.f_type)
+
+
 def _a3_linux_read(path):
     # Только bounded read kernel metadata; никаких writes или cgroup changes.
     with open(path, 'r', encoding='utf-8', errors='strict') as stream:
         text = stream.read(65537)
-    if len(text) > 65536:
-        raise ValueError('A3_MEMORY_INPUT_LIMIT')
+        if len(text) > 65536:
+            raise ValueError('A3_MEMORY_INPUT_LIMIT')
+        allowed = (0x9FA0,) if os.fspath(path).startswith('/proc/') else (0x27E0EB, 0x63677270)
+        if _a3_linux_fs_type(stream.fileno()) not in allowed:
+            raise ValueError('A3_MEMORY_FILESYSTEM_UNKNOWN')
     return text
 
 
 def _a3_linux_runtime():
     import resource
-    if sys.maxsize <= 2**32:
+    if sys.maxsize <= 2**32 or os.uname().machine != 'x86_64':
         raise ValueError('A3_MEMORY_ARCH_UNKNOWN')
     return dict(namespace_inode=os.stat('/proc/thread-self/ns/cgroup').st_ino,
         namespace_link=os.readlink('/proc/thread-self/ns/cgroup'),
@@ -1184,9 +1209,22 @@ def _a3_linux_kib(text, names):
     return values
 
 
-def _a3_linux_cgroup_headroom(membership, mounts, controllers, available, swap_total):
-    # Initial namespace + a full-root mount are required: a namespace root or
-    # delegated mount alone cannot prove that no hidden ancestor limit applies.
+def _a3_linux_memory_controller(controllers):
+    memory = [line.split() for line in controllers.splitlines()
+              if line and not line.startswith('#') and line.split()[0] == 'memory']
+    if len(memory) != 1 or len(memory[0]) != 4:
+        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+    _, hierarchy, groups, enabled = memory[0]
+    hierarchy, groups, enabled = map(_a3_linux_number, (hierarchy, groups, enabled))
+    if groups < 1 or enabled not in (0, 1) or not enabled and hierarchy != 0:
+        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+    return hierarchy, groups, enabled
+
+
+def _a3_linux_cgroup_headroom(membership, mounts, controllers, available, swap_total,
+                             initial_namespace=True):
+    # A relative namespace root is not evidence of full ancestor visibility.
+    # /proc/cgroups reports global hierarchy counts, not namespace-local counts.
     entries = []
     for line in membership.splitlines():
         hierarchy, names, path = line.split(':', 2)
@@ -1196,14 +1234,7 @@ def _a3_linux_cgroup_headroom(membership, mounts, controllers, available, swap_t
                 any(part in ('.', '..', '') for part in parts) and path != '/'):
             raise ValueError('A3_MEMORY_CGROUP_PATH_INVALID')
         entries.append((hierarchy, names.split(',') if names else [], path))
-    memory = [line.split() for line in controllers.splitlines()
-              if line and not line.startswith('#') and line.split()[0] == 'memory']
-    if len(memory) != 1 or len(memory[0]) != 4:
-        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
-    _, hierarchy, _, enabled = memory[0]
-    hierarchy, enabled = _a3_linux_number(hierarchy), _a3_linux_number(enabled)
-    if enabled not in (0, 1):
-        raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+    hierarchy, groups, enabled = _a3_linux_memory_controller(controllers)
 
     def unescape(value):
         value = re.sub(r'\\(040|011|012|134)', lambda m: chr(int(m[1], 8)), value)
@@ -1233,6 +1264,10 @@ def _a3_linux_cgroup_headroom(membership, mounts, controllers, available, swap_t
         candidates = [row for row in mount_rows if row[0] == 'cgroup2' and row[1] == '/']
     else:
         raise ValueError('A3_MEMORY_CONTROLLER_UNKNOWN')
+    # In a non-initial namespace, one global group plus root membership proves
+    # there is no non-root memory cgroup or hidden memory/swap limit to inspect.
+    if not initial_namespace and (groups != 1 or path != '/'):
+        raise ValueError('A3_MEMORY_ANCESTORS_UNKNOWN')
     if not candidates:
         raise ValueError('A3_MEMORY_ANCESTORS_UNKNOWN')
     root = sorted(row[2].rstrip('/') for row in candidates)[0]
@@ -1282,15 +1317,18 @@ def _a3_linux_memory_snapshot():
     try:
         sampled_at = time.perf_counter()
         runtime = _a3_linux_runtime()
-        # Upstream proc_ns.h PROC_CGROUP_INIT_INO. Unknown/new representations
-        # refuse; PID 1 equality alone is not proof of the initial namespace.
-        if (runtime['namespace_inode'] != 0xEFFFFFFB or
-                runtime['namespace_link'] != 'cgroup:[4026531835]' or
+        # Validate namespace identity; only the initial namespace proves the
+        # ordinary full-ancestry path. Safe global no-limit cases are separate.
+        inode = runtime['namespace_inode']
+        if (type(inode) is not int or inode <= 0 or
+                runtime['namespace_link'] != 'cgroup:['+str(inode)+']' or
                 type(runtime['page_size']) is not int or runtime['page_size'] <= 0):
             return None
+        initial = inode == 0xEFFFFFFB
         membership = _a3_linux_read('/proc/thread-self/cgroup')
         mounts = _a3_linux_read('/proc/self/mountinfo')
         controllers = _a3_linux_read('/proc/cgroups')
+        _, groups, enabled = _a3_linux_memory_controller(controllers)
         memory = _a3_linux_kib(_a3_linux_read('/proc/meminfo'),
             ('MemTotal', 'MemAvailable', 'CommitLimit', 'Committed_AS', 'SwapTotal'))
         process = _a3_linux_kib(_a3_linux_read('/proc/self/status'), ('VmSize', 'VmData', 'VmRSS'))
@@ -1311,7 +1349,7 @@ def _a3_linux_memory_snapshot():
                 if limit != -1:
                     process_available = min(process_available, max(0, limit-used))
         quota, version = _a3_linux_cgroup_headroom(membership, mounts, controllers,
-                                                process_available, memory['SwapTotal'])
+                                                process_available, memory['SwapTotal'], initial)
         if (membership != _a3_linux_read('/proc/thread-self/cgroup') or
                 mounts != _a3_linux_read('/proc/self/mountinfo') or
                 controllers != _a3_linux_read('/proc/cgroups') or runtime != _a3_linux_runtime()):
@@ -1323,7 +1361,10 @@ def _a3_linux_memory_snapshot():
             private_bytes=None, private_bytes_reason='NOT_EXPOSED_BY_PROCFS',
             vm_size_bytes=process['VmSize'], vm_data_bytes=process['VmData'],
             working_set=process['VmRSS'], page_size=runtime['page_size'], quotas_verified=True,
-            quota_basis='INITIAL_CGROUP_NAMESPACE_FULL_ANCESTRY', cgroup_version=version)
+            quota_basis=('GLOBAL_MEMORY_CONTROLLER_DISABLED' if not enabled else
+                'INITIAL_CGROUP_NAMESPACE_FULL_ANCESTRY' if initial else
+                'GLOBAL_SINGLE_ROOT_MEMORY_HIERARCHY'),
+            namespace_initial=initial, memory_controller_groups=groups, cgroup_version=version)
     except MemoryError:
         raise
     except Exception:

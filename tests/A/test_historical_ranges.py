@@ -1077,3 +1077,65 @@ def test_linux_checkpoint_reader_rejects_proxy_metadata(gathering, monkeypatch, 
     monkeypatch.setattr(gathering, '_a3_linux_fs_type', lambda descriptor: magic, raising=False)
     with pytest.raises(ValueError, match='A3_MEMORY_FILESYSTEM_UNKNOWN'):
         gathering._a3_linux_read(path)
+
+
+@pytest.mark.parametrize('magic', [0x27e0eb, 0x63677270])
+def test_linux_checkpoint_reader_checks_the_open_descriptor(gathering, monkeypatch, tmp_path, magic):
+    path = tmp_path/'kernel_metadata.txt'
+    path.write_bytes(b'literal\n')
+    seen = []
+    def file_system(descriptor):
+        seen.append(gathering.os.fstat(descriptor).st_size)
+        return magic
+    monkeypatch.setattr(gathering, '_a3_linux_fs_type', file_system)
+    assert gathering._a3_linux_read(path) == 'literal\n' and seen == [8]
+
+
+@pytest.mark.parametrize('outcome', ['success', 'unavailable', 'memory-error'])
+def test_linux_checkpoint_statfs_has_literal_abi_and_failure_precedence(gathering, monkeypatch, outcome):
+    import ctypes
+    import errno
+    facts = SimpleNamespace(**vars(gathering.os))
+    facts.uname = lambda: SimpleNamespace(machine='x86_64')
+    monkeypatch.setattr(gathering, 'os', facts)
+    primary = MemoryError('NATIVE_FSTATFS_PRIMARY')
+    seen = []
+    def fstatfs(descriptor, pointer):
+        seen.append((descriptor, ctypes.sizeof(pointer._obj)))
+        if outcome == 'memory-error':
+            raise primary
+        if outcome == 'unavailable':
+            ctypes.set_errno(errno.EACCES)
+            return -1
+        pointer._obj.f_type = 0x9fa0
+        return 0
+    def library(name, use_errno):
+        assert name is None and use_errno is True
+        return SimpleNamespace(fstatfs=fstatfs)
+    monkeypatch.setattr(ctypes, 'CDLL', library)
+    if outcome == 'success':
+        assert gathering._a3_linux_fs_type(17) == 0x9fa0
+    elif outcome == 'unavailable':
+        with pytest.raises(OSError) as captured:
+            gathering._a3_linux_fs_type(17)
+        assert captured.value.errno == errno.EACCES
+    else:
+        with pytest.raises(MemoryError) as captured:
+            gathering._a3_linux_fs_type(17)
+        assert captured.value is primary and primary.args == ('NATIVE_FSTATFS_PRIMARY',)
+    assert seen == [(17,120)]
+
+
+def test_linux_checkpoint_proven_namespace_stale_sample_has_no_get(gathering, monkeypatch, writers):
+    checkpoint_linux_profile(gathering, monkeypatch, 'nested-root-only-v2')
+    monkeypatch.setattr(gathering, 'time', SimpleNamespace(perf_counter=lambda: 100.))
+    sample = gathering._a3_linux_memory_snapshot()
+    assert sample['sampled_at'] == 100. and sample['quotas_verified'] is True
+    monkeypatch.setattr(gathering, 'time', SimpleNamespace(perf_counter=lambda: 102.))
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', lambda: sample)
+    calls = mock_queries(gathering, monkeypatch, [])
+    with monkeypatch.context() as observation:
+        observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+            gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
+    assert calls == [] and writers == []

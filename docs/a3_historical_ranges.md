@@ -127,7 +127,7 @@ claim that 32 GiB frames plus 8 GiB metadata fits an arbitrary machine is made.
 See [Microsoft's job query contract](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject)
 and [native memory fields](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex).
 
-Linux x64 uses bounded read-only kernel metadata plus `getrlimit(RLIMIT_AS,
+Linux x86_64 uses bounded read-only kernel metadata plus `getrlimit(RLIMIT_AS,
 RLIMIT_DATA)`. `/proc/meminfo` supplies physical availability and a conservative
 client commit ceiling `max(0,CommitLimit-Committed_AS)` in all recognized
 overcommit modes. `/proc/self/status` supplies VmSize/VmData for finite process
@@ -137,16 +137,31 @@ unknown policy, changed membership/limits or a slow/stale probe refuse.
 Namespace and membership use the [calling thread](https://man7.org/linux/man-pages/man5/proc_thread-self.5.html),
 not the process leader's potentially different v1 cgroup.
 
-The probe requires the recognized initial cgroup namespace identity from
+For an enabled memory hierarchy with multiple groups, the ordinary path needs
+the initial cgroup namespace identity from
 [upstream proc_ns.h](https://github.com/torvalds/linux/blob/v6.12/include/linux/proc_ns.h#L37-L45)
-and a full-root controller mount. Equality with container PID 1 alone is
-insufficient. It takes the minimum remaining memory and memory+swap headroom
-over every applicable v1/v2 ancestor, together with process limits. V2 controller
-propagation must be explicit; disabled/unlimited controllers are accepted only
-when kernel metadata establishes that state. Delegated mounts, hidden ancestor
-namespaces, unreadable quotas or missing swap accounting with active system
-swap refuse. Kernel-root limit controls are exempt. Unknown/new namespace
-representations refuse rather than guessing that ancestors are unlimited.
+and a full-root controller mount. It takes the minimum remaining memory and
+memory+swap headroom over every applicable v1/v2 ancestor, together with process
+limits. V2 controller propagation must be explicit. Delegated mounts,
+unreadable quotas or missing swap accounting with active system swap refuse.
+Kernel-root limit controls are exempt.
+
+A separate namespace is also admissible when native global metadata proves
+that the memory controller is disabled, or that its entire hierarchy contains
+exactly one group and the process belongs to that root. Neither case has a
+hidden non-root memory/swap limit. This is a narrow no-limit proof, not a claim
+that private namespaces expose ancestors. All other separate namespaces refuse.
+Namespace inode/link must agree; controller binding/count/state, membership,
+mounts and rlimits are sampled again before return. A changed or invalid count
+refuses. PID 1 equality and leaf `max` values are insufficient.
+
+The bounded reader checks the same opened descriptor with `fstatfs`: proc inputs
+must be procfs, controller inputs cgroupfs v1/v2. FUSE/lxcfs, overlay or ordinary
+file substitutes are not admission evidence. The libc layout is the Linux
+x86_64 120-byte statfs ABI; other architectures and unavailable libc metadata
+fail closed. No namespace, mount, limit, privilege or production setting is
+changed. See [filesystem types](https://man7.org/linux/man-pages/man2/statfs.2.html)
+and [kernel ABI](https://github.com/torvalds/linux/blob/v6.12/include/uapi/asm-generic/statfs.h).
 See [cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html),
 [v1 memory controls](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)
 and [Linux commit accounting](https://www.kernel.org/doc/Documentation/vm/overcommit-accounting).
@@ -154,6 +169,102 @@ The same reserves and `2*G+1GiB` admission inequality apply. Neither platform's
 snapshot reserves memory; a native MemoryError retains its object/type/args.
 Deterministic Linux-file fixtures are separate from admitted Linux runtime
 evidence. Windows tests or Linux syntax do not establish Linux A runtime PASS.
+
+### Linux execution profile matrix
+
+These are admission conditions, not observed Linux runtime PASS results. The
+checkpoint has Windows offline fixtures; `LINUX_A_RUNTIME_VERIFIED` is not
+claimed. A distribution name or a VPS label does not establish the conditions.
+
+| Profile | Effective memory/swap and ancestor proof | Admission |
+|---|---|---|
+| Bare x86_64 VPS/VM, initial cgroup namespace, v1 | Full-root mount; every ancestor's memory and memsw limit/usage; native procfs, AS/DATA limits and commit | Conditional on complete fresh metadata and headroom |
+| Bare x86_64 VPS/VM, initial namespace, v2 | Full-root mount; explicit controller propagation; every enabled ancestor's memory and swap limits/usage | Same conditional admission |
+| Separate namespace, memory controller globally disabled | Exactly one valid global `memory` record with disabled state; no contradictory memory membership | No cgroup memory/swap quota exists; physical/commit/rlimit checks still apply |
+| Separate namespace, enabled v1/v2 with exactly one global group | Global hierarchy count=1, matching controller binding, root membership and full-root mount | Only the real hierarchy root can exist; same physical/commit/rlimit checks |
+| Separate namespace, enabled hierarchy with multiple groups | Visible leaf files, `/`, PID1 match or local unlimited values do not reveal hidden parent usage/limits | Unsupported; fail closed |
+| Restricted/delegated mount or missing parent/swap metadata | Effective ancestor headroom cannot be reconstructed | Unsupported; fail closed |
+| Proxy procfs, absent/duplicate/invalid memory record, changed namespace/count/rlimits, stale sample | No trustworthy coherent native snapshot | Unsupported; fail closed |
+| Non-x86_64/32-bit ABI | Current libc probe layout is not admitted for that ABI | Unsupported; fail closed |
+| Valid profile with insufficient physical/commit/process/cgroup headroom | Known resource insufficiency | Refuse before first GET/writer; no successful prefix |
+
+`/proc/cgroups` is global controller information. The kernel emits the bound
+hierarchy's `nr_cgrps` and enabled state without using the reader's cgroup
+namespace ([kernel implementation](https://github.com/torvalds/linux/blob/v6.12/kernel/cgroup/cgroup-v1.c#L631-L649),
+[interface fields](https://man7.org/linux/man-pages/man7/cgroups.7.html)). With
+one global group there is no non-root group in which a hidden limit could live.
+Counts are racy snapshots, so stable rereads are required; this reserves nothing.
+A missing record is unknown, including kernels that omit a v2-only controller;
+it is never interpreted as a disabled controller.
+
+For multiple global groups, two hosts can expose identical namespace-local
+leaf files and counts while hidden parent limits/usage differ. The inside
+view cannot distinguish them. [Cgroup namespaces](https://man7.org/linux/man-pages/man7/cgroup_namespaces.7.html)
+virtualize paths and mount roots; hierarchical memory constraints still apply.
+An additional authoritative host-side witness would be a separate interface
+and owner admission dependency. No such witness, environment override, static
+quota receipt or assumption of unlimited ancestors is implemented here.
+
+### Physical RAM floor
+
+For proposed growth `G`, actual available physical RAM `P` must satisfy
+`P >= max(8GiB,ceil(total_RAM/4)) + 2*G + 1GiB`. Commit availability independently
+pays `max(8GiB,ceil(commit_limit/10)) + 2*G + 1GiB`; finite AS/DATA and cgroup
+headroom must each cover `2*G+1GiB`. Swap cannot replace physical RAM reserve.
+
+| Total RAM | Physical reserve | Available RAM required for example G | Result |
+|---|---|---|---|
+| 1/2/4/8 GiB | 8 GiB | At least 9 GiB even for G=0 | Always insufficient for ordinary acquisition |
+| 12 GiB | 8 GiB | 11 GiB for G=1 GiB | Conditional; 10 GiB available refuses |
+| 16 GiB | 8 GiB | 15 GiB for G=3 GiB | Conditional |
+| 32 GiB | 8 GiB | 31 GiB for G=11 GiB | Conditional |
+| 64 GiB | 16 GiB | 63 GiB for G=23 GiB | Conditional |
+
+These are literal boundary calculations, not VPS sizing recommendations. Kernel,
+services and the existing process consume RAM before the probe. Actual G also
+includes retained original frames, keys, evidence and assembly copies. There is
+no guarantee that any 12/16/32/64 GiB Ubuntu VPS can load a requested dataset.
+The strict ideal lower bound for positive work is greater than 9 GiB total;
+real available RAM, commit and all applicable quotas decide. The accepted
+8 GiB reserve is unchanged. Capacity/previous/release policy is unchanged.
+
+### Separately authorized real Linux diagnostic
+
+No suitable A3-scoped Linux runtime grant is currently recorded. Existing
+`tools/offline_linux.py` is a closed LNX-03 fixture consumer with a fixed test
+inventory; its workflow runs only its branch or separately authorized dispatch.
+It is not admission for A3 tests. Linux syntax and old environment receipts do
+not supply A3 application acceptance. Do not change shared guards/workflows or
+launch WSL, containers, SSH, a new runner, SETUP or dispatch under this checkpoint.
+
+A future owner grant must pin target host/profile, interpreter/lock hashes,
+exact A3 HEAD/tree/raw bytes, applicable native guard, output-only evidence root
+and measured OS memory/process limits. No production host/configuration changes,
+namespace creation, cgroup migration, mounts, sudo, source HTTP or dataset writer.
+
+1. Read-only preflight: record kernel/libc/architecture/interpreter and source
+   fingerprints; current calling-thread cgroup namespace inode/link; opened
+   proc/cgroup file descriptor filesystem types; controller bindings/counts;
+   membership and full mountinfo; AS/DATA soft/hard limits; native memory/commit
+   fields, overcommit mode and all applicable ancestor memory/swap controls.
+   Reread identity and limits, retain exact bounded raw fields plus timestamps.
+2. Bound one diagnostic to 120 seconds, one worker, 256 MiB incremental memory,
+   4 MiB output and no network. An independent approved supervisor must prove
+   that these fit actual process/cgroup headroom. Use only already provisioned
+   profiles. Missing profiles are NOT_AVAILABLE; never alter a production host
+   to manufacture a passing case.
+3. Compare native fstatfs ABI/units and a fresh sample with independent kernel
+   fields. Exercise only `G=0` and 1 MiB admission arithmetic, without allocating
+   requested history. Check the expected decision for initial v1/v2, separate
+   no-limit profiles and hidden/restricted ancestry where those profiles already
+   exist. Low-RAM refusals are expected results, not compatibility PASS.
+4. Keep `LINUX_MEMORY_DIAGNOSTIC_VERIFIED` separate from `LINUX_A_RUNTIME_VERIFIED`.
+   The latter needs an additional approved immutable Linux application runtime
+   and genuine native guarded A-domain collection/runtime with exact inventory,
+   no HTTP/writers, source/environment reconciliation and independent review.
+   The bounded metadata diagnostic alone cannot establish it.
+
+Until that grant and evidence exist, real Linux A runtime remains NOT_VERIFIED.
 
 Only an already active, started, unfinished, run-bound guard from this checkout
 can select the small offline profile. Its module/function identity, actual
