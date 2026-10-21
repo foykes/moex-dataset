@@ -3,6 +3,7 @@
 import base64
 import ast
 import contextlib
+import gc
 import hashlib
 import importlib.util
 import io
@@ -237,6 +238,204 @@ def _projection(report):
         'worker_outcomes', 'release_result')}
 
 
+class _CacheProvenance:
+    """Passive custody measurements; this never accepts a raw FD mismatch."""
+    def __init__(self, upload):
+        from multiprocessing import connection, heap, resource_tracker, util
+        import mmap
+        import run_logging
+        self.upload, self.heap_module, self.connection, self.util = upload, heap, connection, util
+        self.active, self.healthy = True, True
+        self.records, self.protected, self.touches, self.owned, self.runtimes = [], {}, [], {}, []
+        self.counts = dict(arena_init=0, close=0, dup=0, dup2=0, connection_close=0, integer_open=0)
+        self.originals = dict(arena_init=heap.Arena.__init__, close=os.close, dup=os.dup,
+            dup2=os.dup2, connection_close=connection.Connection._close,
+            runtime_close=upload._D2Runtime.close_fd)
+        self.connection_default_attested = connection.Connection._close.__defaults__ == (os.close,)
+        self.source_pins = {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+            for name, module in dict(heap=heap, connection=connection, resource_tracker=resource_tracker,
+                                     util=util, mmap=mmap, upload=upload, run_logging=run_logging).items()}
+        def arena_init(arena, *args, **options):
+            before = self.fds()
+            self.counts['arena_init'] += 1
+            self.originals['arena_init'](arena, *args, **options)
+            after = self.fds()
+            added = sorted(set(after) - set(before))
+            pair = [dict(fd=descriptor, identity=list(after[descriptor])) for descriptor in added]
+            finalizers = [value for value in util._finalizer_registry.values()
+                if getattr(value, '_weakref', None) is not None and value._weakref() is arena]
+            self.records.append(dict(arena=arena, buffer=arena.buffer, arena_fd=arena.fd, pair=pair,
+                baseline_unchanged=all(after.get(descriptor) == identity for descriptor, identity in before.items()),
+                finalizer_attested=any(value._callback is close and value._args == (arena.fd,) for value in finalizers)))
+            for descriptor in added:
+                self.protected[descriptor] = after[descriptor]
+        def close(descriptor):
+            self.counts['close'] += 1
+            self.touch('close', descriptor)
+            return self.originals['close'](descriptor)
+        def duplicate(descriptor):
+            self.counts['dup'] += 1
+            self.touch('dup_source', descriptor)
+            return self.originals['dup'](descriptor)
+        def duplicate_to(source, target, *args, **options):
+            self.counts['dup2'] += 1
+            self.touch('dup2_source', source)
+            self.touch('dup2_target', target)
+            return self.originals['dup2'](source, target, *args, **options)
+        def connection_close(owner, *args, **options):
+            self.counts['connection_close'] += 1
+            self.touch('connection_close', owner._handle)
+            return self.originals['connection_close'](owner, *args, **options)
+        def runtime_close(runtime, descriptor):
+            self.remember_owned(runtime)
+            try:
+                return self.originals['runtime_close'](runtime, descriptor)
+            finally:
+                self.remember_owned(runtime)
+        self.wrappers = dict(arena_init=arena_init, close=close, dup=duplicate,
+            dup2=duplicate_to, connection_close=connection_close, runtime_close=runtime_close)
+        heap.Arena.__init__ = arena_init
+        os.close, os.dup, os.dup2 = close, duplicate, duplicate_to
+        connection.Connection._close = connection_close
+        upload._D2Runtime.close_fd = runtime_close
+        sys.addaudithook(self.audit)
+
+    @staticmethod
+    def fds():
+        values = {}
+        for name in os.listdir('/proc/self/fd'):
+            descriptor = int(name)
+            try:
+                info = os.fstat(descriptor)
+            except OSError:
+                continue
+            values[descriptor] = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
+        return values
+
+    def touch(self, operation, descriptor):
+        if self.active and descriptor in self.protected:
+            self.touches.append(dict(operation=operation, fd=descriptor))
+
+    def audit(self, event, arguments):
+        if self.active and event == 'open' and arguments and type(arguments[0]) is int:
+            self.counts['integer_open'] += 1
+            self.touch('integer_open', arguments[0])
+
+    def remember_owned(self, runtime):
+        try:
+            if not any(runtime is value for value in self.runtimes):
+                self.runtimes.append(runtime)
+            for descriptor, identity in runtime.owned_fds.items():
+                self.owned[(descriptor, identity)] = True
+        except BaseException:
+            self.healthy = False
+
+    def measure(self, heap=None, *, record_arenas=None):
+        heap = self.heap_module.BufferWrapper._heap if heap is None else heap
+        current = self.fds()
+        rows = []
+        for record in self.records:
+            arena, buffer = record['arena'], record['buffer']
+            if record_arenas is not None and not any(arena is value for value in record_arenas):
+                continue
+            block = (arena, 0, arena.size)
+            try:
+                buffer_size = buffer.size()
+            except (OSError, ValueError):
+                buffer_size = None
+            rows.append(dict(arena_object=id(arena), buffer_object=id(buffer),
+                buffer_type=type(buffer).__module__ + '.' + type(buffer).__name__,
+                size=arena.size, arena_fd=arena.fd, birth_pair=record['pair'],
+                birth_baseline_unchanged=record['baseline_unchanged'], finalizer_attested=record['finalizer_attested'],
+                in_actual_heap=any(arena is value for value in heap._arenas),
+                same_arena_fd=arena.fd == record['arena_fd'], same_buffer=arena.buffer is buffer,
+                buffer_closed=buffer.closed, buffer_size=buffer_size,
+                birth_pair_still_same=all(current.get(value['fd']) == tuple(value['identity']) for value in record['pair']),
+                allocated_blocks=len(heap._allocated_blocks.get(arena, ())),
+                pending_free_blocks=sum(value[0] is arena for value in heap._pending_free_blocks),
+                free_indexes_consistent=(heap._start_to_block.get((arena, 0)) == block
+                    and heap._stop_to_block.get((arena, arena.size)) == block
+                    and block in heap._len_to_seq.get(arena.size, ()) and arena.size in heap._lengths)))
+        for runtime in self.runtimes:
+            self.remember_owned(runtime)
+        owned = [dict(fd=descriptor, identity=list(identity), physically_closed=current.get(descriptor) != identity)
+                 for descriptor, identity in sorted(self.owned)]
+        present = [dict(fd=descriptor, identity=list(identity)) for runtime in self.runtimes
+                   for descriptor, identity in sorted(runtime.owned_fds.items())]
+        installed = (self.heap_module.Arena.__init__ is self.wrappers['arena_init']
+            and os.close is self.wrappers['close'] and os.dup is self.wrappers['dup'] and os.dup2 is self.wrappers['dup2']
+            and self.connection.Connection._close is self.wrappers['connection_close']
+            and self.upload._D2Runtime.close_fd is self.wrappers['runtime_close'])
+        complete = (bool(rows) and self.healthy and installed and self.connection_default_attested and not self.touches
+            and all(row['birth_baseline_unchanged'] and row['finalizer_attested'] and row['in_actual_heap']
+                and row['same_arena_fd'] and row['same_buffer'] and not row['buffer_closed'] and row['buffer_size'] == row['size']
+                and row['birth_pair_still_same'] and len(row['birth_pair']) == 2
+                and row['free_indexes_consistent'] and row['allocated_blocks'] == row['pending_free_blocks'] == 0
+                for row in rows))
+        return dict(status='OBSERVED' if complete else 'UNKNOWN', observer_installed=installed,
+            observer_healthy=self.healthy, connection_default_attested=self.connection_default_attested,
+            source_pins=self.source_pins, event_counts=dict(self.counts), protected_touches=list(self.touches),
+            arenas=rows, owned_history=owned, owned_current=present,
+            owned_physically_closed=all(row['physically_closed'] for row in owned),
+            protected_disjoint_from_owned=all((value['fd'], tuple(value['identity'])) not in self.owned
+                for row in rows for value in row['birth_pair']))
+
+    def close(self):
+        self.active = False
+        self.heap_module.Arena.__init__ = self.originals['arena_init']
+        os.close, os.dup, os.dup2 = self.originals['close'], self.originals['dup'], self.originals['dup2']
+        self.connection.Connection._close = self.originals['connection_close']
+        self.upload._D2Runtime.close_fd = self.originals['runtime_close']
+
+
+def _owned_fd_attribution(before, after, before_heap, after_heap, proof, expected_source):
+    """Compose real custody facts; a descriptor/inode resemblance is insufficient."""
+    unknown = (False, 'ATTRIBUTION_UNKNOWN')
+    try:
+        if (proof['status'] != 'OBSERVED' or not proof['observer_installed'] or not proof['observer_healthy']
+                or not proof['connection_default_attested'] or proof['protected_touches']
+                or any(proof['source_pins'].get(name) != digest for name, digest in expected_source.items())
+                or not proof['owned_history'] or proof['owned_current']
+                or not proof['owned_physically_closed'] or not proof['protected_disjoint_from_owned']
+                or any(not row['physically_closed'] or after.get(row['fd']) == tuple(row['identity'])
+                       for row in proof['owned_history'])
+                or before_heap['heap_object'] != after_heap['heap_object']
+                or before_heap['source_sha256'] != expected_source['heap']
+                or after_heap['source_sha256'] != expected_source['heap']
+                or before_heap['allocated_block_count'] or before_heap['pending_free_block_count']
+                or after_heap['allocated_block_count'] or after_heap['pending_free_block_count']):
+            return unknown
+        if before == after:
+            return (True, 'UNCHANGED') if before_heap['arenas'] == after_heap['arenas'] else unknown
+        if (proof['status'] != 'OBSERVED' or before_heap['arenas']
+                or len(after_heap['arenas']) != 1 or len(proof['arenas']) != 1
+                or proof['event_counts']['arena_init'] != 1
+                or before_heap['discard_threshold_bytes'] != 4194304
+                or after_heap['discard_threshold_bytes'] != 4194304
+                or any(after.get(descriptor) != identity for descriptor, identity in before.items())):
+            return unknown
+        arena, custody = after_heap['arenas'][0], proof['arenas'][0]
+        pair = custody['birth_pair']
+        if (arena['arena_object'] != custody['arena_object'] or arena['fd'] != custody['arena_fd']
+                or arena['size'] != 4096 or custody['size'] != 4096 or custody['buffer_size'] != 4096
+                or arena['allocated_blocks'] or arena['pending_free_blocks']
+                or custody['allocated_blocks'] or custody['pending_free_blocks']
+                or custody['buffer_type'] != 'mmap.mmap' or custody['buffer_closed']
+                or any(custody[key] is not True for key in ('birth_baseline_unchanged', 'finalizer_attested',
+                    'in_actual_heap', 'same_arena_fd', 'same_buffer', 'birth_pair_still_same', 'free_indexes_consistent'))
+                or len(pair) != 2 or len({row['fd'] for row in pair}) != 2
+                or arena['fd'] not in {row['fd'] for row in pair}
+                or any(row['identity'] != arena['fd_identity'] for row in pair)):
+            return unknown
+        added = {descriptor: identity for descriptor, identity in after.items() if descriptor not in before}
+        witnessed = {row['fd']: tuple(row['identity']) for row in pair}
+        if added != witnessed or any(descriptor in before for descriptor in witnessed):
+            return unknown
+        return True, 'PROVEN_CPYTHON_CACHE'
+    except (KeyError, TypeError, ValueError):
+        return unknown
+
+
 def _native_controller(ticket, guard, fixture, vendor):
     repo, scratch, case = Path(ticket['repo_root']), Path(ticket['scratch']), ticket['case']
     import sysconfig
@@ -249,6 +448,8 @@ def _native_controller(ticket, guard, fixture, vendor):
     upload.datasets_path = str(fixture['datasets']) + '/'
     profile = guard.issue_d2_profile(repo, scratch, case, vendor)
     preupload_witness = {}
+    post_bind_witness = {}
+    serialization_witness = {}
     processes, reports, outcomes, phase_reads, releases, constructor = [], [], [], [], [], []
     real_popen = subprocess.Popen
     real_fork_exec = subprocess._fork_exec
@@ -259,6 +460,8 @@ def _native_controller(ticket, guard, fixture, vendor):
     real_go = upload._d2_release_go
     real_inventory = upload._d2_run_inventory
     real_fdopen = upload._d2_fdopen
+    real_check_tracker = upload._d2_check_tracker
+    real_upload_io, old_trace = upload.io, sys.gettrace()
     go_released = False
     active_role = None
     preseal_observed = None
@@ -322,12 +525,14 @@ def _native_controller(ticket, guard, fixture, vendor):
         return process
     def fork_exec(*args, **options):
         pid = real_fork_exec(*args, **options)
-        if case in {'constructor_error', 'tracker_death', 'preupload_stage_failure'}:
+        if case in {'constructor_error', 'tracker_death', 'preupload_stage_failure',
+                    'post_context_bind_failure', 'serialization_write_failure'}:
             constructor.append({'event': 'FORK_EXEC_RETURNED', 'worker_id': active_role, 'pid': pid})
         return pid
     def waitpid(pid, options):
         result = real_waitpid(pid, options)
-        if case in {'constructor_error', 'tracker_death', 'preupload_stage_failure'} and active_role is not None and result[0] == pid:
+        if case in {'constructor_error', 'tracker_death', 'preupload_stage_failure',
+                    'post_context_bind_failure', 'serialization_write_failure'} and active_role is not None and result[0] == pid:
             constructor.append({'event': 'WAITPID_RETURNED', 'worker_id': active_role,
                                 'pid': pid, 'exitcode': os.waitstatus_to_exitcode(result[1])})
         return result
@@ -392,7 +597,39 @@ def _native_controller(ticket, guard, fixture, vendor):
     real_upload_main, old_argv = upload.main, sys.argv
     prior_stages = {name: sys.modules.get(name) for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data')}
     pipeline = None
-    if case == 'preupload_stage_failure':
+    if case == 'serialization_write_failure':
+        from multiprocessing import reduction
+        original = RuntimeError(CANARY + ' https://private.invalid/a /private/d2/serialization')
+        original_args = original.args
+        serializer_code, dump_code = upload._d2_serialize.__code__, reduction.dump.__code__
+        serialization_witness.update(real_dump_reached=False, original_exception_preserved=False,
+            exception_args_preserved=False, pinned_dump_object_cleared=False,
+            own_bootstrap_alias_cleared=False, foreign_frame_preserved=False,
+            late_gc_no_native_birth=False, late_gc_pending_cleared=False,
+            fault_calls=0, reduced_fd_count=0)
+        buffer_count = 0
+        class FaultBuffer(io.BytesIO):
+            def __init__(self):
+                nonlocal buffer_count
+                super().__init__()
+                buffer_count += 1
+                self.ordinal = buffer_count
+            def write(self, data):
+                foreign_marker = 'D2_FOREIGN_WRITE_FRAME_RETAINED'
+                if self.ordinal == 2 and serialization_witness['fault_calls'] == 0:
+                    serialization_witness['fault_calls'] += 1
+                    raise original
+                return super().write(data)
+        def observe_serializer(frame, event, argument):
+            # Do not retain a frame, traceback, argument, or bootstrap alias.
+            if frame.f_code is serializer_code:
+                if event == 'exception':
+                    serialization_witness['original_exception_preserved'] = argument[1] is original
+                return observe_serializer
+            return None
+        upload.io = types.SimpleNamespace(BytesIO=FaultBuffer)
+        sys.settrace(observe_serializer)
+    if case in {'preupload_stage_failure', 'post_context_bind_failure'}:
         # Compile only the reviewed source definitions. __file__ and Git HEAD
         # point at an owned synthetic checkout so real F-LOG writes stay local.
         tree = ast.parse((repo / 'main.py').read_text(encoding='utf-8'))
@@ -421,7 +658,8 @@ def _native_controller(ticket, guard, fixture, vendor):
             preupload_witness['api_calls'] += 1
             raise AssertionError('D2_UNREACHED_STAGE_CALLED')
         for name in prior_stages:
-            sys.modules[name] = types.SimpleNamespace(main=first_stage if name == 'data_gathering' else forbidden_stage)
+            sys.modules[name] = types.SimpleNamespace(main=first_stage
+                if name == 'data_gathering' and case == 'preupload_stage_failure' else forbidden_stage)
         def forbidden_upload(*args, **options):
             preupload_witness['upload_calls'] += 1
             raise AssertionError('D2_UNREACHED_UPLOAD_CALLED')
@@ -437,6 +675,18 @@ def _native_controller(ticket, guard, fixture, vendor):
                 raise
         pipeline.main = observed_main
         sys.argv = ['main.py', '--log-environment', 'offline']
+        if case == 'post_context_bind_failure':
+            post_bind_witness.update(context_created=False, fault_injected=False, fault_calls=0)
+            def check_after_context(runtime):
+                context = runtime.context
+                if runtime.owns_context and context is not None and not post_bind_witness['fault_injected']:
+                    post_bind_witness['context_created'] = (context['_thread'].is_alive()
+                        and context['_final'] is None and runtime.result['run_id'] == context['run_id'])
+                    post_bind_witness['fault_calls'] += 1
+                    post_bind_witness['fault_injected'] = True
+                    raise original
+                return real_check_tracker(runtime)
+            upload._d2_check_tracker = check_after_context
     output = io.StringIO()
     started = time.monotonic()
     old_cwd = Path.cwd()
@@ -450,23 +700,51 @@ def _native_controller(ticket, guard, fixture, vendor):
     os.set_inheritable(foreign, True)
     before_fds = fd_inventory()
     before_heap = heap_snapshot()
+    provenance = _CacheProvenance(upload)
     try:
         with guard_profile(upload, profile), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             try:
                 if pipeline is None:
                     upload.main(str(fixture['project']), 'D2_LITERAL_TARGET', result_sink=sink)
+                elif case == 'post_context_bind_failure':
+                    pipeline.main(result_sink=sink)
                 else:
                     status = pipeline._run_cli()
-                    runtime = sink.get('_runtime')
-                    preupload_witness.update(pending_cleared=upload._D2_PENDING is None,
-                        runtime_closed=runtime is not None and runtime.closed,
-                        runtime_cleanup_complete=runtime is not None and runtime.cleanup_complete,
-                        runtime_transport_complete=runtime is not None and runtime.transport_complete,
-                        tracker_wrappers_released=runtime is not None and runtime.tracker_wrappers == {}
-                            and upload._D2_TRACKER_OWNER is None)
             except BaseException as error:
                 primary = type(error).__name__
                 status = 130 if isinstance(error, KeyboardInterrupt) else 1
+            if pipeline is not None:
+                runtime = sink.get('_runtime')
+                preupload_witness.update(pending_cleared=upload._D2_PENDING is None,
+                    runtime_closed=runtime is not None and runtime.closed,
+                    runtime_cleanup_complete=runtime is not None and runtime.cleanup_complete,
+                    runtime_transport_complete=runtime is not None and runtime.transport_complete,
+                    tracker_wrappers_released=runtime is not None and runtime.tracker_wrappers == {}
+                        and upload._D2_TRACKER_OWNER is None)
+            if case == 'serialization_write_failure':
+                trace = original.__traceback__
+                dump_frames, own_frames, foreign_frames = [], [], []
+                while trace is not None:
+                    frame = trace.tb_frame
+                    if frame.f_code is dump_code:
+                        dump_frames.append(frame)
+                    elif frame.f_code is serializer_code:
+                        own_frames.append(frame)
+                    elif frame.f_code is FaultBuffer.write.__code__:
+                        foreign_frames.append(frame)
+                    trace = trace.tb_next
+                serialization_witness.update(real_dump_reached=len(dump_frames) == 1,
+                    exception_args_preserved=original.args == original_args,
+                    pinned_dump_object_cleared=bool(dump_frames) and all('obj' not in frame.f_locals for frame in dump_frames),
+                    own_bootstrap_alias_cleared=bool(own_frames) and all(frame.f_locals.get('bootstrap') is None for frame in own_frames),
+                    foreign_frame_preserved=bool(foreign_frames) and all(
+                        frame.f_locals.get('foreign_marker') == 'D2_FOREIGN_WRITE_FRAME_RETAINED'
+                        and type(frame.f_locals.get('data')) is bytes for frame in foreign_frames),
+                    reduced_fd_count=sum(len(frame.f_locals['adapter'].descriptors) for frame in own_frames))
+                births = len(constructor)
+                gc.collect()  # Keep original exception and its foreign frame alive.
+                serialization_witness.update(late_gc_no_native_birth=len(constructor) == births,
+                    late_gc_pending_cleared=upload._D2_PENDING is None and upload._D2_TRACKER_OWNER is None)
         status = sink.get('final_exit_status') or status
     finally:
         subprocess.Popen = real_popen
@@ -478,6 +756,9 @@ def _native_controller(ticket, guard, fixture, vendor):
         upload._d2_release_go = real_go
         upload._d2_run_inventory = real_inventory
         upload._d2_fdopen = real_fdopen
+        upload._d2_check_tracker = real_check_tracker
+        upload.io = real_upload_io
+        sys.settrace(old_trace)
         upload.main, sys.argv = real_upload_main, old_argv
         for name, module in prior_stages.items():
             if module is None:
@@ -504,6 +785,12 @@ def _native_controller(ticket, guard, fixture, vendor):
             upload._d2_finish_transport(runtime)
     after_fds = fd_inventory()
     after_heap = heap_snapshot()
+    cache_provenance = provenance.measure()
+    provenance.close()
+    expected_source = dict(_oracle(repo)['cache_source_sha256'],
+                           upload=profile['source_files_sha256']['upload.py'])
+    owned_fd_clean, fd_attribution = _owned_fd_attribution(
+        before_fds, after_fds, before_heap, after_heap, cache_provenance, expected_source)
     fd_delta = dict(
         added=[dict(fd=fd, identity=list(after_fds[fd])) for fd in sorted(set(after_fds) - set(before_fds))],
         removed=[dict(fd=fd, identity=list(before_fds[fd])) for fd in sorted(set(before_fds) - set(after_fds))],
@@ -548,9 +835,13 @@ def _native_controller(ticket, guard, fixture, vendor):
         worker_witnesses=sink.get('_worker_witnesses', {}),
         tracker_probes=sink.get('_tracker_probes', {}),
         preupload_witness=preupload_witness,
+        post_bind_witness=post_bind_witness,
+        serialization_witness=serialization_witness,
         constructor_observations=constructor,
         fd_inventory_unchanged=fd_clean, foreign_fd_intact=foreign_intact,
+        raw_fd_inventory_clean=fd_clean, owned_fd_inventory_clean=owned_fd_clean, fd_attribution=fd_attribution,
         fd_inventory_delta=fd_delta, heap_observations=dict(before=before_heap, after=after_heap),
+        cache_provenance=cache_provenance,
         fixture_cleanup_settled=fixture_cleanup,
         fixture_tracker_settled=tracker_settled,
         inventory_observations=inventory_observations,

@@ -818,6 +818,8 @@ D2_CASES = (
     'registry_google_failure', 'registration_google_failure',
     'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
     'preupload_stage_failure',
+    'post_context_bind_failure',
+    'serialization_write_failure',
 )
 D2_BASELINE_CASES = (
     'baseline_google_swallowed', 'baseline_ftp_root_swallowed',

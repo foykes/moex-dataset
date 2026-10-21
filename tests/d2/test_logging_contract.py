@@ -248,7 +248,11 @@ def orchestration_doubles(pipeline, monkeypatch, *, context=None, final_fault='n
     fake_upload = types.SimpleNamespace(runtime_scope=scope, main=uploading,
         _d2_apply_finalization=apply,
         _d2_completion_allowed=lambda sink: sink.get('diagnostic_success_allowed') is True)
+    def validate_config(config):
+        assert config == {}, 'unexpected logging configuration'
+        return {'shutdown_deadline_s': 10}
     fake_log = types.SimpleNamespace(
+        validate_logging_config=validate_config,
         initialize_main_stages=lambda current: None,
         check_logging_health=lambda current: {'healthy': True},
         emit_event=lambda *args, **kwargs: {'confirmed': True},

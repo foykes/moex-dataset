@@ -72,7 +72,7 @@ D2_TEST_CASES = (
     'ticket_ftp_failure', 'pidfd_google_failure', 'identity_google_failure',
     'registry_google_failure', 'registration_google_failure',
     'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
-    'preupload_stage_failure')
+    'preupload_stage_failure', 'post_context_bind_failure', 'serialization_write_failure')
 
 
 def _d2_error(code):
@@ -365,7 +365,11 @@ def _d2_atomic_json(root, name, document, limit, limits=None):
     except FileNotFoundError:
         pass
     else:
-        _d2_checked_path(destination)
+        existing = _d2_checked_path(destination).lstat()
+        if existing.st_size > limit:
+            # Preserve invalid prior evidence; a smaller replacement must not
+            # silently erase a file that already exceeded its own slot bound.
+            raise _d2_error('D2_CHECKPOINT_TOO_LARGE')
     # Scope-local accounting does not inspect a sibling's mutable slot. The
     # parent separately reserves both slots before GO and audits the whole run
     # only after settlement. Existing pending bytes remain owned evidence.
@@ -1098,12 +1102,31 @@ def _d2_serialize(bootstrap, repo):
     preparation = dict(name='d2-worker', sys_path=_d2_spawn_paths(repo), sys_argv=['d2-worker'],
                        dir=str(repo), orig_dir=str(repo), start_method='spawn')
     first, second = io.BytesIO(), io.BytesIO()
+    dump_code = reduction.dump.__code__  # Source-attested CPython 3.14.8 shim.
+    serializer_frame = sys._getframe()
     context.set_spawning_popen(adapter)
     try:
         reduction.dump(preparation, first)
         reduction.dump(bootstrap, second)
+    except BaseException as error:
+        # Relinquish only this direct call's bootstrap/payload frame. A nested
+        # foreign call may use the same pinned shim and remains untouched.
+        trace = error.__traceback__
+        while trace is not None:
+            frame = trace.tb_frame
+            if (frame.f_code is dump_code and frame.f_back is serializer_frame
+                    and frame.f_locals.get('obj') is bootstrap
+                    and frame.f_locals.get('file') is second):
+                try:
+                    frame.clear()
+                except RuntimeError:
+                    pass  # An active frame cannot be relinquished here.
+            trace = trace.tb_next
+        bootstrap = None
+        raise
     finally:
         context.set_spawning_popen(None)
+        serializer_frame = None
     payload = first.getvalue() + second.getvalue()
     if len(payload) > 65536:
         raise _d2_error('D2_BOOTSTRAP_TOO_LARGE')

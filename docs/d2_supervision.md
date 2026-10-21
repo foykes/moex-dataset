@@ -191,6 +191,25 @@ Every historical Windows node is retained in the local comparison ledger with
 its previous result and either a semantic Linux counterpart or explicit
 Windows-only hookup. Linux acceptance never changes those historical outcomes.
 
+FD evidence preserves the raw before/after descriptor comparison. A process-wide
+CPython allocator cache is distinguishable from D2-owned resources only through
+an independent, source-pinned birth/custody witness: the same actual global heap,
+fully free Arena indexes, the original Arena/mmap objects, unchanged baseline,
+exact descriptor births and no observed close/dup/rebinding of that pair. Equal
+file metadata or a matching descriptor count alone cannot establish custody.
+The native fixture also verifies that every D2-owned lease is closed and disjoint
+from the cache. Unknown provenance fails closed. Destructive substitution controls
+use their own Heap/Arena and the same custody predicate; they never close or
+mutate the borrowed global allocator. Historical raw mismatches remain recorded.
+
+The serialization fault fixture keeps the original exception alive through real
+teardown and late collection. Cleanup relinquishes only the completed, direct
+source-attested `reduction.dump` invocation whose caller, object and payload
+buffer belong to D2. Nested/foreign frames and exception chains are preserved;
+unproven resource closure remains INCOMPLETE. A post-context bind fault separately
+checks that the actual owned F-LOG session is finalized even when the caller's
+local context alias was never assigned.
+
 ## Integration and rollback
 
 This is one stacked Draft PR based on independently code-accepted #117 HEAD

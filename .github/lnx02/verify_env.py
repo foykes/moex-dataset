@@ -4940,6 +4940,8 @@ D2_LINUX_CASES = (
     'registry_google_failure', 'registration_google_failure',
     'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
     'preupload_stage_failure',
+    'post_context_bind_failure',
+    'serialization_write_failure',
 ) + (
     'baseline_google_swallowed', 'baseline_ftp_root_swallowed',
     'baseline_ftp_dividends_swallowed', 'baseline_ftp_tickers_swallowed',
@@ -5453,8 +5455,8 @@ def d2_validate_tests(tests, sha, complete=False):
                     or any(not 1 <= int(node[8:]) <= len(nodes) for node in failed_nodes)):
                 raise PolicyError('d2-linux-failed-node-ledger-mismatch')
         d2_validate_native_cases(tests['native_cases'], require_complete=passed)
-        if passed and (tests['collected'] != 283 or tests['native_collected'] != 54
-                or tests['node_ids_sha256'] != 'c768b5bfcfabc7a6015430c5c1d5c37c3cceb584203bccd5b1af018c52bdb636'):
+        if passed and (tests['collected'] != 297 or tests['native_collected'] != 56
+                or tests['node_ids_sha256'] != 'b3a53cc16ecab1b6beb9b65bedad8f7811b6e348aeffc6d10b07a8749d8ad7bf'):
             raise PolicyError('d2-linux-node-inventory-mismatch')
     return tests
 
@@ -5602,6 +5604,131 @@ def d2_validate_fd_diagnostics(delta, heap):
             objects.add(arena['arena_object'])
 
 
+def d2_validate_cache_provenance(value):
+    fields = {'status', 'observer_installed', 'observer_healthy', 'connection_default_attested', 'source_pins',
+        'event_counts', 'protected_touches', 'arenas', 'owned_history', 'owned_current',
+        'owned_physically_closed', 'protected_disjoint_from_owned'}
+    flags = {'observer_installed', 'observer_healthy', 'connection_default_attested',
+             'owned_physically_closed', 'protected_disjoint_from_owned'}
+    pins = {'heap', 'connection', 'resource_tracker', 'util', 'mmap', 'upload', 'run_logging'}
+    events = {'arena_init', 'close', 'dup', 'dup2', 'connection_close', 'integer_open'}
+    operations = {'close', 'dup_source', 'dup2_source', 'dup2_target', 'integer_open', 'connection_close'}
+    if (type(value) is not dict or set(value) != fields or type(value['status']) is not str
+            or value['status'] not in {'OBSERVED', 'UNKNOWN'}
+            or any(type(value[key]) is not bool for key in flags)
+            or type(value['source_pins']) is not dict or set(value['source_pins']) != pins
+            or any(type(digest) is not str or not HEX.fullmatch(digest) for digest in value['source_pins'].values())
+            or type(value['event_counts']) is not dict or set(value['event_counts']) != events
+            or any(type(count) is not int or count < 0 for count in value['event_counts'].values())
+            or any(type(value[key]) is not list for key in ('protected_touches', 'arenas', 'owned_history', 'owned_current'))):
+        raise PolicyError('d2-linux-cache-provenance-fields-invalid')
+    def fd_row(row, owned=False):
+        keys = {'fd', 'identity', 'physically_closed'} if owned else {'fd', 'identity'}
+        return (type(row) is dict and set(row) == keys and type(row['fd']) is int and row['fd'] >= 0
+            and type(row['identity']) is list and len(row['identity']) == 4
+            and all(type(item) is int and item >= 0 for item in row['identity'])
+            and (not owned or type(row['physically_closed']) is bool))
+    for touch in value['protected_touches']:
+        if (type(touch) is not dict or set(touch) != {'operation', 'fd'}
+                or type(touch['operation']) is not str or touch['operation'] not in operations
+                or type(touch['fd']) is not int or touch['fd'] < 0):
+            raise PolicyError('d2-linux-cache-touch-invalid')
+    for key in ('owned_history', 'owned_current'):
+        if any(not fd_row(row, key == 'owned_history') for row in value[key]):
+            raise PolicyError('d2-linux-cache-owned-fd-invalid')
+        identities = [(row['fd'], tuple(row['identity'])) for row in value[key]]
+        if len(identities) != len(set(identities)):
+            raise PolicyError('d2-linux-cache-owned-fd-duplicate')
+    arena_flags = {'birth_baseline_unchanged', 'finalizer_attested', 'in_actual_heap', 'same_arena_fd',
+        'same_buffer', 'buffer_closed', 'birth_pair_still_same', 'free_indexes_consistent'}
+    arena_fields = arena_flags | {'arena_object', 'buffer_object', 'buffer_type', 'size', 'arena_fd',
+        'birth_pair', 'buffer_size', 'allocated_blocks', 'pending_free_blocks'}
+    observed_arena_flags = arena_flags - {'buffer_closed'}
+    objects, protected = set(), set()
+    for arena in value['arenas']:
+        if (type(arena) is not dict or set(arena) != arena_fields
+                or any(type(arena[key]) is not bool for key in arena_flags)
+                or any(type(arena[key]) is not int or arena[key] < 0 for key in (
+                    'arena_object', 'buffer_object', 'size', 'arena_fd', 'allocated_blocks', 'pending_free_blocks'))
+                or arena['arena_object'] == 0 or arena['buffer_object'] == 0
+                or arena['arena_object'] in objects or type(arena['buffer_type']) is not str
+                or arena['buffer_size'] is not None and (type(arena['buffer_size']) is not int or arena['buffer_size'] < 0)
+                or type(arena['birth_pair']) is not list or any(not fd_row(row) for row in arena['birth_pair'])):
+            raise PolicyError('d2-linux-cache-arena-fields-invalid')
+        objects.add(arena['arena_object'])
+        if len({row['fd'] for row in arena['birth_pair']}) != len(arena['birth_pair']):
+            raise PolicyError('d2-linux-cache-arena-fd-duplicate')
+        protected.update((row['fd'], tuple(row['identity'])) for row in arena['birth_pair'])
+        if value['status'] == 'OBSERVED' and (arena['buffer_type'] != 'mmap.mmap'
+                or any(arena[key] is not True for key in observed_arena_flags)
+                or arena['buffer_closed'] is not False or arena['buffer_size'] != arena['size']
+                or arena['allocated_blocks'] != 0 or arena['pending_free_blocks'] != 0
+                or len(arena['birth_pair']) != 2):
+            raise PolicyError('d2-linux-cache-observed-arena-incomplete')
+    history = {(row['fd'], tuple(row['identity'])) for row in value['owned_history']}
+    if (value['owned_physically_closed'] is not all(row['physically_closed'] for row in value['owned_history'])
+            or value['protected_disjoint_from_owned'] is not protected.isdisjoint(history)):
+        raise PolicyError('d2-linux-cache-owned-summary-disagrees')
+    if value['status'] == 'OBSERVED' and (not value['arenas'] or value['protected_touches']
+            or any(value[key] is not True for key in ('observer_installed', 'observer_healthy', 'connection_default_attested'))
+            or value['event_counts']['arena_init'] != len(value['arenas'])):
+        raise PolicyError('d2-linux-cache-observed-proof-incomplete')
+
+
+def d2_validate_fd_attribution(observation, complete=False, case=None):
+    proof, delta, heap = observation['cache_provenance'], observation['fd_inventory_delta'], observation['heap_observations']
+    d2_validate_cache_provenance(proof)
+    if (any(type(observation[key]) is not bool for key in (
+            'fd_inventory_unchanged', 'raw_fd_inventory_clean', 'owned_fd_inventory_clean'))
+            or type(observation['fd_attribution']) is not str
+            or observation['fd_attribution'] not in {'UNCHANGED', 'PROVEN_CPYTHON_CACHE', 'ATTRIBUTION_UNKNOWN'}):
+        raise PolicyError('d2-linux-fd-attribution-fields-invalid')
+    raw = not any(delta.values())
+    if observation['fd_inventory_unchanged'] is not raw or observation['raw_fd_inventory_clean'] is not raw:
+        raise PolicyError('d2-linux-fd-raw-observation-disagrees')
+    repo = Path(__file__).absolute().parents[2]
+    expected = read_json(repo / 'tests/fixtures/d2/expected.json').get('cache_source_sha256')
+    if (type(expected) is not dict or set(expected) != {'heap', 'connection', 'resource_tracker', 'util', 'run_logging'}
+            or any(type(digest) is not str or not HEX.fullmatch(digest) for digest in expected.values())):
+        raise PolicyError('d2-linux-cache-source-pin-invalid')
+    expected = dict(expected, upload=digest(repo / 'upload.py'))
+    before, after = heap['before'], heap['after']
+    common = (proof['status'] == 'OBSERVED'
+        and all(proof[key] is True for key in ('observer_installed', 'observer_healthy', 'connection_default_attested',
+            'owned_physically_closed', 'protected_disjoint_from_owned'))
+        and not proof['protected_touches'] and bool(proof['owned_history']) and not proof['owned_current']
+        and all(row['physically_closed'] is True for row in proof['owned_history'])
+        and all(proof['source_pins'][name] == value for name, value in expected.items())
+        and before['heap_object'] == after['heap_object']
+        and before['source_sha256'] == after['source_sha256'] == expected['heap']
+        and before['allocated_block_count'] == before['pending_free_block_count'] == 0
+        and after['allocated_block_count'] == after['pending_free_block_count'] == 0)
+    attribution = 'ATTRIBUTION_UNKNOWN'
+    if common and raw and before['arenas'] == after['arenas']:
+        attribution = 'UNCHANGED'
+    elif (common and not delta['removed'] and not delta['changed'] and not before['arenas']
+            and len(after['arenas']) == len(proof['arenas']) == 1 and proof['event_counts']['arena_init'] == 1
+            and before['discard_threshold_bytes'] == after['discard_threshold_bytes'] == 4194304):
+        arena, custody = after['arenas'][0], proof['arenas'][0]
+        pair = custody['birth_pair']
+        if (arena['arena_object'] == custody['arena_object'] and arena['fd'] == custody['arena_fd']
+                and arena['size'] == custody['size'] == custody['buffer_size'] == 4096
+                and arena['allocated_blocks'] == arena['pending_free_blocks'] == 0
+                and len(pair) == 2 and arena['fd'] in {row['fd'] for row in pair}
+                and all(row['identity'] == arena['fd_identity'] for row in pair)
+                and {row['fd']: row['identity'] for row in delta['added']} == {row['fd']: row['identity'] for row in pair}):
+            attribution = 'PROVEN_CPYTHON_CACHE'
+    clean = attribution != 'ATTRIBUTION_UNKNOWN'
+    if observation['owned_fd_inventory_clean']:
+        if not clean or observation['fd_attribution'] != attribution:
+            raise PolicyError('d2-linux-fd-owned-proof-incomplete')
+    elif observation['fd_attribution'] != 'ATTRIBUTION_UNKNOWN':
+        raise PolicyError('d2-linux-fd-unknown-attribution-disagrees')
+    if complete and case not in {'constructor_error', 'cleanup_unsettled', 'parent_finalization_raises', 'postseal_cleanup_failure'}:
+        if observation['owned_fd_inventory_clean'] is not True:
+            raise PolicyError('d2-linux-fd-owned-settlement-incomplete')
+
+
 def d2_validate_native_cases(cases, require_complete=True):
     if type(cases) is not list or len(cases) > len(D2_LINUX_CASES):
         raise PolicyError('d2-linux-case-list-invalid')
@@ -5636,7 +5763,9 @@ def d2_validate_native_cases(cases, require_complete=True):
                 'cleanup_requested', 'target_entered_before_deadline', 'console_canary_absent', 'console_redaction_valid', 'success_banner',
                 'inventory_observations', 'readers_closed_before_go', 'fixture_tracker_settled',
                 'platform_evidence', 'google_projection_observed', 'ftp_targets_observed', 'worker_witnesses',
-                'tracker_probes', 'preupload_witness', 'fd_inventory_delta', 'heap_observations'}
+                'tracker_probes', 'preupload_witness', 'post_bind_witness', 'serialization_witness',
+                'fd_inventory_delta', 'heap_observations', 'cache_provenance',
+                'raw_fd_inventory_clean', 'owned_fd_inventory_clean', 'fd_attribution'}
             is_baseline = case['case'].startswith('baseline_')
             allowed = baseline if is_baseline else native
             if (type(observation) is not dict or set(observation) != allowed
@@ -5646,16 +5775,49 @@ def d2_validate_native_cases(cases, require_complete=True):
                 raise PolicyError('d2-linux-case-observation-fields-invalid')
             if not is_baseline:
                 d2_validate_fd_diagnostics(observation['fd_inventory_delta'], observation['heap_observations'])
+                d2_validate_fd_attribution(observation, require_complete, case['case'])
+                serialization = observation['serialization_witness']
+                serialization_flags = {'real_dump_reached', 'original_exception_preserved', 'exception_args_preserved',
+                    'pinned_dump_object_cleared', 'own_bootstrap_alias_cleared', 'foreign_frame_preserved',
+                    'late_gc_no_native_birth', 'late_gc_pending_cleared'}
+                if case['case'] == 'serialization_write_failure':
+                    if (type(serialization) is not dict
+                            or set(serialization) != serialization_flags | {'fault_calls', 'reduced_fd_count'}
+                            or any(type(serialization[key]) is not bool for key in serialization_flags)
+                            or any(type(serialization[key]) is not int or serialization[key] < 0
+                                   for key in ('fault_calls', 'reduced_fd_count'))):
+                        raise PolicyError('d2-linux-case-serialization-witness-invalid')
+                    if require_complete and (serialization['fault_calls'] != 1 or serialization['reduced_fd_count'] <= 0
+                            or any(serialization[key] is not True for key in serialization_flags)):
+                        raise PolicyError('d2-linux-case-serialization-boundary-incomplete')
+                elif type(serialization) is not dict or serialization:
+                    raise PolicyError('d2-linux-case-serialization-witness-unexpected')
+                post_bind = observation['post_bind_witness']
+                if case['case'] == 'post_context_bind_failure':
+                    if (type(post_bind) is not dict or set(post_bind) != {'context_created', 'fault_injected', 'fault_calls'}
+                            or type(post_bind['context_created']) is not bool
+                            or type(post_bind['fault_injected']) is not bool
+                            or type(post_bind['fault_calls']) is not int or post_bind['fault_calls'] < 0):
+                        raise PolicyError('d2-linux-case-post-bind-witness-invalid')
+                    if require_complete and (post_bind['context_created'] is not True
+                            or post_bind['fault_injected'] is not True or post_bind['fault_calls'] != 1):
+                        raise PolicyError('d2-linux-case-post-bind-boundary-incomplete')
+                elif type(post_bind) is not dict or post_bind:
+                    raise PolicyError('d2-linux-case-post-bind-witness-unexpected')
                 preupload = observation['preupload_witness']
                 preupload_flags = {'stage_entered', 'original_exception_preserved', 'source_profile_verified',
                     'pending_cleared', 'runtime_closed', 'runtime_cleanup_complete',
                     'runtime_transport_complete', 'tracker_wrappers_released'}
-                if case['case'] == 'preupload_stage_failure':
+                if case['case'] in {'preupload_stage_failure', 'post_context_bind_failure'}:
                     if (type(preupload) is not dict or set(preupload) != preupload_flags | {'api_calls', 'upload_calls'}
                             or any(type(preupload[key]) is not bool for key in preupload_flags)
                             or any(type(preupload[key]) is not int or preupload[key] < 0
                                    for key in ('api_calls', 'upload_calls'))):
                         raise PolicyError('d2-linux-case-preupload-witness-invalid')
+                    if require_complete and (preupload['stage_entered'] is not (case['case'] == 'preupload_stage_failure')
+                            or any(preupload[key] is not True for key in preupload_flags - {'stage_entered'})
+                            or preupload['api_calls'] != 0 or preupload['upload_calls'] != 0):
+                        raise PolicyError('d2-linux-case-preupload-boundary-incomplete')
                 elif type(preupload) is not dict or preupload:
                     raise PolicyError('d2-linux-case-preupload-witness-unexpected')
                 probes = observation['tracker_probes']

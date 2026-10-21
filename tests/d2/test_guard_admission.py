@@ -58,14 +58,14 @@ def test_export_negative_canary_oracle_rejects_each_surface(repo, private):
 
 def test_expected_node_inventory_is_unique_source_bound_and_closed(oracle):
     identifiers = oracle['expected_node_ids']
-    assert len(identifiers) == 283
+    assert len(identifiers) == 297
     assert len(identifiers) == len(set(identifiers))
     assert all(name.startswith('tests/d2/test_') and '::test_' in name for name in identifiers)
     assert {name.split('::', 1)[0] for name in identifiers} == {
         'tests/d2/test_supervision.py', 'tests/d2/test_targets.py',
         'tests/d2/test_logging_contract.py', 'tests/d2/test_guard_admission.py',
     }
-    assert len([name for name in identifiers if '::test_native_case[' in name]) == 54
+    assert len([name for name in identifiers if '::test_native_case[' in name]) == 56
     data = ('\n'.join(identifiers) + '\n').encode('utf-8')
     assert hashlib.sha256(data).hexdigest() == oracle['expected_node_ids_sha256']
 

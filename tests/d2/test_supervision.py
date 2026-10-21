@@ -33,6 +33,8 @@ NATIVE_CASES = (
     'registry_google_failure', 'registration_google_failure',
     'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
     'preupload_stage_failure',
+    'post_context_bind_failure',
+    'serialization_write_failure',
 )
 
 
@@ -90,9 +92,15 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
     assert observation['foreign_fd_intact'] is True
     assert observation['fixture_cleanup_settled'] is True
     assert observation['fixture_tracker_settled'] is True
+    assert observation['raw_fd_inventory_clean'] is observation['fd_inventory_unchanged']
+    if observation['owned_fd_inventory_clean'] and not observation['raw_fd_inventory_clean']:
+        assert observation['fd_attribution'] == 'PROVEN_CPYTHON_CACHE'
+        assert observation['cache_provenance']['status'] == 'OBSERVED'
+        assert observation['fd_inventory_delta']['removed'] == observation['fd_inventory_delta']['changed'] == []
+        assert len(observation['fd_inventory_delta']['added']) == 2
     if case not in {'constructor_error', 'cleanup_unsettled', 'parent_finalization_raises',
                     'postseal_cleanup_failure'}:
-        assert observation['fd_inventory_unchanged'] is True, 'settled failure must release every owned descriptor'
+        assert observation['owned_fd_inventory_clean'] is True, 'settled failure must release every owned descriptor'
     platform = observation['platform_evidence']
     assert platform['platform'] == 'linux' and platform['implementation'] == 'cpython'
     assert platform['version'] == [3, 14, 8] and platform['architecture'] == 'x86_64'
@@ -131,7 +139,7 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
     if case in {'success', 'foreign_fd'}:
         assert observation['application_exit'] == 0
         assert observation['success_banner'] is True
-        assert observation['fd_inventory_unchanged'] is True
+        assert observation['owned_fd_inventory_clean'] is True
         assert observation['google_projection_observed'] is True
         assert observation['ftp_targets_observed'] is True
         assert result['parent_outcome'] == 'RETURNED'
@@ -157,20 +165,21 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
         assert result['diagnostic_success_allowed'] is False
         assert result['final_exit_status'] != 0
         assert observation['success_banner'] is False
-        if case != 'preupload_stage_failure':
+        if case not in {'preupload_stage_failure', 'post_context_bind_failure', 'serialization_write_failure'}:
             witnesses = observation['fault_witnesses']
             reached = [row for row in witnesses if row['case'] == case]
             assert reached and all(row['pid'] > 1 and row['count'] == 1 for row in reached), 'requested fault boundary was not reached'
-    if case == 'preupload_stage_failure':
+    if case in {'preupload_stage_failure', 'post_context_bind_failure'}:
         witness = observation['preupload_witness']
-        assert witness['stage_entered'] is True and witness['original_exception_preserved'] is True
+        assert witness['stage_entered'] is (case == 'preupload_stage_failure')
+        assert witness['original_exception_preserved'] is True
         assert witness['source_profile_verified'] is True and witness['pending_cleared'] is True
         assert witness['runtime_closed'] is witness['runtime_cleanup_complete'] is True
         assert witness['runtime_transport_complete'] is witness['tracker_wrappers_released'] is True
         assert witness['api_calls'] == witness['upload_calls'] == 0
         assert len(actual) == 1 and actual[0]['worker_id'] == 'tracker'
         assert actual[0]['settled'] is True and actual[0]['exitcode'] == 0
-        assert by_role == {} and observation['fd_inventory_unchanged'] is True
+        assert by_role == {} and observation['owned_fd_inventory_clean'] is True
         assert observation['go_releases'] == [] and observation['phase_reads'] == []
         assert observation['google_projection_observed'] is observation['ftp_targets_observed'] is None
         forks = [row for row in observation['constructor_observations'] if row['event'] == 'FORK_EXEC_RETURNED']
@@ -179,6 +188,21 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
         assert report['release_result'] is None and report['worker_outcomes'] == {}
         assert len(report['expected_producers']) == 1
         assert report['expected_producers'][0]['worker_id'] == 'parent'
+        if case == 'post_context_bind_failure':
+            assert observation['post_bind_witness'] == dict(context_created=True, fault_injected=True, fault_calls=1)
+    if case == 'serialization_write_failure':
+        witness = observation['serialization_witness']
+        assert witness['fault_calls'] == 1 and witness['reduced_fd_count'] > 0
+        assert all(witness[name] is True for name in ('real_dump_reached', 'original_exception_preserved',
+            'exception_args_preserved', 'pinned_dump_object_cleared', 'own_bootstrap_alias_cleared',
+            'foreign_frame_preserved', 'late_gc_no_native_birth', 'late_gc_pending_cleared'))
+        assert by_role == {} and len(actual) == 1 and actual[0]['worker_id'] == 'tracker'
+        assert actual[0]['settled'] is True and actual[0]['exitcode'] == 0
+        assert observation['go_releases'] == [] and observation['phase_reads'] == []
+        assert observation['google_projection_observed'] is observation['ftp_targets_observed'] is None
+        forks = [row for row in observation['constructor_observations'] if row['event'] == 'FORK_EXEC_RETURNED']
+        assert len(forks) == 1 and forks[0]['worker_id'] == 'tracker'
+        assert all(worker['started'] is False for worker in result['workers'].values())
     if case in {'exit23', 'final_then_exit23', 'abnormal_before_ready', 'abnormal_after_final'}:
         assert any(row['exitcode'] == 23 for row in by_role.values())
     if case in {'hang_google', 'hang_ftp', 'cleanup_unsettled'}:
@@ -360,8 +384,8 @@ def test_deadline_rechecked_after_actual_settlement_control_flow(upload, repo, a
     supervise = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_d2_supervise')
     loops = [node for node in ast.walk(supervise) if isinstance(node, ast.While)
              and isinstance(node.test, ast.Constant) and node.test.value is True
-             and node.body and isinstance(node.body[0], ast.Assign)
-             and isinstance(node.body[0].targets[0], ast.Name) and node.body[0].targets[0].id == 'alive']
+             and any(isinstance(statement, ast.Assign) and isinstance(statement.targets[0], ast.Name)
+                     and statement.targets[0].id == 'alive' for statement in node.body)]
     assert len(loops) == 1
     function = ast.FunctionDef(name='observe_settlement', args=ast.arguments(posonlyargs=[],
         args=[ast.arg(arg='runtime'), ast.arg(arg='session')], vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
@@ -369,9 +393,9 @@ def test_deadline_rechecked_after_actual_settlement_control_flow(upload, repo, a
         returns=None, type_comment=None, type_params=[])
     module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
     environment = {'time': types.SimpleNamespace(monotonic=lambda: 15 if at_deadline else 14.9),
-                   '_d2_error': upload._d2_error}
+                   '_d2_error': upload._d2_error, '_d2_check_tracker': upload._d2_check_tracker}
     exec(compile(module, '<D2-exact-settlement-loop>', 'exec'), environment)
-    runtime = types.SimpleNamespace(children=[], deadline=15, deadline_detected=False)
+    runtime = types.SimpleNamespace(children=[], deadline=15, deadline_detected=False, owns_tracker=False)
     if at_deadline:
         with pytest.raises(Exception, match='D2_DEADLINE'):
             environment['observe_settlement'](runtime, {})
@@ -467,3 +491,97 @@ def test_actual_tracker_wrapper_preserves_its_systemexit_status(upload, repo, mo
     exec(compile(module, '<D2-exact-tracker-wrapper>', 'exec'), namespace)
     assert namespace['tracker_wrapper']({'tracker_fd': 90000}) == actual_exit
     assert calls == [90000]
+
+
+@pytest.mark.parametrize('mutation', ['none', 'same_inode_rebind'])
+def test_cache_custody_measurement_rejects_actual_same_slot_substitution(upload, fixture_worker, mutation):
+    """A private Heap/mmap, never global BufferWrapper cache or warmup."""
+    from multiprocessing import heap, util
+    observer = fixture_worker._CacheProvenance(upload)
+    private = heap.Heap()
+    arena, backup = None, None
+    try:
+        block = private.malloc(1)
+        arena = block[0]
+        private.free(block)
+        before = observer.measure(heap=private, record_arenas=(arena,))
+        assert before['status'] == 'OBSERVED' and before['protected_touches'] == []
+        assert before['owned_history'] == before['owned_current'] == []
+        assert len(before['arenas']) == 1 and before['arenas'][0]['free_indexes_consistent'] is True
+        if mutation == 'same_inode_rebind':
+            pair = before['arenas'][0]['birth_pair']
+            victim = next(row['fd'] for row in pair if row['fd'] != arena.fd)
+            original_identity = os.fstat(victim)
+            backup = observer.originals['dup'](arena.fd)
+            # Connection._close's source-pinned default captured os.close
+            # before instrumentation. Exercise that real alias, not its wrapper.
+            connection = observer.connection.Connection(victim)
+            connection.close()
+            os.dup2(backup, victim)
+            assert os.fstat(victim) == original_identity, 'negative control must retain the same inode identity'
+        after = observer.measure(heap=private, record_arenas=(arena,))
+        assert after['arenas'][0]['birth_pair_still_same'] is True
+        assert after['arenas'][0]['same_buffer'] is True and after['arenas'][0]['buffer_closed'] is False
+        assert after['arenas'][0]['buffer_size'] == arena.size
+        if mutation == 'same_inode_rebind':
+            assert after['status'] == 'UNKNOWN'
+            assert {'connection_close', 'dup2_target'} <= {row['operation'] for row in after['protected_touches']}
+        else:
+            assert after['status'] == 'OBSERVED' and after['protected_touches'] == []
+    finally:
+        observer.close()
+        if backup is not None:
+            os.close(backup)
+        if arena is not None:
+            arena.buffer.close()
+            for finalizer in list(util._finalizer_registry.values()):
+                reference = getattr(finalizer, '_weakref', None)
+                if reference is not None and reference() is arena:
+                    finalizer()
+
+
+@pytest.mark.parametrize('mutation', ['none', 'third_dup', 'foreign_pipe', 'changed_baseline',
+    'pending_block', 'live_block', 'foreign_arena', 'foreign_mmap', 'wrong_source', 'incomplete_witness'])
+def test_owned_fd_attribution_requires_the_entire_causal_proof(fixture_worker, oracle, mutation):
+    """Schema-only mutations supplement the actual mmap substitution control."""
+    pins = dict(oracle['cache_source_sha256'], upload='a' * 64)
+    identity = [27, 100, 33152, 0]
+    before = {3: (1, 3, 32768, 0)}
+    after = dict(before)
+    after.update({10: tuple(identity), 11: tuple(identity)})
+    prior = dict(heap_object=1000, source_sha256=pins['heap'], allocated_block_count=0,
+        pending_free_block_count=0, arenas=[], discard_threshold_bytes=4194304)
+    arena = dict(arena_object=2000, fd=10, fd_identity=identity, size=4096,
+                 allocated_blocks=0, pending_free_blocks=0)
+    later = dict(prior, arenas=[arena])
+    custody = dict(arena_object=2000, buffer_object=3000, buffer_type='mmap.mmap', size=4096,
+        arena_fd=10, birth_pair=[{'fd': 10, 'identity': identity}, {'fd': 11, 'identity': identity}],
+        birth_baseline_unchanged=True, finalizer_attested=True, in_actual_heap=True, same_arena_fd=True,
+        same_buffer=True, buffer_closed=False, buffer_size=4096, birth_pair_still_same=True,
+        allocated_blocks=0, pending_free_blocks=0, free_indexes_consistent=True)
+    proof = dict(status='OBSERVED', observer_installed=True, observer_healthy=True,
+        connection_default_attested=True, source_pins=pins, protected_touches=[],
+        owned_history=[{'fd': 20, 'identity': [1, 100, 448, 0], 'physically_closed': True}],
+        owned_current=[], owned_physically_closed=True, protected_disjoint_from_owned=True,
+        arenas=[custody], event_counts={'arena_init': 1})
+    if mutation == 'third_dup':
+        after[12] = tuple(identity)
+    elif mutation == 'foreign_pipe':
+        after[12] = (1, 999, 4480, 0)
+    elif mutation == 'changed_baseline':
+        after[3] = (1, 333, 32768, 0)
+    elif mutation == 'pending_block':
+        later['pending_free_block_count'] = 1
+    elif mutation == 'live_block':
+        later['allocated_block_count'] = 1
+    elif mutation == 'foreign_arena':
+        custody['arena_object'] = 2001
+    elif mutation == 'foreign_mmap':
+        custody['same_buffer'] = False
+    elif mutation == 'wrong_source':
+        proof['source_pins'] = dict(pins, heap='b' * 64)
+    elif mutation == 'incomplete_witness':
+        proof.pop('connection_default_attested')
+    actual = fixture_worker._owned_fd_attribution(before, after, prior, later, proof, pins)
+    assert actual == ((True, 'PROVEN_CPYTHON_CACHE') if mutation == 'none'
+                      else (False, 'ATTRIBUTION_UNKNOWN'))

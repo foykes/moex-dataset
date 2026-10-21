@@ -102,9 +102,11 @@ def main(*, logging_context=None, result_sink=None):
         if sink.get('parent_outcome') == 'UNKNOWN':
             sink.update(parent_outcome='INTERRUPTED' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'FAILED',
                         error_code='D2_PIPELINE_FAILED')
-    if original_context is None and logging_context is not None:
-        # Real bind_context(None) creates the parent-owned session. Test doubles
-        # return None and never fabricate this ownership or a successful seal.
+    owned_context = getattr(runtime, 'context', None) if getattr(runtime, 'owns_context', False) else None
+    if original_context is None and owned_context is not None:
+        # bind_context may own a real session before its last health check
+        # raises. Finalize that session even when the local alias was unset.
+        logging_context = owned_context
         if not sink:
             sink.update(upload._d2_result(logging_context['run_id'], __import__('uuid').uuid4().hex,
                 logging_context['producer_sha'], {'google': [], 'ftp': []}))
