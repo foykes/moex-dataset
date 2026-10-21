@@ -5,6 +5,9 @@ param([Parameter(Mandatory)][string]$ContextFile)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $expectedPowerShell = 'fa2c8bb1e35cdd62ad15cd06a1d8f2c5961e9725a9bfa1e7cfd2c322f49e9619'
+$expectedBasePython = '434b361fe0c5960d404974feed493db47f2603a1ace2574312104fbed0182c6f'
+$expectedVenvConfig = '92de011aa4ca41e566cfe9edc6fa80b8883a9f169b0e94cbee57c0974fbce437'
+$expectedPytest = '95b617849288d07a5858a3ab8d5a9cebe65a33cd4b423235f4f22df68359ea6e'
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $self = [Diagnostics.Process]::GetCurrentProcess()
 $initialCpu = $self.TotalProcessorTime.TotalSeconds
@@ -67,6 +70,172 @@ function Write-Observation([hashtable]$Record) {
     $script:bytes += $payload.Length
 }
 
+function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
+        [object[]]$Records, [hashtable]$External, [hashtable]$Starts, [hashtable]$Binding) {
+    # Pure post-quiescence checker. Claims in workload records never fill an
+    # absent OS observation. This function does not reconcile native outcomes.
+    $errors = New-Object 'Collections.Generic.HashSet[string]'
+    $ticketMap = @{}; $writerMap = @{}; $covered = 0
+    $childEvents = @('ticket_issued','child_launch','popen_begin','popen_end',
+        'job_assigned','gate_released','communicate_begin','communicate_end',
+        'communicate_timeout','cleanup_end','exit_written','child_reconciled')
+    try {
+        $resolveRuntime = {
+            param($launch)
+            if ($launch.image_kind -ceq 'base_runtime' -and
+                $launch.image_sha256 -ceq $Binding.base_python_sha256) { return $launch }
+            if ($launch.image_kind -cne 'venv' -or $launch.image_sha256 -cne $Binding.runtime_sha256) { return $null }
+            $children = @($External.Values | Where-Object {
+                $_.parent -eq $launch.pid -and $_.creation -ge $launch.creation -and
+                ($launch.exit_creation -eq 0 -or $_.creation -le $launch.exit_creation)
+            })
+            if ($children.Count -ne 1 -or $children[0].image_kind -cne 'base_runtime' -or
+                $children[0].image_sha256 -cne $Binding.base_python_sha256) { return $null }
+            return $children[0]
+        }
+        foreach ($writer in $Writers) {
+            if ($writerMap.ContainsKey($writer.ticket_id)) { [void]$errors.Add('DUPLICATE_WRITER'); continue }
+            $writerMap[$writer.ticket_id] = $writer
+            $key = '{0}:{1}' -f $writer.pid,$writer.creation_100ns
+            if (-not $External.ContainsKey($key)) { [void]$errors.Add('MISSING_WRITER_IDENTITY'); continue }
+            $observed = $External[$key]
+            if ($observed.image_kind -cne 'base_runtime' -or $observed.image_sha256 -cne $Binding.base_python_sha256) {
+                [void]$errors.Add('FOREIGN_WRITER_IMAGE')
+            }
+            if ($writer.role -ceq 'supervisor') {
+                $custodyKey = '{0}:{1}' -f $Binding.custody_pid,$Binding.custody_creation_100ns
+                if (-not $External.ContainsKey($custodyKey)) { [void]$errors.Add('MISSING_CUSTODY_IDENTITY'); continue }
+                $custodyRoot = $External[$custodyKey]
+                $supervisor = & $resolveRuntime $custodyRoot
+                if ($custodyRoot.parent -ne $Binding.observer_pid -or $null -eq $supervisor -or
+                    $writer.pid -ne $supervisor.pid -or $writer.creation_100ns -ne $supervisor.creation) {
+                    [void]$errors.Add('FOREIGN_SUPERVISOR')
+                }
+            }
+        }
+        foreach ($ticket in $Tickets) {
+            $id = $ticket.ticket_id
+            if ($id -cnotmatch '^[0-9a-f]{32}$' -or $ticketMap.ContainsKey($id)) {
+                [void]$errors.Add('DUPLICATE_OR_CORRUPT_TICKET'); continue
+            }
+            $ticketMap[$id] = $ticket
+            if ($ticket.run_id -cne $Binding.run_id -or $ticket.tested_sha -cne $Binding.tested_sha -or
+                $ticket.source_digest -cne $Binding.source_digest -or $ticket.lane -cne 'f3') {
+                [void]$errors.Add('FOREIGN_TICKET')
+            }
+        }
+        foreach ($record in $Records) {
+            if ($record.event -cnotin $childEvents) { continue }
+            if (-not $ticketMap.ContainsKey($record.child_id) -or
+                -not $writerMap.ContainsKey($record.ticket_id) -or
+                $record.issuer_id -cne $record.ticket_id -or
+                $ticketMap[$record.child_id].parent_id -cne $record.issuer_id) {
+                [void]$errors.Add('FOREIGN_CHILD_OR_ISSUER')
+            }
+        }
+        foreach ($ticket in $Tickets) {
+            $id = $ticket.ticket_id
+            $issued = @($Records | Where-Object { $_.event -ceq 'ticket_issued' -and $_.child_id -ceq $id })
+            $launched = @($Records | Where-Object { $_.event -ceq 'child_launch' -and $_.child_id -ceq $id })
+            if ($issued.Count -ne 1 -or $launched.Count -ne 1) {
+                [void]$errors.Add('MISSING_OR_DUPLICATE_BINDING'); continue
+            }
+            $launch = $launched[0]
+            if ($launch.issuer_id -cne $issued[0].issuer_id -or
+                $launch.issuer_id -cne $ticket.parent_id -or
+                -not $writerMap.ContainsKey($launch.issuer_id)) {
+                [void]$errors.Add('FOREIGN_ISSUER'); continue
+            }
+            $profile = 0
+            $argv = $ticket.argv -join [char]31
+            if ($ticket.role -ceq 'lane-worker') { $profile=4 }
+            elseif ($ticket.role -ceq 'command') {
+                if ($argv -ceq (@($Binding.console,'-q') -join [char]31)) { $profile=1 }
+                elseif ($argv -ceq (@($Binding.runtime,'-B','-X','utf8','-m','pytest','-q') -join [char]31)) { $profile=2 }
+                elseif ($argv -ceq (@($Binding.runtime,'-B','-X','utf8','-m','unittest','discover') -join [char]31)) { $profile=3 }
+            }
+            if ($issued[0].value -ne $profile -or $launch.value -ne $profile) { [void]$errors.Add('FOREIGN_PROFILE') }
+            $issuer = $writerMap[$launch.issuer_id]
+            $issuerKey = '{0}:{1}' -f $issuer.pid,$issuer.creation_100ns
+            $childKey = '{0}:{1}' -f $launch.child_pid,$launch.child_creation_100ns
+            if (-not $External.ContainsKey($issuerKey) -or -not $External.ContainsKey($childKey)) {
+                [void]$errors.Add('MISSING_EXTERNAL_IDENTITY'); continue
+            }
+            $parent = $External[$issuerKey]; $child = $External[$childKey]
+            if ($launch.child_parent_pid -ne $child.parent -or $child.parent -ne $parent.pid -or
+                $parent.creation -gt $child.creation -or
+                ($parent.exit_creation -ne 0 -and $parent.exit_creation -lt $child.creation)) {
+                [void]$errors.Add('ACTUAL_PARENT_MISMATCH'); continue
+            }
+            $console = $ticket.role -ceq 'command' -and $ticket.argv[0] -ieq $Binding.console
+            if ($console) {
+                # Exactly the existing frozen runner's seven console argv forms.
+                # No arbitrary ancestry or executable-name-only exception.
+                $tail = ($ticket.argv | Select-Object -Skip 1) -join [char]31
+                $tails = @('-q', ('-q','tests.py','main_tests.py' -join [char]31),
+                    ('--collect-only','-q','tests.py','main_tests.py' -join [char]31),
+                    ('-q','tests.py' -join [char]31), ('--collect-only','-q','tests.py' -join [char]31),
+                    ('-q','main_tests.py' -join [char]31), ('--collect-only','-q','main_tests.py' -join [char]31))
+                if ($child.image_kind -cne 'console' -or $child.image_sha256 -cne $Binding.pytest_sha256 -or
+                    $tail -cnotin $tails) {
+                    [void]$errors.Add('FOREIGN_CONSOLE_WRAPPER'); continue
+                }
+                $interpreters = @($External.Values | Where-Object {
+                    $_.parent -eq $child.pid -and
+                    $_.creation -ge $child.creation -and
+                    ($child.exit_creation -eq 0 -or $_.creation -le $child.exit_creation)
+                })
+                if ($interpreters.Count -ne 1) { [void]$errors.Add('MISSING_OR_AMBIGUOUS_CONSOLE_CHILD'); continue }
+                $workload = & $resolveRuntime $interpreters[0]
+                if ($null -eq $workload) { [void]$errors.Add('MISSING_OR_FOREIGN_RUNTIME_EDGE'); continue }
+            } else {
+                if ($ticket.native -and $ticket.role -ceq 'native-git') {
+                    if ($child.image_kind -cne 'git' -or $child.image_sha256 -cne $Binding.git_sha256) {
+                        [void]$errors.Add('FOREIGN_CHILD_IMAGE'); continue
+                    }
+                    $workload = $child
+                } else {
+                    $workload = & $resolveRuntime $child
+                    if ($null -eq $workload) { [void]$errors.Add('MISSING_OR_FOREIGN_RUNTIME_EDGE'); continue }
+                }
+            }
+            if ($writerMap.ContainsKey($id) -and
+                ($writerMap[$id].pid -ne $workload.pid -or
+                 $writerMap[$id].creation_100ns -ne $workload.creation)) {
+                [void]$errors.Add('WRITER_CHILD_MISMATCH'); continue
+            }
+            if ($Starts.ContainsKey($id)) {
+                $start = $Starts[$id]
+                if ($start.ticket_id -cne $id -or $start.parent_id -cne $ticket.parent_id -or
+                    $start.run_id -cne $Binding.run_id -or $start.tested_sha -cne $Binding.tested_sha -or
+                    $start.source_digest -cne $Binding.source_digest -or $start.role -cne $ticket.role -or
+                    $start.lane -cne 'f3' -or $start.pid -ne $workload.pid) {
+                    [void]$errors.Add('NATIVE_START_CHILD_MISMATCH')
+                }
+            }
+            foreach ($record in $Records) {
+                if ($record.event -cnotin $childEvents -or $record.child_id -cne $id) { continue }
+                if ($record.PSObject.Properties['child_pid'] -and
+                    ($record.child_pid -ne $child.pid -or $record.child_creation_100ns -ne $child.creation -or
+                     $record.child_parent_pid -ne $child.parent)) { [void]$errors.Add('FOREIGN_CHILD_IDENTITY') }
+            }
+            $covered++
+        }
+        foreach ($writer in $Writers) {
+            if ($writer.role -cne 'supervisor' -and -not $ticketMap.ContainsKey($writer.ticket_id)) {
+                [void]$errors.Add('FOREIGN_WRITER_TICKET')
+            } elseif ($writer.role -cne 'supervisor' -and
+                $ticketMap[$writer.ticket_id].role -cne $writer.role) {
+                [void]$errors.Add('FOREIGN_WRITER_ROLE')
+            }
+        }
+    } catch {
+        [void]$errors.Add('CORRUPT_COVERAGE')
+    }
+    return @{ valid=($errors.Count -eq 0 -and $covered -eq $Tickets.Count);
+        tickets=$Tickets.Count; covered=$covered; errors=@($errors | Sort-Object) }
+}
+
 # No additional workload thread, pipe or stdlib replacement. The job is only a
 # custody/cleanup boundary, with KILL_ON_JOB_CLOSE and NO workload resource limits.
 try {
@@ -98,7 +267,7 @@ public static class F3TimingNative {
         public IntPtr reserved1,peb,reserved2,reserved3,pid,parent;
     }
     public sealed class Sample {
-        public int pid,parent; public ulong creation,kernel,user; public long peakRss;
+        public int pid,parent; public ulong creation,exitCreation,kernel,user; public long peakRss;
         public IO io; public bool exited; public uint exit;
     }
     public sealed class Custody { public IntPtr job,process; public int pid; public ulong creation; }
@@ -117,6 +286,7 @@ public static class F3TimingNative {
     [DllImport("psapi")] static extern bool GetProcessMemoryInfo(IntPtr p,ref MEMORY m,uint n);
     [DllImport("ntdll")] static extern int NtQueryInformationProcess(IntPtr p,int c,out PBI b,int n,IntPtr r);
     [DllImport("kernel32",SetLastError=true)] static extern IntPtr OpenProcess(uint a,bool i,int p);
+    [DllImport("kernel32",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr p,uint f,StringBuilder image,ref uint size);
     [DllImport("kernel32",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr j,int c,IntPtr b,int n,out int r);
     [DllImport("kernel32",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateFileW(string p,uint a,uint s,ref SA sa,uint c,uint f,IntPtr t);
     [DllImport("kernel32",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr l,int n,int f,ref IntPtr bytes);
@@ -126,13 +296,17 @@ public static class F3TimingNative {
     static void Check(bool yes) { if(!yes) throw new InvalidOperationException("NATIVE_OBSERVATION_OR_CUSTODY"); }
     public static Sample Read(IntPtr process) {
         var s = new Sample(); ulong end; uint exit; PBI basic;
-        Check(GetProcessTimes(process,out s.creation,out end,out s.kernel,out s.user));
+        Check(GetProcessTimes(process,out s.creation,out end,out s.kernel,out s.user)); s.exitCreation=end;
         Check(NtQueryInformationProcess(process,0,out basic,Marshal.SizeOf<PBI>(),IntPtr.Zero)==0);
         s.pid=basic.pid.ToInt32(); s.parent=basic.parent.ToInt32();
         var memory=new MEMORY(); memory.cb=(uint)Marshal.SizeOf<MEMORY>();
         s.peakRss=GetProcessMemoryInfo(process,ref memory,memory.cb) ? (long)memory.peak.ToUInt64() : -1;
         Check(GetProcessIoCounters(process,out s.io)); s.exited=WaitForSingleObject(process,0)==0;
         Check(GetExitCodeProcess(process,out exit)); s.exit=exit; return s;
+    }
+    public static string Image(IntPtr process) {
+        var image=new StringBuilder(32768); uint size=(uint)image.Capacity;
+        Check(QueryFullProcessImageNameW(process,0,image,ref size)); return image.ToString();
     }
     public static IntPtr OpenOwned(Custody c,int pid) {
         IntPtr p=OpenProcess(0x101410,false,pid); Check(p!=IntPtr.Zero);
@@ -207,6 +381,25 @@ public static class F3TimingNative {
     if ($runtime -ine [IO.Path]::GetFullPath($expectedRuntime) -or
         $spec.runtime_sha256 -cne '16a377d348c3a0c8d3a58d222d96807065dd0dcd9438c6025900c842ec836603') { throw 'RUNTIME_EXECUTABLE' }
     Assert-Hash $runtime $spec.runtime_sha256
+    # A console wrapper is admitted only with this separately pinned executable.
+    # The new context pin grants no command or runtime permission.
+    if ($spec.pytest_sha256 -cne $expectedPytest -or $spec.venv_cfg_sha256 -cne $expectedVenvConfig -or
+        $spec.base_python_sha256 -cne $expectedBasePython) { throw 'RUNTIME_EXECUTABLE' }
+    $console = Assert-PlainPath (Join-Path ([IO.Path]::GetDirectoryName($runtime)) 'pytest.exe') $spec.runtime_root
+    Assert-Hash $console $spec.pytest_sha256
+    $venvCfg = Assert-PlainPath (Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($runtime))) 'pyvenv.cfg') $spec.runtime_root
+    Assert-Hash $venvCfg $spec.venv_cfg_sha256
+    $baseHome = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($source)) 'cu/.f1/python'))
+    $basePython = Assert-PlainPath (Join-Path $baseHome 'python.exe') $baseHome
+    Assert-Hash $basePython $spec.base_python_sha256
+    $venvSettings = @{}
+    foreach ($line in [IO.File]::ReadLines($venvCfg)) {
+        if ($line -cmatch '^(home|executable) = (.+)$') {
+            if ($venvSettings.ContainsKey($matches[1])) { throw 'RUNTIME_EXECUTABLE' }
+            $venvSettings[$matches[1]] = [IO.Path]::GetFullPath($matches[2])
+        }
+    }
+    if ($venvSettings.home -ine $baseHome -or $venvSettings.executable -ine $basePython) { throw 'RUNTIME_EXECUTABLE' }
     Assert-Hash (Join-Path $spec.stdlib_root 'subprocess.py') $spec.subprocess_sha256
     if ($spec.subprocess_sha256 -cne '8e33d2fca1666dc959ac1a48609d5ecb055990771a0e9142be0c1c2050109f92') { throw 'STDLIB_NOT_REVIEWED' }
     $parent = [F3TimingNative]::Read($self.Handle)
@@ -307,21 +500,39 @@ public static class F3TimingNative {
     while ($true) {
         $active = [F3TimingNative]::Pids($custody)
         foreach ($processId in $active) {
-            if (-not $owned.ContainsKey($processId)) {
-                $handle = [F3TimingNative]::OpenOwned($custody, $processId)
+            $handle = [F3TimingNative]::OpenOwned($custody, $processId)
+            try {
                 $row = [F3TimingNative]::Read($handle)
-                $owned[$processId] = @{ handle=$handle; creation=$row.creation; ended=$false }
-                Write-Observation @{ event='process_start_seen'; pid=$row.pid; parent_pid=$row.parent; creation_100ns=$row.creation }
+                $key = '{0}:{1}' -f $row.pid,$row.creation
+                if (-not $owned.ContainsKey($key)) {
+                    $image = [F3TimingNative]::Image($handle)
+                    $kind = 'other'
+                    $imageHash = 'UNKNOWN'
+                    if ($image -ieq $runtime) { Assert-Hash $image $spec.runtime_sha256; $kind='venv'; $imageHash=$spec.runtime_sha256 }
+                    elseif ($image -ieq $basePython) { Assert-Hash $image $spec.base_python_sha256; $kind='base_runtime'; $imageHash=$spec.base_python_sha256 }
+                    elseif ($image -ieq $console) { Assert-Hash $image $spec.pytest_sha256; $kind='console'; $imageHash=$spec.pytest_sha256 }
+                    elseif ($image -ieq $git) { Assert-Hash $image $spec.git_sha256; $kind='git'; $imageHash=$spec.git_sha256 }
+                    # Private image paths stay in memory. Only closed kinds enter evidence.
+                    $owned[$key] = @{ handle=$handle; pid=$row.pid; parent=$row.parent;
+                        creation=$row.creation; exit_creation=$row.exitCreation; ended=$false;
+                        image_kind=$kind; image_sha256=$imageHash }
+                    $handle=[IntPtr]::Zero
+                    Write-Observation @{ event='process_start_seen'; pid=$row.pid; parent_pid=$row.parent;
+                        creation_100ns=$row.creation; image_kind=$kind; image_sha256=$imageHash }
+                }
+            } finally {
+                if ($handle -ne [IntPtr]::Zero) { [F3TimingNative]::CloseHandle($handle) | Out-Null }
             }
         }
-        foreach ($processId in @($owned.Keys)) {
-            $entry = $owned[$processId]
+        foreach ($key in @($owned.Keys)) {
+            $entry = $owned[$key]
             if ($entry.ended) { continue }
             $row = [F3TimingNative]::Read($entry.handle)
-            if ($row.creation -ne $entry.creation) { throw 'PROCESS_IDENTITY' }
+            if ($row.pid -ne $entry.pid -or $row.creation -ne $entry.creation -or $row.parent -ne $entry.parent) { throw 'PROCESS_IDENTITY' }
             if ($row.peakRss -lt 0) { $resourceGap=$true }
             if ($row.exited) {
                 $entry.ended = $true
+                $entry.exit_creation = $row.exitCreation
                 Write-Observation @{ event='process_exit_seen'; pid=$row.pid; creation_100ns=$row.creation;
                     exit=$row.exit; cpu_100ns=($row.kernel+$row.user); peak_rss_bytes=$row.peakRss;
                     read_bytes=$row.io.readBytes; write_bytes=$row.io.writeBytes }
@@ -354,6 +565,8 @@ public static class F3TimingNative {
     if ($slots.Count -ne 5) { $invalid=$true }
     $writerBytes = 0L
     $identities = @{}
+    $writerIdentities = New-Object 'Collections.Generic.List[object]'
+    $writerRecords = New-Object 'Collections.Generic.List[object]'
     $roles = @{supervisor=0; 'lane-worker'=0; command=0}
     $settledNs = [decimal]([Diagnostics.Stopwatch]::GetTimestamp()) * 1000000000 / [Diagnostics.Stopwatch]::Frequency
     foreach ($slot in $slots) {
@@ -366,8 +579,13 @@ public static class F3TimingNative {
         foreach ($line in [IO.File]::ReadLines($slot.FullName)) {
             if ([Text.Encoding]::UTF8.GetByteCount($line) -gt 4096) { throw 'TRACE_RECORD_BUDGET' }
             $row = $line | ConvertFrom-Json
+            $writerRecords.Add($row)
             if ($null -eq $identity) { $identity=$row }
             $sequence++
+            foreach ($field in @('seq','mono_ns','pid','creation_100ns','value','phase')) {
+                if ($row.$field -isnot [int] -and $row.$field -isnot [long]) { $invalid=$true }
+            }
+            if ($row.pid -le 0 -or $row.creation_100ns -le 0) { $invalid=$true }
             if ($row.seq -ne $sequence -or $row.mono_ns -lt $previous -or $row.mono_ns -gt $settledNs -or
                 $row.run_id -cne $spec.run_id -or $row.tested_sha -cne $spec.tested_sha -or
                 $row.lane -cne 'f3' -or $row.ticket_id -cne $identity.ticket_id -or
@@ -380,9 +598,9 @@ public static class F3TimingNative {
         }
         if ($null -eq $identity -or -not $events.ContainsKey('bootstrap') -or
             -not $events.ContainsKey('writer_end')) { $invalid=$true }
-        elseif (-not $owned.ContainsKey([int]$identity.pid) -or
-                $owned[[int]$identity.pid].creation -ne $identity.creation_100ns) { $invalid=$true }
+        elseif (-not $owned.ContainsKey(('{0}:{1}' -f $identity.pid,$identity.creation_100ns))) { $invalid=$true }
         if ($null -ne $identity) {
+            $writerIdentities.Add($identity)
             if ($identities.ContainsKey($identity.ticket_id) -or -not $roles.ContainsKey($identity.role)) { $invalid=$true }
             else { $identities[$identity.ticket_id]=$true; $roles[$identity.role]++ }
         }
@@ -393,13 +611,24 @@ public static class F3TimingNative {
     # Completeness includes explicit native coverage/gaps. Missing native reports
     # are facts of the original failure, never synthesized by this observer.
     $missingStart=0; $missingFinal=0; $missingExit=0; $missingBuffers=0
+    $authoritativeTickets = New-Object 'Collections.Generic.List[object]'
+    $nativeStarts = @{}
     foreach ($ticketPath in Get-ChildItem -LiteralPath (Join-Path $run 'tickets') -Filter '*.json') {
         if ($ticketPath.Name -notmatch '^[0-9a-f]{32}\.json$') { continue }
         $ticket = Get-Content -LiteralPath $ticketPath.FullName -Raw | ConvertFrom-Json
         $id = $ticket.ticket_id
-        if ($ticket.run_id -cne $spec.run_id -or $ticket.tested_sha -cne $spec.tested_sha -or $id -cnotmatch '^[0-9a-f]{32}$') { $invalid=$true; continue }
+        if ($ticket.run_id -cne $spec.run_id -or $ticket.tested_sha -cne $spec.tested_sha -or
+            $id -cnotmatch '^[0-9a-f]{32}$' -or $ticketPath.BaseName -cne $id) { $invalid=$true; continue }
+        $authoritativeTickets.Add($ticket)
         if (-not $ticket.native) {
-            if (-not (Test-Path -LiteralPath (Join-Path $run "processes/$id.start.json"))) { $missingStart++ }
+            $startPath = Join-Path $run "processes/$id.start.json"
+            if (-not (Test-Path -LiteralPath $startPath)) { $missingStart++ }
+            else {
+                try {
+                    if ((Get-Item -LiteralPath $startPath).Length -gt 32768) { throw 'CORRUPT_NATIVE_START' }
+                    $nativeStarts[$id] = Get-Content -LiteralPath $startPath -Raw | ConvertFrom-Json
+                } catch { $invalid=$true }
+            }
             if (-not (Test-Path -LiteralPath (Join-Path $run "processes/$id.final.json"))) { $missingFinal++ }
         }
         if (-not (Test-Path -LiteralPath (Join-Path $run "tickets/$id.exit.json"))) { $missingExit++ }
@@ -408,6 +637,15 @@ public static class F3TimingNative {
         }
     }
     if ($missingBuffers) { $invalid=$true }
+    $coverage = Test-TimingCoverage -Tickets @($authoritativeTickets.ToArray()) -Writers @($writerIdentities.ToArray()) `
+        -Records @($writerRecords.ToArray()) -External $owned -Starts $nativeStarts -Binding @{
+            run_id=$spec.run_id; tested_sha=$spec.tested_sha; source_digest=$spec.source_digest;
+            custody_pid=$custody.pid; custody_creation_100ns=$custody.creation; observer_pid=$PID;
+            runtime=$runtime; console=$console; runtime_sha256=$spec.runtime_sha256;
+            base_python_sha256=$spec.base_python_sha256; pytest_sha256=$spec.pytest_sha256; git_sha256=$spec.git_sha256 }
+    if (-not $coverage.valid) { $invalid=$true }
+    Write-Observation @{ event='identity_coverage'; tickets=$coverage.tickets; covered=$coverage.covered;
+        valid=$coverage.valid; errors=$coverage.errors }
     Write-Observation @{ event='native_coverage'; missing_start=$missingStart; missing_final=$missingFinal;
         missing_exit=$missingExit; missing_buffers=$missingBuffers; pipe_eof_timestamp='UNKNOWN'; unittest_return_timestamp='UNKNOWN' }
     # All bytes are retained locally. Only aliases/hashes can enter a public projection.

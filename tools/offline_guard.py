@@ -60,10 +60,15 @@ _TIMING_EVENTS = frozenset({
     'pytest_return', 'session_finish', 'pytest_report_begin', 'pytest_report_end',
     'reconcile_begin', 'reconcile_end', 'final_begin', 'final_end', 'atexit',
     'command_report_read', 'native_result', 'writer_end', 'substantive_progress',
-    'pytest_import_begin', 'pytest_import_end',
+    'pytest_import_begin', 'pytest_import_end', 'child_launch',
 })
 _TIMING_ID_KEYS = ('run_id', 'lane', 'role', 'ticket_id', 'tested_sha',
                    'source_digest', 'pid', 'creation_100ns')
+_TIMING_CHILD_EVENTS = frozenset({
+    'ticket_issued', 'child_launch', 'popen_begin', 'popen_end', 'job_assigned',
+    'gate_released', 'communicate_begin', 'communicate_end',
+    'communicate_timeout', 'cleanup_end', 'exit_written', 'child_reconciled',
+})
 _TIMING_WRITER_BYTES = 512 * 1024 - 8  # Six slots + 1 MiB observer <= 4 MiB.
 
 
@@ -72,12 +77,13 @@ def timing_public(record):
     keys = {*_TIMING_ID_KEYS, 'seq', 'mono_ns', 'event', 'value', 'phase',
             'read_calls', 'read_ns', 'ticket_calls', 'ticket_ns', 'reconcile_ns',
             'setup', 'call', 'teardown', 'passed', 'failed', 'skipped', 'child_id',
-            'setup_ns', 'call_ns', 'teardown_ns', 'clock_error_ns'}
+            'setup_ns', 'call_ns', 'teardown_ns', 'clock_error_ns', 'issuer_id',
+            'child_pid', 'child_creation_100ns', 'child_parent_pid'}
     public = {}
     for key, value in record.items():
         if key not in keys:
             continue
-        pattern = ('[0-9a-f]{32}' if key in {'run_id', 'ticket_id', 'child_id'} else
+        pattern = ('[0-9a-f]{32}' if key in {'run_id', 'ticket_id', 'child_id', 'issuer_id'} else
                    '[0-9a-f]{40}' if key == 'tested_sha' else
                    '[0-9a-f]{64}' if key == 'source_digest' else None)
         if pattern:
@@ -120,8 +126,86 @@ def timing_trace_errors(records, identity, required, deadline_ns):
                 errors.add('LATE')
         if record.get('event') not in _TIMING_EVENTS:
             errors.add('CORRUPT')
+        if record.get('event') in _TIMING_CHILD_EVENTS:
+            # This pure trace check needs the issued tickets as independent input.
+            # Runtime external OS coverage is checked separately by the observer.
+            children = identity.get('issued_children', {})
+            child_id = record.get('child_id')
+            child = children.get(child_id) if isinstance(children, dict) and isinstance(child_id, str) else None
+            if (child is None or record.get('issuer_id') != identity.get('ticket_id')
+                    or child.get('parent_id') != identity.get('ticket_id')
+                    or any(child.get(key) != identity.get(key)
+                           for key in ('run_id', 'lane', 'tested_sha', 'source_digest'))):
+                errors.add('FOREIGN_CHILD')
     if not required.issubset({r.get('event') for r in records if isinstance(r, dict)}):
         errors.add('MISSING')
+    children = identity.get('issued_children', {})
+    if isinstance(children, dict) and children:
+        for event in ('ticket_issued', 'child_launch'):
+            identifiers = [r.get('child_id') for r in records
+                           if isinstance(r, dict) and r.get('event') == event]
+            if any(not isinstance(identifier, str) for identifier in identifiers):
+                errors.add('CORRUPT')
+                continue
+            if set(identifiers) != set(children):
+                errors.add('MISSING_CHILD')
+            if len(identifiers) != len(set(identifiers)):
+                errors.add('DUPLICATE_CHILD')
+    return sorted(errors)
+
+
+def timing_child_errors(ticket, launch, issuer, observed, wrapper=None):
+    """Bounded synthetic provenance oracle, never a native admission decision.
+
+    observed/issuer/wrapper are independent retained OS observations in fixtures.
+    A matching claimed tuple is insufficient without those observations. The
+    actual PowerShell final checker must be reviewed/validated independently.
+    """
+    if not all(isinstance(value, dict) for value in (ticket, launch, issuer)):
+        return ['CORRUPT']
+    if not isinstance(observed, list) or len(observed) != 1:
+        return ['MISSING_IDENTITY' if observed == [] else 'AMBIGUOUS_IDENTITY']
+    child = observed[0]
+    if not isinstance(child, dict):
+        return ['CORRUPT']
+    errors = set()
+    if any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{32}', value)
+           for value in (ticket.get('ticket_id'), ticket.get('parent_id'),
+                         launch.get('child_id'), launch.get('issuer_id'))):
+        errors.add('FOREIGN_CHILD')
+    if (launch.get('child_id') != ticket.get('ticket_id')
+            or launch.get('issuer_id') != ticket.get('parent_id')
+            or issuer.get('ticket_id') != ticket.get('parent_id')
+            or any(launch.get(key) != ticket.get(key)
+                   or issuer.get(key) != ticket.get(key)
+                   for key in ('run_id', 'lane', 'tested_sha', 'source_digest'))):
+        errors.add('FOREIGN_CHILD')
+    if (any(type(launch.get(key)) is not int or launch[key] <= 0
+            for key in ('child_pid', 'child_creation_100ns', 'child_parent_pid'))
+            or any(type(child.get(key)) is not int or child[key] <= 0
+            for key in ('pid', 'creation_100ns', 'parent_pid', 'exit_100ns'))
+            or child.get('exit_100ns', 0) < child.get('creation_100ns', 0)
+            or launch.get('child_pid') != child.get('pid')
+            or launch.get('child_creation_100ns') != child.get('creation_100ns')
+            or launch.get('child_parent_pid') != child.get('parent_pid')):
+        errors.add('FOREIGN_IDENTITY')
+
+    def parent_edge(parent, descendant):
+        keys = ('pid', 'creation_100ns', 'exit_100ns')
+        return (all(type(parent.get(key)) is int and parent[key] > 0 for key in keys)
+                and type(descendant.get('creation_100ns')) is int
+                and descendant.get('parent_pid') == parent['pid']
+                and parent['creation_100ns'] <= descendant['creation_100ns'] <= parent['exit_100ns'])
+
+    if not parent_edge(issuer, child):
+        errors.add('ACTUAL_PARENT')
+    if wrapper is not None:
+        # Only the existing console command's one exact image edge is permitted.
+        if (not isinstance(wrapper, dict) or ticket.get('profile') != 1
+                or child.get('image') != 'pytest' or wrapper.get('image') != 'runtime'
+                or not child.get('image_bound') or not wrapper.get('image_bound')
+                or not parent_edge(child, wrapper)):
+            errors.add('CONSOLE_WRAPPER')
     return sorted(errors)
 
 
@@ -218,6 +302,13 @@ def _timing_open(c):
         kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         kernel.WaitForSingleObject.restype = ctypes.c_ulong
         _TIMING['kernel'] = kernel
+        kernel.GetProcessTimes.argtypes = [ctypes.c_void_p, *([ctypes.c_void_p] * 4)]
+        kernel.GetProcessTimes.restype = ctypes.c_int
+        native = ctypes.WinDLL('ntdll', use_last_error=True)
+        native.NtQueryInformationProcess.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+        native.NtQueryInformationProcess.restype = ctypes.c_long
+        _TIMING['process_basic'] = native.NtQueryInformationProcess
         _TIMING['sync_ns'] = time.perf_counter_ns() - opening + 2 * clock_error
         timing_event('bootstrap')
     except BaseException:
@@ -240,12 +331,15 @@ def _timing_creation():
 
 def timing_event(event, value=0, phase=0):
     state = _TIMING
+    binding = state.get('child_binding') if state is not None and event in _TIMING_CHILD_EVENTS else None
+    _timing_emit(event, value, phase, binding)
+
+
+def _timing_emit(event, value=0, phase=0, binding=None):
+    state = _TIMING
     if state is None or state['invalid'] or state['closed']:
         return
-    if (event in {'popen_begin', 'popen_end', 'job_assigned', 'gate_released',
-                  'communicate_begin', 'communicate_end', 'communicate_timeout',
-                  'cleanup_end', 'exit_written', 'child_reconciled'}
-            and not state.get('child_observed', False)):
+    if event in _TIMING_CHILD_EVENTS and binding is None:
         return
     began = time.perf_counter_ns()
     try:
@@ -253,8 +347,8 @@ def timing_event(event, value=0, phase=0):
             raise ValueError('TIMING_EVENT')
         record = dict(state['identity'], seq=state['seq'] + 1,
                       mono_ns=began, event=event, value=value, phase=phase)
-        if state.get('child_id') is not None:
-            record['child_id'] = state['child_id']
+        if binding is not None:
+            record.update(binding)
         if event in {'reconcile_end', 'writer_end', 'substantive_progress'}:
             record.update({key: state[key] for key in ('read_calls', 'read_ns', 'ticket_calls',
                 'ticket_ns', 'reconcile_ns', 'setup', 'call', 'teardown', 'passed', 'failed', 'skipped',
@@ -271,6 +365,70 @@ def timing_event(event, value=0, phase=0):
     # No native branch depends on this marker. The external owner aborts its job.
     if state['invalid'] or state['sync_ns'] > 1000000000:
         _timing_abort()
+
+
+def _timing_child_binding(ticket):
+    state = _TIMING
+    if (not isinstance(ticket, dict)
+            or not re.fullmatch('[0-9a-f]{32}', str(ticket.get('ticket_id', '')))
+            or ticket.get('parent_id') != state['identity']['ticket_id']
+            or any(ticket.get(key) != state['identity'][key]
+                   for key in ('run_id', 'lane', 'tested_sha', 'source_digest'))):
+        raise ValueError('TIMING_CHILD_BINDING')
+    return dict(child_id=ticket['ticket_id'], issuer_id=state['identity']['ticket_id'])
+
+
+def _timing_ticket_issued(ticket):
+    if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
+        return
+    began = time.perf_counter_ns()
+    try:
+        _timing_emit('ticket_issued', _timing_profile(ticket), binding=_timing_child_binding(ticket))
+    except BaseException:
+        _timing_abort()
+    finally:
+        _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
+
+
+def _timing_child_begin(ticket):
+    if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
+        return
+    began = time.perf_counter_ns()
+    try:
+        _TIMING['child_binding'] = _timing_child_binding(ticket)
+    except BaseException:
+        _TIMING['child_binding'] = None
+        _timing_abort()
+    finally:
+        _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
+
+
+def _timing_child_launch(ticket, process):
+    """Read only the already-owned Popen handle; never poll/wait/admit a child."""
+    if _TIMING is None or _TIMING['invalid'] or _TIMING['closed']:
+        return
+    began = time.perf_counter_ns()
+    try:
+        binding = _timing_child_binding(ticket)
+        handle = int(process._handle)
+        times = [ctypes.c_ulonglong() for _ in range(4)]
+        if not _TIMING['kernel'].GetProcessTimes(handle, *(ctypes.byref(v) for v in times)):
+            raise ValueError('TIMING_CHILD_PROCESS')
+        # PROCESS_BASIC_INFORMATION is six pointer-sized fields on this pinned
+        # Windows runtime. Its last two fields are the actual PID and OS parent.
+        basic = (ctypes.c_void_p * 6)()
+        if _TIMING['process_basic'](handle, 0, basic, ctypes.sizeof(basic), None) != 0:
+            raise ValueError('TIMING_CHILD_PARENT')
+        if int(basic[4] or 0) != process.pid or not times[0].value or not basic[5]:
+            raise ValueError('TIMING_CHILD_IDENTITY')
+        binding.update(child_pid=process.pid, child_creation_100ns=times[0].value,
+                       child_parent_pid=int(basic[5]))
+        _TIMING['child_binding'] = binding
+        _timing_emit('child_launch', _timing_profile(ticket), binding=binding)
+    except BaseException:
+        _timing_abort()
+    finally:
+        _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
 
 
 def _timing_abort():
@@ -1119,8 +1277,7 @@ def issue_ticket(role, argv, roots=None, expected_counts=None, expected_exit=0,
     exclusive_json(path, ticket)
     ticket['path'] = str(path)
     c.children.append(ticket)
-    if _TIMING is not None and _timing_profile(ticket):
-        timing_event('ticket_issued', _timing_profile(ticket))
+    _timing_ticket_issued(ticket)
     return ticket
 
 
@@ -2888,9 +3045,7 @@ def run_child(argv, role='f3-control', roots=None, timeout=30, expected_counts=N
         if detected != role or not native or not ticket.get('native'):
             raise ValueError('OFFLINE_CHILD_NATIVE_ROLE')
     environment = child_env(ticket, env)
-    if _TIMING is not None:
-        _TIMING['child_id'] = ticket['ticket_id']
-        _TIMING['child_observed'] = bool(_timing_profile(ticket))
+    _timing_child_begin(ticket)
     if ticket.get('canary_path'):
         canary = checked_path(ticket['canary_path'], _CONTEXT.root / '.f3/tmp')
         canary.parent.mkdir(parents=True, exist_ok=False)
@@ -2915,6 +3070,7 @@ def run_child(argv, role='f3-control', roots=None, timeout=30, expected_counts=N
                 _THREAD_STATE.d1_launch_token = dict(argv=list(argv), kwargs=options, used=False)
             timing_event('popen_begin')
             process = subprocess.Popen(argv, **options)
+            _timing_child_launch(ticket, process)
             timing_event('popen_end', process.pid)
         finally:
             _THREAD_STATE.d1_launch_token = None
@@ -2979,8 +3135,7 @@ def run_child(argv, role='f3-control', roots=None, timeout=30, expected_counts=N
     result.ticket = ticket
     result.timed_out = timed_out
     if _TIMING is not None:
-        _TIMING.pop('child_id', None)
-        _TIMING['child_observed'] = False
+        _TIMING.pop('child_binding', None)
     return result
 
 
