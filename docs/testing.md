@@ -252,7 +252,7 @@ Canonical hosted entrypoints are:
 ```text
 python -I -S -B -X utf8 .github/lnx02/verify_env.py d2-linux --repo-root <checkout> --output <owned-output> --expected-sha <exact-head> --expected-base <approved-base>
 python -I -S -B -X utf8 .github/lnx02/verify_env.py audit-d2-linux --output <owned-output> --expected-sha <exact-head> --expected-base <approved-base>
-python -I -B -X utf8 tools/offline_linux.py --lane d2-linux
+python -I -S -B -X utf8 tools/offline_linux.py --lane d2-linux
 ```
 
 These are closed commands, not permission to execute them with arbitrary source
