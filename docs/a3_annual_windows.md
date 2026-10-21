@@ -8,7 +8,9 @@ date-only expansion, timestamp selection, membership, availability or finality.
 ## Calendar requests
 
 Capture the legacy local calendar date `A` once. For positive integer `years=N`,
-send exactly N requests, newest first. Each anniversary `B_i` is calculated
+plan exactly N logical windows, newest first. A3-FINAL executes them through
+bounded physical ranges: N calls for 24/60, 12N for 10, and 53N for 1.
+See [historical acquisition](a3_historical_ranges.md). Each anniversary `B_i` is calculated
 directly from A with year `A.year-i`. February 29 becomes February 28 only in a
 non-leap target year; a later leap anniversary recovers February 29. All generated
 dates use `date.isoformat()` and exactly `YYYY-MM-DD`, including years 0001/0999.
@@ -97,15 +99,16 @@ returned prefix. Existing transport retries inside each query remain unchanged.
 
 ## Caller and resource boundaries
 
-`full_reload` changes only its annual cutoff to a calendar anniversary and its
-generated current-date token. Keep years=0 all-history sentinel, listing-date
-maximum, stopped-date precedence, direct query routing and writers.
+`full_reload` retains its calendar cutoff, years=0 sentinel, listing-date
+maximum and stopped-date precedence. A3-FINAL routes the complete explicit span
+through the same bounded mechanism and audits one final dataset concat.
 
-`data_update` changes only the new-ticker cutoff to one calendar year and its
-generated current-date token, including for a 30-year dataset. Stored-end
+`data_update` retains the one-calendar-year new-ticker cutoff, including for a
+30-year dataset. Stored-end
 incremental requests, the separate legacy 30-day clock/filter, ticker order,
-full-row deduplication and writers remain unchanged. Neither caller is routed
-through annual chunks.
+full-row deduplication and writers remain unchanged. Existing, new and nested
+cold-start acquisitions all use bounded ranges; original frames enter one
+audited dataset concat.
 
 Calendar corrections can change requested CSV/XLSX row membership near leap
 spans. Annual result ordering/index/duplicate multiplicity intentionally change.
@@ -120,7 +123,8 @@ require extra physical pages and exhaust
 these existing limits; there is no universal extra-row/GET bound. A fixture
 pins actual offsets/retries/sleeps, including late exhaustion. N annual calls
 do not establish a global resource budget or make multi-year minute acquisition
-complete. A3-03 owns bounded time/resource subdivision and production hookup.
+complete. A3-FINAL supplies hierarchical accounting and all caller hookups;
+it does not authorize production or prove source completeness.
 
 Acquisition-fault caller fixtures assert no new writer and retained previous
 bytes/hashes **for the affected dataset**. They establish no transaction across
@@ -152,10 +156,10 @@ fixed without new evidence.
 | Issue | Scoped contribution | Still open |
 | --- | --- | --- |
 | #21 | Exact N client calendar windows, portable dates, explicit halo, request-bound sort/exact union, deterministic pytest | Real source inclusivity/date expansion/membership/finality; source-semantic AC2 remains NOT_VERIFIED |
-| #6 | A3-01 pagination plus A3-02 calendar join/refusal policies | A3-03 resource/caller hookup; A5 identity/availability and separately authorized live coverage/last completed candle; later A8/R1 propagation |
+| #6 | A3-01 pagination, A3-02 calendar union, A3-FINAL bounded resources and all acquisition callers | A5 identity/availability and separately authorized live coverage/finality; later A8/R1 propagation |
 | #47 | Offline annual/caller regressions | Global integration, source coverage, indicators and release/remote AC |
 | #78 | Preserve closed F-LOG and per-query diagnostics | Global F/D/R1 delivery/FAILED/nonzero/stop/bundle/staging; per-window return is not whole-horizon coverage |
-| #76 | A3-01 scoped complete; A3-02 scoped implementation | A3-03/A4/A5 and other downstream slices remain separate |
+| #76 | A3-01/A3-02 accepted; one A3-FINAL implementation PR | Independent A3 acceptance, A5/source and downstream lanes remain separate; no planned A3-04 |
 
 The separate full `90_source/MOEX_DATASET_FIX_PLAN_v2_1.md` copy was not located;
 full reading remains `NOT_VERIFIED`. The reviewed newer owner decisions remain

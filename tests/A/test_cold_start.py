@@ -113,11 +113,15 @@ def test_each_missing_dataset(gathering, catalogue, snapshot, candle_frame,
     assert args[1:6] == (spec['interval'], spec['years'], spec['filename'], spec['word'], root)
     assert args[6] is snapshot
     assert kwargs == {'logging_context': None}
+    import json
+    from pathlib import Path
+    physical = json.loads((Path(__file__).resolve().parents[1] / 'fixtures/a3/historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
     expected_queries = []
     for position, spec in enumerate(dataset_config):
         if position != missing:
-            expected_queries += [('SBER', 'Акции', '2024-03-01', '2024-03-02', spec['interval']),
-                                 ('MOEX', 'Акции', '2023-03-02', '2024-03-02', spec['interval'])]
+            expected_queries += [('SBER', 'Акции', '2024-03-01', '2024-03-02', spec['interval'])]
+            expected_queries += [('MOEX', 'Акции', lo, hi, spec['interval'])
+                                 for lo, hi in physical[f"2023-03-02/2024-03-02/{spec['interval']}"]]
     assert queries == expected_queries
     assert len(writers) == 14
     assert [item[0] for item in writers] == ['xlsx', 'csv'] * 7
@@ -179,8 +183,11 @@ def test_real_full_reload(gathering, snapshot, candle_frame, fixture_root,
 
     monkeypatch.setattr(gathering, 'moex_query', candles)
     gathering.full_reload(source, interval, years, 'fixture_reload', 'минут', root, snapshot)
-    assert calls == [('MOEX', 'Акции', '2020-02-29', '2024-03-01', interval),
-                     ('SBER', 'Акции', sber_begin, '2024-03-02', interval)]
+    import json
+    from pathlib import Path
+    physical = json.loads((Path(__file__).resolve().parents[1] / 'fixtures/a3/historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    assert calls == [('MOEX', 'Акции', lo, hi, interval) for lo, hi in physical[f'2020-02-29/2024-03-01/{interval}']] + [
+        ('SBER', 'Акции', lo, hi, interval) for lo, hi in physical[f'{sber_begin}/2024-03-02/{interval}']]
     assert len(writers) == 2 and [item[0] for item in writers] == ['xlsx', 'csv']
     expected_rows = [
         [100., 101., 102., 99., 202000., 2000, '2024-03-01 00:00:00', '2024-03-01 23:59:59', 'MOEX'],
@@ -313,7 +320,12 @@ def test_no_context_has_no_logger_calls(gathering, catalogue, snapshot, fixture_
 
     monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.full_reload(catalogue, 24, 10, 'fixture', 'часа', root, snapshot)
-    assert imports == [] and len(queries) == 2 and writers == []
+    import json
+    from pathlib import Path
+    physical = json.loads((Path(__file__).resolve().parents[1] / 'fixtures/a3/historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    expected = [('MOEX', 'Акции', lo, hi, 24) for lo, hi in physical['2020-02-29/2024-03-01/24']] + [
+        ('SBER', 'Акции', lo, hi, 24) for lo, hi in physical['2014-03-02/2024-03-02/24']]
+    assert imports == [] and queries == expected and writers == []
 
 
 def test_snapshot_parameters_remain_required(gathering):
@@ -339,8 +351,11 @@ def test_real_reload_thirty_year_cutoff(gathering, catalogue, snapshot, candle_f
 
     monkeypatch.setattr(gathering, 'moex_query', query)
     gathering.full_reload(catalogue, 24, 30, 'fixture', 'часа', root, dates)
-    assert calls == [('MOEX', 'Акции', '2020-02-29', '2024-03-01', 24),
-                     ('SBER', 'Акции', '1994-03-02', '2024-03-02', 24)]
+    import json
+    from pathlib import Path
+    physical = json.loads((Path(__file__).resolve().parents[1] / 'fixtures/a3/historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    assert calls == [('MOEX', 'Акции', lo, hi, 24) for lo, hi in physical['2020-02-29/2024-03-01/24']] + [
+        ('SBER', 'Акции', lo, hi, 24) for lo, hi in physical['1994-03-02/2024-03-02/24']]
     assert writers == []
 
 
@@ -446,7 +461,7 @@ def test_query_primary_stops_reload_before_next_call(gathering, catalogue, snaps
         gathering.full_reload(catalogue, 24, 10, 'fixture', 'часа', root, snapshot,
                               logging_context=event_log.context)
     assert captured.value is primary
-    assert queries == [('MOEX', 'Акции', '2020-02-29', '2024-03-01', 24)]
+    assert queries == [('MOEX', 'Акции', '2023-03-01', '2024-03-01', 24)]
     assert writers == [] and not any(item['outcome'] == 'RETURNED' for item in event_log.events)
     if secondary:
         assert primary.__notes__ == ['A1_LOGGING_FAILURE: LOGGING_INCOMPLETE']

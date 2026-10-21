@@ -657,6 +657,11 @@ def test_later_ticker_failure_preserves_local_previous_and_has_no_writers(
         previous[target] = (content, hashlib.sha256(content).hexdigest())
         exact_reads.declared[target] = candle_frame
     primary = requests.exceptions.Timeout('A1_SYNTHETIC_CANARY')
+    import json
+    from pathlib import Path
+    physical = json.loads((Path(__file__).resolve().parents[1] / 'fixtures/a3/historical_ranges.json').read_text(encoding='utf-8'))['literal_spans']
+    first_ticker = 'MOEX' if operation == 'reload' else 'SBER'
+    expected_count = len(physical['2020-02-29/2024-03-01/24']) + 1 if operation == 'reload' else 2
     original_args = primary.args
     calls = []
     context = event_log.context if with_context else None
@@ -664,7 +669,7 @@ def test_later_ticker_failure_preserves_local_previous_and_has_no_writers(
     def candles(*args, logging_context=None):
         calls.append(args)
         assert logging_context is context
-        if len(calls) == 1:
+        if args[0] == first_ticker:
             result = candle_frame.copy(deep=True)
             result['ticker'] = args[0]
             return result
@@ -679,7 +684,7 @@ def test_later_ticker_failure_preserves_local_previous_and_has_no_writers(
             gathering.data_update([{'interval': 24, 'years': 10, 'filename': 'fixture_previous', 'word': 'часа'}],
                                   root, catalogue, snapshot, logging_context=context)
     assert captured.value is primary and primary.args == original_args
-    assert len(calls) == 2 and writers == []
+    assert len(calls) == expected_count and writers == []
     assert all((path.read_bytes(), hashlib.sha256(path.read_bytes()).hexdigest()) == value
                for path, value in previous.items())
     assert not any(item['event'] in ('a1_full_reload_returned', 'a1_data_update_returned')

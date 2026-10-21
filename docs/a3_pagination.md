@@ -91,9 +91,10 @@ before request 1001. Every refusal discards accumulated results.
 Even with zero other overhead, the existing 3-second success sleep and strict
 budget admission permit at most 59 completed successful pages, including the
 required empty terminal. A multiyear minute request cannot generally complete in
-one call. A3-03 owns the inactive follow-up hookup for bounded time subranges or a
-separately approved resource strategy. A3-01 does not alter A2 pacing or activate
-that hookup. A3-02 separately owns annual-window correctness. Exhaustion after
+one call. [A3-FINAL](a3_historical_ranges.md) supplies bounded subranges and
+hierarchical resource accounting for all acquisition callers. Direct native
+queries keep the A3-01 policy; aggregate hooks are active only inside that
+private acquisition envelope. A3-02 supplies logical annual windows. Exhaustion after
 already staged pages is an explicit offline regression.
 
 ## Private bounded evidence
@@ -213,4 +214,4 @@ across datasets, formats or remote targets.
 Rollback is a separate reviewed revert of this one slice's nine-path diff,
 including both pair members. No dataset rollback/publication is executed here.
 Stop at one draft PR and independent code-review handoff (`Refs #6, #21, #78`);
-do not merge, close issues, or activate A3-02/A3-03/A5/F/D/R1 hookups.
+do not merge, close issues, or activate production/A5/F/D/R1 release hookups.
