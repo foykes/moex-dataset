@@ -948,3 +948,132 @@ def test_review_linux_uses_calling_thread_not_leader_quota(gathering, monkeypatc
     sample = gathering._a3_linux_memory_snapshot()
     assert sample['quotas_verified'] is True and sample['quota_available'] == 0
     assert calls.count('/proc/thread-self/cgroup') == 2 and '/proc/self/cgroup' not in calls
+
+
+def checkpoint_linux_profile(gathering, monkeypatch, profile):
+    version = 'v1' if profile.endswith('v1') else 'v2'
+    facts, files, calls = linux_memory_fixture(gathering, monkeypatch, version)
+    if profile.startswith('nested'):
+        facts.update(namespace_inode=4026534001, namespace_link='cgroup:[4026534001]')
+    if 'root-only' in profile:
+        files['/proc/cgroups'] = 'memory 5 1 1\n' if version == 'v1' else 'memory 0 1 1\n'
+        files['/proc/thread-self/cgroup'] = '5:memory:/\n' if version == 'v1' else '0::/\n'
+    if profile == 'nested-disabled':
+        files['/proc/cgroups'] = 'memory 0 1 0\n'
+        files['/proc/thread-self/cgroup'] = '0::/\n'
+    return facts, files, calls
+
+
+@pytest.mark.parametrize('profile,basis', [
+    ('nested-disabled', 'GLOBAL_MEMORY_CONTROLLER_DISABLED'),
+    ('nested-root-only-v1', 'GLOBAL_SINGLE_ROOT_MEMORY_HIERARCHY'),
+    ('nested-root-only-v2', 'GLOBAL_SINGLE_ROOT_MEMORY_HIERARCHY')])
+def test_linux_checkpoint_proven_nested_profiles_keep_real_admission(gathering, monkeypatch, writers, profile, basis):
+    _, _, reads = checkpoint_linux_profile(gathering, monkeypatch, profile)
+    sample = gathering._a3_linux_memory_snapshot()
+    assert sample is not None and sample['quotas_verified'] is True
+    assert sample['quota_basis'] == basis and sample['namespace_initial'] is False
+    assert sample['quota_available'] == 16106127360
+    assert reads.count('/proc/cgroups') == 2
+    assert not any(path.endswith(('/memory.max', '/memory.limit_in_bytes')) for path in reads)
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', gathering._a3_linux_memory_snapshot)
+    source = candle()
+    calls = mock_queries(gathering, monkeypatch, [source])
+    with monkeypatch.context() as observation:
+        observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        result = gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
+    assert len(calls) == 1 and writers == []
+    pd.testing.assert_frame_equal(result, source)
+
+
+@pytest.mark.parametrize('profile,fault', [
+    ('initial-v1', 'partial-mount'), ('initial-v2', 'partial-mount'),
+    ('nested-private-v1', 'visible-leaf'), ('nested-private-v2', 'visible-leaf'),
+    ('nested-private-v2', 'unlimited-leaf'), ('nested-root-only-v2', 'partial-mount'),
+    ('nested-root-only-v2', 'missing-proc'), ('nested-root-only-v2', 'missing-link'),
+    ('nested-root-only-v2', 'link-mismatch'), ('nested-root-only-v1', 'nonroot-membership'),
+    ('initial-v2', 'zero-groups'), ('initial-v2', 'invalid-groups'),
+    ('initial-v2', 'duplicate-controller'), ('nested-root-only-v2', 'counter-race')])
+def test_linux_checkpoint_unproven_profiles_stop_before_get(gathering, monkeypatch, writers, profile, fault):
+    facts, files, _ = checkpoint_linux_profile(gathering, monkeypatch, profile)
+    if fault == 'partial-mount':
+        files['/proc/self/mountinfo'] = files['/proc/self/mountinfo'].replace(' / /sys/', ' /delegated /sys/')
+    elif fault == 'unlimited-leaf':
+        for key in files:
+            if key.endswith(('/memory.max', '/memory.swap.max')):
+                files[key] = 'max\n'
+    elif fault == 'missing-proc':
+        del files['/proc/cgroups']
+    elif fault == 'missing-link':
+        facts['namespace_link'] = None
+    elif fault == 'link-mismatch':
+        facts['namespace_link'] = 'cgroup:[4026534999]'
+    elif fault == 'nonroot-membership':
+        files['/proc/thread-self/cgroup'] = '5:memory:/leaf\n'
+    elif fault == 'zero-groups':
+        files['/proc/cgroups'] = 'memory 0 0 1\n'
+    elif fault == 'invalid-groups':
+        files['/proc/cgroups'] = 'memory 0 unknown 1\n'
+    elif fault == 'duplicate-controller':
+        files['/proc/cgroups'] += 'memory 0 1 1\n'
+    elif fault == 'counter-race':
+        original = gathering._a3_linux_read
+        seen = []
+        def read(path):
+            if path == '/proc/cgroups':
+                seen.append(path)
+                if len(seen) % 2 == 0:
+                    return 'memory 0 2 1\n'
+            return original(path)
+        monkeypatch.setattr(gathering, '_a3_linux_read', read)
+    assert gathering._a3_linux_memory_snapshot() is None
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', gathering._a3_linux_memory_snapshot)
+    calls = mock_queries(gathering, monkeypatch, [])
+    with monkeypatch.context() as observation:
+        observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+            gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
+    assert calls == [] and writers == []
+
+
+@pytest.mark.parametrize('total', [1, 2, 4, 8])
+@pytest.mark.parametrize('profile', ['initial-v2', 'nested-root-only-v2'])
+def test_linux_checkpoint_small_vps_is_not_admitted(gathering, monkeypatch, writers, total, profile):
+    _, files, _ = checkpoint_linux_profile(gathering, monkeypatch, profile)
+    # Even the ideal all-RAM-available upper bound cannot pay reserve8GiB+1GiB.
+    kib = str(total * 1048576)
+    files['/proc/meminfo'] = files['/proc/meminfo'].replace('67108864 kB', kib+' kB', 1).replace('50331648 kB', kib+' kB')
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', gathering._a3_linux_memory_snapshot)
+    calls = mock_queries(gathering, monkeypatch, [])
+    with monkeypatch.context() as observation:
+        observation.delitem(gathering.sys.modules, 'mds_offline_guard')
+        with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+            gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
+    assert calls == [] and writers == []
+
+
+@pytest.mark.parametrize('total,available,growth,accepted', [
+    (8,8,0,False), (9,9,0,True), (10,10,1,False), (11,11,1,True),
+    (12,10,1,False), (12,11,1,True), (16,15,3,True), (16,14,3,False),
+    (32,31,11,True), (32,30,11,False), (64,63,23,True), (64,62,23,False)])
+def test_linux_checkpoint_literal_ram_reserve_boundary(gathering, monkeypatch, total, available, growth, accepted):
+    facts, files, _ = checkpoint_linux_profile(gathering, monkeypatch, 'nested-root-only-v2')
+    facts['rlimit_as'] = facts['rlimit_data'] = (-1,-1)
+    files['/proc/meminfo'] = ('MemTotal: '+str(total*1048576)+' kB\nMemAvailable: '+str(available*1048576)+
+        ' kB\nCommitLimit: 134217728 kB\nCommitted_AS: 67108864 kB\nSwapTotal: 16777216 kB\n')
+    sample = gathering._a3_linux_memory_snapshot()
+    monkeypatch.setattr(gathering, '_a3_memory_snapshot', lambda: sample)
+    if accepted:
+        assert gathering._a3_memory_admit(growth*GiB) is sample
+    else:
+        with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
+            gathering._a3_memory_admit(growth*GiB)
+
+
+@pytest.mark.parametrize('magic', [0x65735546, 0x794c7630, 0])
+def test_linux_checkpoint_reader_rejects_proxy_metadata(gathering, monkeypatch, tmp_path, magic):
+    path = tmp_path/'proxy_metadata.txt'
+    path.write_text('memory 0 1 0\n', encoding='ascii')
+    monkeypatch.setattr(gathering, '_a3_linux_fs_type', lambda descriptor: magic, raising=False)
+    with pytest.raises(ValueError, match='A3_MEMORY_FILESYSTEM_UNKNOWN'):
+        gathering._a3_linux_read(path)
