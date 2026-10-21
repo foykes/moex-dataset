@@ -89,12 +89,17 @@ class ReportPlugin:
             legacy = item.nodeid.startswith('main_tests.py::')
             item.add_marker(pytest.mark.live_read if legacy else pytest.mark.offline)
         self.collected = [item.nodeid for item in items]
+        guard_module().timing_event('collection_end', len(items))
+
+    def pytest_sessionstart(self, session):
+        guard_module().timing_event('pytest_enter')
 
     def pytest_runtest_setup(self, item):
         guard_module().set_node(item.nodeid)
         self.before = dict(self.context.counts)
 
     def pytest_runtest_logreport(self, report):
+        guard_module().timing_phase(report.when, report.outcome, int(report.duration * 1000000000))
         self.reports.append({'test': report.nodeid, 'phase': report.when,
                              'outcome': report.outcome})
         if report.when != 'teardown':
@@ -121,11 +126,14 @@ class ReportPlugin:
 
     def pytest_sessionfinish(self, session, exitstatus):
         guard = guard_module()
+        guard.timing_event('session_finish', int(exitstatus))
         result = dict(guard.report_metadata(), exit_code=int(exitstatus),
                       collected=self.collected, reports=self.reports)
         # Native conftests keep their original substantive report separately.
         name = _report_name(self.context) if self.context.lane == 'f3' else 'collection.json'
+        guard.timing_event('pytest_report_begin')
         guard.exclusive_json(self.context.report_dir / name, result)
+        guard.timing_event('pytest_report_end')
         issues = guard.validate_reports(self.context)
         actual = {k: v for k, v in self.context.counts.items() if v}
         expected = {k: v for k, v in self.context.expected_counts.items() if v}
@@ -208,7 +216,9 @@ def _execute_lane(lane, collect_only=False, legacy=False):
         raise ValueError('Internal lane entry requires its current one-use ticket')
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+    guard.timing_event('pytest_import_begin')
     import pytest
+    guard.timing_event('pytest_import_end')
     prefix = guard.LANES[lane]
     basetemp = ROOT / prefix / 'tmp' / ('pytest-dev' if lane == 'f1' else 'pytest-' + context.run_id)
     cache = ROOT / prefix / 'cache/runs' / context.run_id / 'pytest'
@@ -224,6 +234,7 @@ def _execute_lane(lane, collect_only=False, legacy=False):
     if collect_only or legacy:
         arguments.append('--collect-only')
     result = int(pytest.main(arguments, plugins=[] if lane == 'f3' else [plugin]))
+    guard.timing_event('pytest_return', result)
     guard.finish(result)
     issues = guard.validate_reports(context)
     return 86 if issues else result
@@ -331,6 +342,7 @@ def run_command_check(profile, arguments=()):
     result = guard.run_child(command, role='command', ticket=ticket,
                              timeout=30 if profile.startswith('collection-') else 180,
                              cwd=ROOT, env=environment)
+    guard.timing_event('command_report_read')
     destination = context.report_dir / ('pytest-' + ticket['ticket_id'] + '.json')
     report = {'collected': [], 'reports': []}
     errors = list(result.report_errors)
@@ -421,6 +433,7 @@ def main(argv=None):
     guard.finish(result.returncode)
     issues = guard.validate_reports(context)
     outward = 86 if issues or result.report_errors else result.returncode
+    guard.timing_event('native_result', outward)
     guard.exclusive_json(context.report_dir / 'run.json', dict(guard.report_metadata(),
         actual_exit=result.actual_exit, exit_code=outward, errors=issues,
         collected_only=args.collect_only or args.legacy_collection))
