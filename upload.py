@@ -71,7 +71,8 @@ D2_TEST_CASES = (
     'postseal_cleanup_failure', 'cancel_google', 'cancel_ftp',
     'ticket_ftp_failure', 'pidfd_google_failure', 'identity_google_failure',
     'registry_google_failure', 'registration_google_failure',
-    'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death')
+    'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
+    'preupload_stage_failure')
 
 
 def _d2_error(code):
@@ -810,6 +811,7 @@ class _D2Runtime:
         self.cleanup_deadline = None
         self.cleanup_term_until = None
         self.result = None
+        self.result_bound = False
         self.initialized = False
         base = Path(self.profile['scratch']) if self.profile else self.repo / '.f-log' / 'd2-private'
         base.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -876,6 +878,11 @@ class _D2Runtime:
             raise _d2_error('D2_RUNTIME_INACTIVE')
         if self.context is not None and context is not self.context:
             raise _d2_error('D2_CONTEXT_CHANGED')
+        if context is not None:
+            # A caller-created session already uses this owned transport.
+            # Retain its custody and sink identity before later checks fail.
+            self.context = context
+            self.bind_result()
         _d2_check_tracker(self)
         if context is None:
             import run_logging
@@ -884,10 +891,24 @@ class _D2Runtime:
                 config={'log_root': '.f-log/log-' + self.nonce, 'retained_runs': 1})
             self.owns_context = True
         self.context = context
+        self.bind_result()
         if context['config']['shutdown_deadline_s'] > 10:
             raise _d2_error('D2_LOGGING_BUDGET_UNSUPPORTED')
         _d2_check_tracker(self)
         return context
+
+    def bind_result(self):
+        if self.result is None or self.context is None:
+            return
+        if type(self.result) is not dict:
+            raise _d2_error('D2_RESULT_SINK_INVALID')
+        if not self.result_bound:
+            # No publication worker exists at this boundary. These rows say
+            # NOT_STARTED, not a synthetic worker completion or OS outcome.
+            self.result.update(_d2_result(self.context['run_id'], uuid.uuid4().hex,
+                self.context['producer_sha'], {'google': [], 'ftp': []}))
+            self.result_bound = True
+        self.result['_runtime'] = self
 
     def ticket(self, role, *, tracker_fd, descriptors, bootstrap_fd=None,
                ready_fd=None, go_fd=None, witness_fd=None, plan_sha256=None):
@@ -1545,8 +1566,15 @@ def _d2_worker_entry(ticket):
         guard.d2_worker_admission(ticket)
     if ticket['role'] == 'tracker':
         from multiprocessing.resource_tracker import main as tracker_main
-        tracker_main(ticket['tracker_fd'])
-        return 0
+        try:
+            tracker_main(ticket['tracker_fd'])
+        except SystemExit as error:
+            # The pinned tracker exits here even after a clean EOF. Preserve
+            # its real status; the outer bootstrap catch must not turn 0 to 1.
+            if type(error.code) is int and error.code in (0, 1, 2, 3):
+                return error.code
+            raise
+        return 1  # The pinned tracker never returns normally.
     _D2_WORKER_ROLE = ticket['role']
     _D2_WORKER_ROOT = Path(ticket['run_root'])
     # Install before preparation/unpickle can touch multiprocessing resources.
@@ -1897,6 +1925,8 @@ def main(current_path, gdoc_to_write, *, logging_context=None, result_sink=None,
                 raise _d2_error('D2_RUNTIME_INVALID')
             if diagnostic_limits is not None and _d2_validate_limits(diagnostic_limits) != runtime.limits:
                 raise _d2_error('D2_LIMITS_CHANGED')
+            sink['_runtime'] = runtime
+            runtime.result = sink
             context = runtime.bind_context(logging_context)
             sink.update(_d2_result(context['run_id'], uuid.uuid4().hex,
                 context['producer_sha'], {'google': [], 'ftp': []}))

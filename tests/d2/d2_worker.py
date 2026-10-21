@@ -1,6 +1,7 @@
 """Fixed D2 controller and baseline workers; no arbitrary script dispatch."""
 
 import base64
+import ast
 import contextlib
 import hashlib
 import importlib.util
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 
 CANARY = 'D2_PRIVATE_CANARY_4c1e11'
@@ -246,6 +248,7 @@ def _native_controller(ticket, guard, fixture, vendor):
     import run_logging
     upload.datasets_path = str(fixture['datasets']) + '/'
     profile = guard.issue_d2_profile(repo, scratch, case, vendor)
+    preupload_witness = {}
     processes, reports, outcomes, phase_reads, releases, constructor = [], [], [], [], [], []
     real_popen = subprocess.Popen
     real_fork_exec = subprocess._fork_exec
@@ -285,6 +288,24 @@ def _native_controller(ticket, guard, fixture, vendor):
                 continue
             result[descriptor] = (info.st_dev, info.st_ino, info.st_mode, info.st_rdev)
         return result
+    def heap_snapshot():
+        from multiprocessing import heap as heap_module
+        heap = heap_module.BufferWrapper._heap
+        pending = list(heap._pending_free_blocks)
+        arenas = []
+        for arena in heap._arenas:
+            try:
+                info = os.fstat(arena.fd)
+                identity = [info.st_dev, info.st_ino, info.st_mode, info.st_rdev]
+            except OSError:
+                identity = None
+            arenas.append(dict(arena_object=id(arena), fd=arena.fd, size=arena.size,
+                fd_identity=identity, allocated_blocks=len(heap._allocated_blocks.get(arena, ())),
+                pending_free_blocks=sum(block[0] is arena for block in pending)))
+        return dict(heap_object=id(heap), source_sha256=hashlib.sha256(Path(heap_module.__file__).read_bytes()).hexdigest(),
+            discard_threshold_bytes=heap._DISCARD_FREE_SPACE_LARGER_THAN, arenas=arenas,
+            allocated_block_count=sum(len(blocks) for blocks in heap._allocated_blocks.values()),
+            pending_free_block_count=len(pending))
     def popen(command, *args, **options):
         nonlocal active_role
         role = None
@@ -301,12 +322,12 @@ def _native_controller(ticket, guard, fixture, vendor):
         return process
     def fork_exec(*args, **options):
         pid = real_fork_exec(*args, **options)
-        if case in {'constructor_error', 'tracker_death'}:
+        if case in {'constructor_error', 'tracker_death', 'preupload_stage_failure'}:
             constructor.append({'event': 'FORK_EXEC_RETURNED', 'worker_id': active_role, 'pid': pid})
         return pid
     def waitpid(pid, options):
         result = real_waitpid(pid, options)
-        if case in {'constructor_error', 'tracker_death'} and active_role is not None and result[0] == pid:
+        if case in {'constructor_error', 'tracker_death', 'preupload_stage_failure'} and active_role is not None and result[0] == pid:
             constructor.append({'event': 'WAITPID_RETURNED', 'worker_id': active_role,
                                 'pid': pid, 'exitcode': os.waitstatus_to_exitcode(result[1])})
         return result
@@ -368,6 +389,54 @@ def _native_controller(ticket, guard, fixture, vendor):
     upload._d2_run_inventory = inventory
     upload._d2_fdopen = fdopen
     sink, status, primary = {}, 0, None
+    real_upload_main, old_argv = upload.main, sys.argv
+    prior_stages = {name: sys.modules.get(name) for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data')}
+    pipeline = None
+    if case == 'preupload_stage_failure':
+        # Compile only the reviewed source definitions. __file__ and Git HEAD
+        # point at an owned synthetic checkout so real F-LOG writes stay local.
+        tree = ast.parse((repo / 'main.py').read_text(encoding='utf-8'))
+        tree.body = [node for node in tree.body if isinstance(node,
+            (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef))
+            or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                and target.id == 'D2_SOURCE_PROFILE' for target in node.targets))]
+        pipeline = types.ModuleType('d2_native_main_definitions')
+        pipeline.__file__ = str(fixture['project'] / 'main.py')
+        exec(compile(tree, str(repo / 'main.py'), 'exec'), vars(pipeline))
+        metadata = fixture['project'] / '.git'
+        metadata.mkdir(mode=0o700)
+        descriptor = os.open(metadata / 'HEAD', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as handle:
+            handle.write((ticket['source_sha'] + '\n').encode('ascii'))
+        original = RuntimeError(CANARY + ' https://private.invalid/a /private/d2/source')
+        preupload_witness.update(stage_entered=False, original_exception_preserved=False,
+            source_profile_verified=pipeline.D2_SOURCE_PROFILE == 'linux-stage-b-v1',
+            pending_cleared=False, runtime_closed=False, runtime_cleanup_complete=False,
+            runtime_transport_complete=False, tracker_wrappers_released=False,
+            api_calls=0, upload_calls=0)
+        def first_stage(*args, **options):
+            preupload_witness['stage_entered'] = True
+            raise original
+        def forbidden_stage(*args, **options):
+            preupload_witness['api_calls'] += 1
+            raise AssertionError('D2_UNREACHED_STAGE_CALLED')
+        for name in prior_stages:
+            sys.modules[name] = types.SimpleNamespace(main=first_stage if name == 'data_gathering' else forbidden_stage)
+        def forbidden_upload(*args, **options):
+            preupload_witness['upload_calls'] += 1
+            raise AssertionError('D2_UNREACHED_UPLOAD_CALLED')
+        upload.main = forbidden_upload
+        actual_main = pipeline.main
+        def observed_main(*, logging_context=None, result_sink=None):
+            nonlocal sink
+            sink = result_sink
+            try:
+                return actual_main(logging_context=logging_context, result_sink=result_sink)
+            except BaseException as error:
+                preupload_witness['original_exception_preserved'] = error is original
+                raise
+        pipeline.main = observed_main
+        sys.argv = ['main.py', '--log-environment', 'offline']
     output = io.StringIO()
     started = time.monotonic()
     old_cwd = Path.cwd()
@@ -380,10 +449,21 @@ def _native_controller(ticket, guard, fixture, vendor):
     foreign = os.open(scratch / 'controller-foreign-fd', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
     os.set_inheritable(foreign, True)
     before_fds = fd_inventory()
+    before_heap = heap_snapshot()
     try:
         with guard_profile(upload, profile), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             try:
-                upload.main(str(fixture['project']), 'D2_LITERAL_TARGET', result_sink=sink)
+                if pipeline is None:
+                    upload.main(str(fixture['project']), 'D2_LITERAL_TARGET', result_sink=sink)
+                else:
+                    status = pipeline._run_cli()
+                    runtime = sink.get('_runtime')
+                    preupload_witness.update(pending_cleared=upload._D2_PENDING is None,
+                        runtime_closed=runtime is not None and runtime.closed,
+                        runtime_cleanup_complete=runtime is not None and runtime.cleanup_complete,
+                        runtime_transport_complete=runtime is not None and runtime.transport_complete,
+                        tracker_wrappers_released=runtime is not None and runtime.tracker_wrappers == {}
+                            and upload._D2_TRACKER_OWNER is None)
             except BaseException as error:
                 primary = type(error).__name__
                 status = 130 if isinstance(error, KeyboardInterrupt) else 1
@@ -398,6 +478,12 @@ def _native_controller(ticket, guard, fixture, vendor):
         upload._d2_release_go = real_go
         upload._d2_run_inventory = real_inventory
         upload._d2_fdopen = real_fdopen
+        upload.main, sys.argv = real_upload_main, old_argv
+        for name, module in prior_stages.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
         os.chdir(old_cwd)
     observations = []
     for role, process in processes:
@@ -417,6 +503,12 @@ def _native_controller(ticket, guard, fixture, vendor):
             cleanup_report = _projection(real_finalize(runtime.context, execution_outcome='FAILED', exit_status=1))
             upload._d2_finish_transport(runtime)
     after_fds = fd_inventory()
+    after_heap = heap_snapshot()
+    fd_delta = dict(
+        added=[dict(fd=fd, identity=list(after_fds[fd])) for fd in sorted(set(after_fds) - set(before_fds))],
+        removed=[dict(fd=fd, identity=list(before_fds[fd])) for fd in sorted(set(before_fds) - set(after_fds))],
+        changed=[dict(fd=fd, before_identity=list(before_fds[fd]), after_identity=list(after_fds[fd]))
+                 for fd in sorted(set(before_fds) & set(after_fds)) if before_fds[fd] != after_fds[fd]])
     foreign_intact = after_fds.get(foreign) == before_fds[foreign]
     fd_clean = after_fds == before_fds
     os.close(foreign)
@@ -455,8 +547,10 @@ def _native_controller(ticket, guard, fixture, vendor):
         logging_outcomes=outcomes, observations=observations,
         worker_witnesses=sink.get('_worker_witnesses', {}),
         tracker_probes=sink.get('_tracker_probes', {}),
+        preupload_witness=preupload_witness,
         constructor_observations=constructor,
         fd_inventory_unchanged=fd_clean, foreign_fd_intact=foreign_intact,
+        fd_inventory_delta=fd_delta, heap_observations=dict(before=before_heap, after=after_heap),
         fixture_cleanup_settled=fixture_cleanup,
         fixture_tracker_settled=tracker_settled,
         inventory_observations=inventory_observations,

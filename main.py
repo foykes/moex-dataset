@@ -91,12 +91,17 @@ def main(*, logging_context=None, result_sink=None):
     try:
         with (nullcontext(cli_runtime) if cli_runtime is not None else
               upload.runtime_scope(logging_context=logging_context)) as runtime:
+            sink['_runtime'] = runtime
+            runtime.result = sink
             bound = runtime.bind_context(logging_context)
             if bound is not None:
                 logging_context = bound
             _pipeline(logging_context, sink, runtime)
     except BaseException as error:
         primary = error
+        if sink.get('parent_outcome') == 'UNKNOWN':
+            sink.update(parent_outcome='INTERRUPTED' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'FAILED',
+                        error_code='D2_PIPELINE_FAILED')
     if original_context is None and logging_context is not None:
         # Real bind_context(None) creates the parent-owned session. Test doubles
         # return None and never fabricate this ownership or a successful seal.
@@ -190,6 +195,8 @@ def _run_cli():
         root = Path(__file__).resolve().parent
         # The native owner exists before multiprocessing creates F-LOG queues.
         with upload.runtime_scope() as runtime:
+            sink['_runtime'] = runtime
+            runtime.result = sink
             context = run_logging.configure_logging(root, run_id=uuid.uuid4().hex,
                 environment=args.log_environment, producer_sha=_source_sha(root), config=config)
             runtime.bind_context(context)

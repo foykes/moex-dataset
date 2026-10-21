@@ -817,6 +817,7 @@ D2_CASES = (
     'ticket_ftp_failure', 'pidfd_google_failure', 'identity_google_failure',
     'registry_google_failure', 'registration_google_failure',
     'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
+    'preupload_stage_failure',
 )
 D2_BASELINE_CASES = (
     'baseline_google_swallowed', 'baseline_ftp_root_swallowed',
@@ -1023,6 +1024,12 @@ def d2_launch_scope(command, inherited, ticket):
                 and value.get('parent_start_ticks') == _d2_ticks(os.getpid()),
                 'D2_NATIVE_LAUNCH_TICKET')
     repo = _d2_path(value['repo_root'], True)
+    _d2_require(repo == Path(value['profile']['repo_root'])
+                and _d2_sources(repo) == value['profile']['source_files_sha256']
+                and value.get('source_files_sha256') == {
+                    name: hashlib.sha256(_d2_path(repo / name).read_bytes()).hexdigest()
+                    for name in ('upload.py', 'run_logging.py')},
+                'D2_NATIVE_LAUNCH_SOURCE')
     run_root = _d2_path(value['run_root'], True)
     _d2_require(Path(ticket).absolute() == run_root / (value['role'] + '.ticket.json')
                 and run_root.is_relative_to(Path(value['profile']['scratch']))

@@ -337,7 +337,7 @@ D2_TESTS = ('tests/d2/test_supervision.py', 'tests/d2/test_targets.py',
             'tests/d2/test_logging_contract.py', 'tests/d2/test_guard_admission.py')
 D2_SOURCE_PATHS = tuple(dict.fromkeys(SOURCE_PATHS + D2_PATHS))
 D2_DEVELOPMENT_BASE = '25dee502a68128aea752f24ff67dfcb16b615a36'
-D2_NODE_IDS_SHA256 = 'f942535cd72facc2e5995bd09b31f043dba7429005406fed79e8409d9cb8b729'
+D2_NODE_IDS_SHA256 = 'c768b5bfcfabc7a6015430c5c1d5c37c3cceb584203bccd5b1af018c52bdb636'
 
 
 def d2_validate_authority(value, sha):
@@ -418,11 +418,13 @@ class D2Counts(Counts):
         self.native_ids = set()
         self.collected_ids = []
         self.skipped = 0
+        self.collection_finished = False
 
     def pytest_collection_finish(self, session):
         super().pytest_collection_finish(session)
         self.collected_ids = sorted(item.nodeid for item in session.items)
         self.native_ids = {item.nodeid for item in session.items if item.get_closest_marker('native')}
+        self.collection_finished = True
 
     def pytest_runtest_logreport(self, report):
         super().pytest_runtest_logreport(report)
@@ -484,10 +486,18 @@ def d2_run_tests(ticket, repo):
     if foundation:
         complete = (complete and counts.collected == 444 and len(counts.native_ids) == 22
                     and all(item.get('status') == 'PASS' for item in cases))
+        inventory_known = complete
+        failed_node_ids = [] if complete else None
     else:
         expected = json.loads((repo / 'tests/fixtures/d2/expected.json').read_bytes())
-        complete = (complete and counts.collected == 256 and len(counts.native_ids) == 53
-            and len(set(counts.collected_ids)) == 256
+        inventory_known = (counts.collection_finished and counts.collected_ids == expected.get('expected_node_ids')
+            and node_ids_digest == expected.get('expected_node_ids_sha256') == D2_NODE_IDS_SHA256
+            and counts.failed_ids <= set(counts.collected_ids))
+        positions = {node: index + 1 for index, node in enumerate(counts.collected_ids)}
+        failed_node_ids = (sorted('d2-node-{:06d}'.format(positions[node]) for node in counts.failed_ids)
+                           if inventory_known else None)
+        complete = (complete and counts.collected == 283 and len(counts.native_ids) == 54
+            and len(set(counts.collected_ids)) == 283
             and counts.collected_ids == expected.get('expected_node_ids')
             and node_ids_digest == expected.get('expected_node_ids_sha256') == D2_NODE_IDS_SHA256)
         complete = complete and all(item.get('controller', {}).get('settled') is True
@@ -499,6 +509,8 @@ def d2_run_tests(ticket, repo):
         deselected=counts.deselected, skipped=counts.skipped,
         native_collected=len(counts.native_ids), native_passed=len(counts.native_ids & counts.passed_ids),
         node_ids_sha256=node_ids_digest,
+        node_inventory_state='COMPLETE' if inventory_known else 'NOT_AVAILABLE',
+        failed_node_ids=failed_node_ids,
         exit_code=0 if complete else (exit_code or 1), native_cases=cases,
         failure_code=None if complete else 'd2-linux-application-oracle-failed')
 
@@ -547,10 +559,12 @@ def d2_main():
                     collected=0, passed=0, failed=0, deselected=0, skipped=0,
                     native_collected=0, native_passed=0,
                     node_ids_sha256=hashlib.sha256(b'\n').hexdigest(), exit_code=1,
+                    node_inventory_state='NOT_AVAILABLE', failed_node_ids=None,
                     native_cases=[], failure_code='d2-linux-runner-incomplete')
                 if result is not None:
                     for key in ('collected', 'passed', 'failed', 'deselected', 'skipped',
-                                'native_collected', 'native_passed', 'node_ids_sha256'):
+                                'native_collected', 'native_passed', 'node_ids_sha256',
+                                'node_inventory_state', 'failed_node_ids'):
                         incomplete[key] = result[key]
                 d2_write_result(ticket, incomplete)
             except BaseException:

@@ -32,6 +32,7 @@ NATIVE_CASES = (
     'ticket_ftp_failure', 'pidfd_google_failure', 'identity_google_failure',
     'registry_google_failure', 'registration_google_failure',
     'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
+    'preupload_stage_failure',
 )
 
 
@@ -89,6 +90,9 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
     assert observation['foreign_fd_intact'] is True
     assert observation['fixture_cleanup_settled'] is True
     assert observation['fixture_tracker_settled'] is True
+    if case not in {'constructor_error', 'cleanup_unsettled', 'parent_finalization_raises',
+                    'postseal_cleanup_failure'}:
+        assert observation['fd_inventory_unchanged'] is True, 'settled failure must release every owned descriptor'
     platform = observation['platform_evidence']
     assert platform['platform'] == 'linux' and platform['implementation'] == 'cpython'
     assert platform['version'] == [3, 14, 8] and platform['architecture'] == 'x86_64'
@@ -153,9 +157,28 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
         assert result['diagnostic_success_allowed'] is False
         assert result['final_exit_status'] != 0
         assert observation['success_banner'] is False
-        witnesses = observation['fault_witnesses']
-        reached = [row for row in witnesses if row['case'] == case]
-        assert reached and all(row['pid'] > 1 and row['count'] == 1 for row in reached), 'requested fault boundary was not reached'
+        if case != 'preupload_stage_failure':
+            witnesses = observation['fault_witnesses']
+            reached = [row for row in witnesses if row['case'] == case]
+            assert reached and all(row['pid'] > 1 and row['count'] == 1 for row in reached), 'requested fault boundary was not reached'
+    if case == 'preupload_stage_failure':
+        witness = observation['preupload_witness']
+        assert witness['stage_entered'] is True and witness['original_exception_preserved'] is True
+        assert witness['source_profile_verified'] is True and witness['pending_cleared'] is True
+        assert witness['runtime_closed'] is witness['runtime_cleanup_complete'] is True
+        assert witness['runtime_transport_complete'] is witness['tracker_wrappers_released'] is True
+        assert witness['api_calls'] == witness['upload_calls'] == 0
+        assert len(actual) == 1 and actual[0]['worker_id'] == 'tracker'
+        assert actual[0]['settled'] is True and actual[0]['exitcode'] == 0
+        assert by_role == {} and observation['fd_inventory_unchanged'] is True
+        assert observation['go_releases'] == [] and observation['phase_reads'] == []
+        assert observation['google_projection_observed'] is observation['ftp_targets_observed'] is None
+        forks = [row for row in observation['constructor_observations'] if row['event'] == 'FORK_EXEC_RETURNED']
+        assert len(forks) == 1 and forks[0]['worker_id'] == 'tracker'
+        assert report['execution_outcome'] == 'FAILED' and report['exit_status'] != 0
+        assert report['release_result'] is None and report['worker_outcomes'] == {}
+        assert len(report['expected_producers']) == 1
+        assert report['expected_producers'][0]['worker_id'] == 'parent'
     if case in {'exit23', 'final_then_exit23', 'abnormal_before_ready', 'abnormal_after_final'}:
         assert any(row['exitcode'] == 23 for row in by_role.values())
     if case in {'hang_google', 'hang_ftp', 'cleanup_unsettled'}:
@@ -421,3 +444,26 @@ def test_runtime_fd_identity_change_refuses_foreign_close_and_marks_incomplete(u
     finally:
         runtime.close_fd(write_end)
         os.close(foreign)
+
+
+@pytest.mark.parametrize('actual_exit', [0, 1, 2, 3])
+def test_actual_tracker_wrapper_preserves_its_systemexit_status(upload, repo, monkeypatch, actual_exit):
+    """Exact reviewed tracker branch; no synthetic native exit observation."""
+    tree = ast.parse((repo / 'upload.py').read_text(encoding='utf-8'))
+    worker = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_d2_worker_entry')
+    branch = next(node for node in worker.body if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "ticket['role'] == 'tracker'")
+    function = ast.FunctionDef(name='tracker_wrapper', args=ast.arguments(posonlyargs=[],
+        args=[ast.arg(arg='ticket')], vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
+        body=copy.deepcopy(branch.body), decorator_list=[], returns=None, type_comment=None, type_params=[])
+    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    calls = []
+    def actual_tracker_boundary(descriptor):
+        calls.append(descriptor)
+        raise SystemExit(actual_exit)
+    monkeypatch.setitem(__import__('sys').modules, 'multiprocessing.resource_tracker',
+                        types.SimpleNamespace(main=actual_tracker_boundary))
+    namespace = {}
+    exec(compile(module, '<D2-exact-tracker-wrapper>', 'exec'), namespace)
+    assert namespace['tracker_wrapper']({'tracker_fd': 90000}) == actual_exit
+    assert calls == [90000]

@@ -4939,6 +4939,7 @@ D2_LINUX_CASES = (
     'ticket_ftp_failure', 'pidfd_google_failure', 'identity_google_failure',
     'registry_google_failure', 'registration_google_failure',
     'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
+    'preupload_stage_failure',
 ) + (
     'baseline_google_swallowed', 'baseline_ftp_root_swallowed',
     'baseline_ftp_dividends_swallowed', 'baseline_ftp_tickers_swallowed',
@@ -5201,6 +5202,9 @@ def d2_validate_inventory(value):
 def d2_validate_application_observations(value, source_sha, complete):
     if type(value) is not dict or set(value) - {'process', 'tests'}:
         raise PolicyError('d2-linux-application-observations-fields-invalid')
+    if complete and (set(value) != {'process', 'tests'}
+            or type(value['process']) is not dict or type(value['tests']) is not dict):
+        raise PolicyError('d2-linux-application-observations-incomplete')
     process = value.get('process')
     if process is not None:
         keys = {'started', 'pid', 'pidfd_bound', 'exit_code', 'timed_out', 'termination_confirmed'}
@@ -5223,6 +5227,21 @@ def d2_validate_stage(stage, helper_sha, source_sha, mode, complete=False, primi
     if (type(stage) is not dict or set(stage) - allowed or not {'kind', 'status'} <= set(stage)
             or stage['kind'] not in kinds or stage['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}):
         raise PolicyError('d2-linux-stage-fields-invalid')
+    successful = stage['status'] == 'PASS'
+    if complete and not successful:
+        raise PolicyError('d2-linux-stage-not-successful')
+    if successful:
+        required = {'helper_sha256', 'launcher_started', 'exit_code', 'signal', 'timed_out',
+            'termination_confirmed', 'parent_namespace_unchanged', 'duration_seconds', 'stdout', 'stderr'}
+        if primitive:
+            required |= {'argv_template', 'system_binary_sha256', 'payload_binary_sha256', 'pid', 'pidfd_bound'}
+        else:
+            required |= {'format', 'identity', 'namespace', 'guard', 'negative_probes',
+                'failure_code', 'observations', 'child_result_available', 'isolation_mode'}
+            required |= ({'pid', 'pidfd_bound'} if mode == 'rootless_user_net' else
+                {'worker_started', 'worker_pidfd_bound', 'worker_termination_confirmed', 'supervisor_binary_sha256'})
+        if not required <= set(stage):
+            raise PolicyError('d2-linux-stage-success-fields-missing')
     if 'format' in stage and stage['format'] != 'd2-linux-worker-result-v1':
         raise PolicyError('d2-linux-stage-format-invalid')
     if 'helper_sha256' in stage and stage['helper_sha256'] != helper_sha:
@@ -5332,6 +5351,48 @@ def d2_validate_stage(stage, helper_sha, source_sha, mode, complete=False, primi
                 or any(synthetic[key] != 'PASS' for key in ('numpy_synthetic', 'ta_sma_synthetic', 'csv_synthetic', 'xlsx_synthetic'))
                 or synthetic['project_modules_imported'] != []):
             raise PolicyError('d2-linux-stage-synthetic-fields-invalid')
+    if successful:
+        if (stage['helper_sha256'] != helper_sha or stage['launcher_started'] is not True
+                or stage['exit_code'] != 0 or stage['signal'] is not None or stage['timed_out'] is not False
+                or stage['termination_confirmed'] is not True or stage['parent_namespace_unchanged'] is not True
+                or stage.get('failure_code') is not None or stage.get('launch_failure_code') is not None
+                or stage.get('launch_errno') is not None or 'registered_fixture_cleanup' in stage
+                or any(stage[key]['classification'] == 'unavailable' for key in ('stdout', 'stderr'))):
+            raise PolicyError('d2-linux-stage-success-launch-incomplete')
+        if primitive:
+            if (type(stage['pid']) is not int or stage['pid'] <= 1 or stage['pidfd_bound'] is not True):
+                raise PolicyError('d2-linux-primitive-success-settlement-incomplete')
+            return
+        if (stage['format'] != 'd2-linux-worker-result-v1' or stage['failure_code'] is not None
+                or stage['child_result_available'] is not True
+                or stage['isolation_mode'] != mode or set(observations) != fields
+                or type(stage['identity']) is not dict or type(stage['namespace']) is not dict
+                or type(stage['guard']) is not dict or type(stage['negative_probes']) is not dict):
+            raise PolicyError('d2-linux-stage-success-proof-incomplete')
+        guard, probes = stage['guard'], stage['negative_probes']
+        if (guard['registered_before_third_party'] is not True or guard['unexpected_denials'] != {}
+                or guard['expected_denials'] != {'socket.getaddrinfo': 1, 'subprocess.Popen': 1}
+                or probes['pid'] != guard['pid'] or probes['dns_denied_before_resolver'] is not True
+                or probes['child_denied_before_launch'] is not True
+                or probes['requests_fixture'] is not (stage['kind'] != 'preflight')):
+            raise PolicyError('d2-linux-stage-success-guard-incomplete')
+        if mode == 'rootless_user_net':
+            if (type(stage['pid']) is not int or stage['pid'] != guard['pid']
+                    or stage['pid'] <= 1 or stage['pidfd_bound'] is not True):
+                raise PolicyError('d2-linux-stage-success-process-incomplete')
+        elif (mode != 'supervised_net' or any(stage[key] is not True for key in (
+                'worker_started', 'worker_pidfd_bound', 'worker_termination_confirmed'))):
+            raise PolicyError('d2-linux-stage-success-supervision-incomplete')
+        if stage['kind'] in {'bootstrap', 'install', 'check'}:
+            if observations['pip_operation'] != {'exit_code': 0, 'pid': guard['pid'], 'runpy_same_pid': True}:
+                raise PolicyError('d2-linux-stage-success-pip-incomplete')
+        if stage['kind'] == 'check':
+            inventory = {name: record[0] for name, record in parse_lock(
+                (Path(__file__).absolute().parents[2] / 'requirements' / LOCK_NAMES['dev']).read_text(encoding='utf-8')).items()}
+            if observations['inventory'] != dict(inventory, pip=PIP_VERSION):
+                raise PolicyError('d2-linux-stage-success-inventory-incomplete')
+        if stage['kind'] == 'application':
+            d2_validate_application_observations(observations, source_sha, True)
 
 
 def d2_project_stage(stage, primitive=False):
@@ -5344,6 +5405,7 @@ def d2_project_stage(stage, primitive=False):
 def d2_validate_tests(tests, sha, complete=False):
     keys = {'schema_version', 'phase', 'status', 'source_sha', 'collected', 'passed', 'failed',
             'deselected', 'skipped', 'native_collected', 'native_passed', 'node_ids_sha256',
+            'node_inventory_state', 'failed_node_ids',
             'exit_code', 'native_cases', 'failure_code'}
     if (type(tests) is not dict or set(tests) != keys
             or tests['schema_version'] != 'd2-linux-runner-result-v1'
@@ -5353,6 +5415,8 @@ def d2_validate_tests(tests, sha, complete=False):
             or any(type(tests[key]) is not int or tests[key] < 0 for key in (
                 'collected', 'passed', 'failed', 'deselected', 'skipped', 'native_collected', 'native_passed'))
             or type(tests['node_ids_sha256']) is not str or not HEX.fullmatch(tests['node_ids_sha256'])
+            or type(tests['node_inventory_state']) is not str
+            or tests['node_inventory_state'] not in {'COMPLETE', 'NOT_AVAILABLE'}
             or type(tests['exit_code']) is not int or not 0 <= tests['exit_code'] <= 255):
         raise PolicyError('d2-linux-runner-result-fields-invalid')
     passed = tests['status'] == 'PASS'
@@ -5360,19 +5424,37 @@ def d2_validate_tests(tests, sha, complete=False):
         raise PolicyError('d2-linux-runner-result-exit-mismatch')
     if passed and (tests['failure_code'] is not None or tests['failed'] or tests['deselected']
             or tests['skipped'] or tests['passed'] != tests['collected']
+            or tests['node_inventory_state'] != 'COMPLETE' or tests['failed_node_ids'] != []
             or tests['native_passed'] != tests['native_collected'] or not tests['native_collected']):
         raise PolicyError('d2-linux-runner-oracles-incomplete')
     if not passed and (type(tests['failure_code']) is not str
             or not re.fullmatch('[a-z0-9-]{1,100}', tests['failure_code'])):
         raise PolicyError('d2-linux-runner-failure-code-required')
+    failed_nodes = tests['failed_node_ids']
+    if tests['node_inventory_state'] == 'NOT_AVAILABLE':
+        if failed_nodes is not None:
+            raise PolicyError('d2-linux-failed-node-inventory-unavailable')
+    elif (type(failed_nodes) is not list
+            or any(type(node) is not str or not re.fullmatch('d2-node-[0-9]{6}', node) for node in failed_nodes)
+            or failed_nodes != sorted(set(failed_nodes)) or len(failed_nodes) != tests['failed']):
+        raise PolicyError('d2-linux-failed-node-inventory-invalid')
     if tests['phase'] == 'foundation':
+        if not passed and tests['node_inventory_state'] != 'NOT_AVAILABLE':
+            raise PolicyError('d2-linux-foundation-failed-node-ledger-unavailable')
         lnx03_validate_native_cases(tests['native_cases'], require_complete=passed)
         if passed and (tests['collected'] != 444 or tests['native_collected'] != 22):
             raise PolicyError('d2-linux-foundation-inventory-mismatch')
     else:
+        if tests['node_inventory_state'] == 'COMPLETE':
+            ledger = read_json(Path(__file__).absolute().parents[2] / 'tests/fixtures/d2/expected.json')
+            nodes = ledger.get('expected_node_ids')
+            if (type(nodes) is not list or tests['collected'] != len(nodes)
+                    or tests['node_ids_sha256'] != ledger.get('expected_node_ids_sha256')
+                    or any(not 1 <= int(node[8:]) <= len(nodes) for node in failed_nodes)):
+                raise PolicyError('d2-linux-failed-node-ledger-mismatch')
         d2_validate_native_cases(tests['native_cases'], require_complete=passed)
-        if passed and (tests['collected'] != 256 or tests['native_collected'] != 53
-                or tests['node_ids_sha256'] != 'f942535cd72facc2e5995bd09b31f043dba7429005406fed79e8409d9cb8b729'):
+        if passed and (tests['collected'] != 283 or tests['native_collected'] != 54
+                or tests['node_ids_sha256'] != 'c768b5bfcfabc7a6015430c5c1d5c37c3cceb584203bccd5b1af018c52bdb636'):
             raise PolicyError('d2-linux-node-inventory-mismatch')
     return tests
 
@@ -5452,10 +5534,13 @@ def d2_validate_result(report):
                 or environment['pip_check_exit'] != 0 or type(environment['pip_check_exit']) is not int
                 or environment['fingerprint_before'] is None
                 or environment['fingerprint_before'] != environment['fingerprint_after']
-                or isolation['mode'] is None or isolation['preflight'] is None
+                or isolation['mode'] is None or isolation['preflight'] is None or isolation['primitive'] is None
                 or report['foundation'] is None or len(setup['stages']) != 6
                 or [stage['kind'] for stage in setup['stages']] != ['preflight', 'bootstrap', 'install', 'check', 'application', 'application']):
             raise PolicyError('d2-linux-success-evidence-incomplete')
+        if (isolation['mode'] == 'rootless_user_net' and isolation['primitive']['status'] != 'PASS'
+                or isolation['mode'] == 'supervised_net' and not rootless_permission_denied(isolation['primitive'])):
+            raise PolicyError('d2-linux-success-isolation-evidence-incomplete')
         pids = []
         for stage in setup['stages']:
             if (stage.get('status') != 'PASS' or stage.get('exit_code') != 0
@@ -5477,6 +5562,45 @@ def d2_validate_result(report):
     if len(data) > 16 * 1024 * 1024 or re.search(rb'(?i)(https?://|file://|Traceback [(]most recent|LNX03_NATIVE_PRIVATE_CANARY|D2_NATIVE_PRIVATE_CANARY)', data):
         raise PolicyError('d2-linux-export-private-evidence-refused')
     return report
+
+def d2_validate_fd_diagnostics(delta, heap):
+    def identity(value):
+        return type(value) is list and len(value) == 4 and all(type(item) is int and item >= 0 for item in value)
+    if type(delta) is not dict or set(delta) != {'added', 'removed', 'changed'}:
+        raise PolicyError('d2-linux-case-fd-delta-fields-invalid')
+    seen = set()
+    for kind in ('added', 'removed', 'changed'):
+        if type(delta[kind]) is not list:
+            raise PolicyError('d2-linux-case-fd-delta-list-invalid')
+        for row in delta[kind]:
+            fields = {'fd', 'before_identity', 'after_identity'} if kind == 'changed' else {'fd', 'identity'}
+            if (type(row) is not dict or set(row) != fields or type(row['fd']) is not int or row['fd'] < 0
+                    or row['fd'] in seen or any(not identity(row[key]) for key in fields - {'fd'})):
+                raise PolicyError('d2-linux-case-fd-delta-row-invalid')
+            seen.add(row['fd'])
+    if type(heap) is not dict or set(heap) != {'before', 'after'}:
+        raise PolicyError('d2-linux-case-heap-observation-fields-invalid')
+    for phase in ('before', 'after'):
+        snapshot = heap[phase]
+        fields = {'heap_object', 'source_sha256', 'discard_threshold_bytes', 'arenas',
+                  'allocated_block_count', 'pending_free_block_count'}
+        if (type(snapshot) is not dict or set(snapshot) != fields
+                or type(snapshot['heap_object']) is not int or snapshot['heap_object'] <= 0
+                or type(snapshot['source_sha256']) is not str or not HEX.fullmatch(snapshot['source_sha256'])
+                or type(snapshot['arenas']) is not list
+                or any(type(snapshot[key]) is not int or snapshot[key] < 0 for key in (
+                    'discard_threshold_bytes', 'allocated_block_count', 'pending_free_block_count'))):
+            raise PolicyError('d2-linux-case-heap-snapshot-invalid')
+        objects = set()
+        for arena in snapshot['arenas']:
+            fields = {'arena_object', 'fd', 'size', 'fd_identity', 'allocated_blocks', 'pending_free_blocks'}
+            if (type(arena) is not dict or set(arena) != fields
+                    or any(type(arena[key]) is not int or arena[key] < 0 for key in fields - {'fd_identity'})
+                    or arena['arena_object'] == 0 or arena['arena_object'] in objects
+                    or arena['fd_identity'] is not None and not identity(arena['fd_identity'])):
+                raise PolicyError('d2-linux-case-heap-arena-invalid')
+            objects.add(arena['arena_object'])
+
 
 def d2_validate_native_cases(cases, require_complete=True):
     if type(cases) is not list or len(cases) > len(D2_LINUX_CASES):
@@ -5512,7 +5636,7 @@ def d2_validate_native_cases(cases, require_complete=True):
                 'cleanup_requested', 'target_entered_before_deadline', 'console_canary_absent', 'console_redaction_valid', 'success_banner',
                 'inventory_observations', 'readers_closed_before_go', 'fixture_tracker_settled',
                 'platform_evidence', 'google_projection_observed', 'ftp_targets_observed', 'worker_witnesses',
-                'tracker_probes'}
+                'tracker_probes', 'preupload_witness', 'fd_inventory_delta', 'heap_observations'}
             is_baseline = case['case'].startswith('baseline_')
             allowed = baseline if is_baseline else native
             if (type(observation) is not dict or set(observation) != allowed
@@ -5521,6 +5645,19 @@ def d2_validate_native_cases(cases, require_complete=True):
                         else type(observation.get('application_exit')) is not int)):
                 raise PolicyError('d2-linux-case-observation-fields-invalid')
             if not is_baseline:
+                d2_validate_fd_diagnostics(observation['fd_inventory_delta'], observation['heap_observations'])
+                preupload = observation['preupload_witness']
+                preupload_flags = {'stage_entered', 'original_exception_preserved', 'source_profile_verified',
+                    'pending_cleared', 'runtime_closed', 'runtime_cleanup_complete',
+                    'runtime_transport_complete', 'tracker_wrappers_released'}
+                if case['case'] == 'preupload_stage_failure':
+                    if (type(preupload) is not dict or set(preupload) != preupload_flags | {'api_calls', 'upload_calls'}
+                            or any(type(preupload[key]) is not bool for key in preupload_flags)
+                            or any(type(preupload[key]) is not int or preupload[key] < 0
+                                   for key in ('api_calls', 'upload_calls'))):
+                        raise PolicyError('d2-linux-case-preupload-witness-invalid')
+                elif type(preupload) is not dict or preupload:
+                    raise PolicyError('d2-linux-case-preupload-witness-unexpected')
                 probes = observation['tracker_probes']
                 probe_flags = {'before_go', 'ensure_running_refused', 'register_refused',
                     'launch_refused', 'teardown_refused'}
@@ -6021,7 +6158,8 @@ def d2_runner(root, job):
     tests = read_json(tests_path)
     required = {'schema_version', 'status', 'source_sha', 'collected', 'passed', 'failed',
                 'deselected', 'exit_code', 'native_cases', 'failure_code', 'phase',
-                'skipped', 'native_collected', 'native_passed', 'node_ids_sha256'}
+                'skipped', 'native_collected', 'native_passed', 'node_ids_sha256',
+                'node_inventory_state', 'failed_node_ids'}
     if (type(tests) is not dict or set(tests) != required
             or tests['schema_version'] != 'd2-linux-runner-result-v1'
             or tests['source_sha'] != job['authority']['sha']

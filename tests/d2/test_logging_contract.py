@@ -32,7 +32,8 @@ def report():
 
 def runtime(sink, observed_report):
     value = types.SimpleNamespace(context={'_final': observed_report}, closed=True,
-                                  cleanup_complete=True, case=None, owns_tracker=False)
+                                  cleanup_complete=True, case=None, owns_tracker=False,
+                                  tracker_failed=False, fd_error=False)
     sink['_runtime'] = value
     return value
 
