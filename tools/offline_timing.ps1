@@ -114,6 +114,11 @@ function Test-TimingRecords([object[]]$Records, [hashtable]$Binding, [decimal]$D
         foreach ($row in $Records) {
             if ($null -eq $identity) { $identity=$row }
             $sequence++
+            $scalarStrings=$true
+            foreach ($field in @('event','run_id','tested_sha','source_digest','lane','ticket_id','role')) {
+                if ($row.$field -isnot [string]) { $scalarStrings=$false }
+            }
+            if (-not $scalarStrings) { [void]$errors.Add('CORRUPT'); continue }
             foreach ($field in @('seq','mono_ns','pid','creation_100ns','value','phase')) {
                 if ($row.$field -isnot [int] -and $row.$field -isnot [long]) { [void]$errors.Add('CORRUPT') }
             }
@@ -203,16 +208,19 @@ function Test-TimingAggregateCost([object[]]$Tickets, [object[]]$Writers, [objec
 function Test-TimingBufferBinding([object]$Record, [hashtable]$Actual) {
     $errors=New-Object 'Collections.Generic.HashSet[string]'
     try {
-        if ($Record.event -cne 'native_buffers' -or $Record.value -ne 1 -or $Record.phase -ne 1 -or
+        if ($Record.event -isnot [string] -or $Record.event -cne 'native_buffers' -or
             ($Record.value -isnot [int] -and $Record.value -isnot [long]) -or
-            ($Record.phase -isnot [int] -and $Record.phase -isnot [long])) { [void]$errors.Add('MISSING_BUFFER_BINDING') }
-        if ($Record.child_id -cne $Actual.child_id -or $Record.child_id -cnotmatch '^[0-9a-f]{32}$') { [void]$errors.Add('FOREIGN_BUFFER_TICKET') }
+            ($Record.phase -isnot [int] -and $Record.phase -isnot [long]) -or
+            $Record.value -ne 1 -or $Record.phase -ne 1) { [void]$errors.Add('MISSING_BUFFER_BINDING') }
+        if ($Record.child_id -isnot [string] -or $Actual.child_id -isnot [string] -or
+            $Record.child_id -cne $Actual.child_id -or $Record.child_id -cnotmatch '^[0-9a-f]{32}$') { [void]$errors.Add('FOREIGN_BUFFER_TICKET') }
         foreach ($prefix in @('stdout','stderr')) {
             $size=$prefix+'_bytes'; $hash=$prefix+'_sha256'
             if (($Record.$size -isnot [int] -and $Record.$size -isnot [long]) -or $Record.$size -lt 0 -or
                 ($Actual[$size] -isnot [int] -and $Actual[$size] -isnot [long]) -or $Actual[$size] -lt 0 -or
                 $Record.$size -ne $Actual[$size]) { [void]$errors.Add('FOREIGN_BUFFER_BYTES') }
-            if ($Record.$hash -cnotmatch '^[0-9a-f]{64}$' -or $Actual[$hash] -cnotmatch '^[0-9a-f]{64}$' -or
+            if ($Record.$hash -isnot [string] -or $Actual[$hash] -isnot [string] -or
+                $Record.$hash -cnotmatch '^[0-9a-f]{64}$' -or $Actual[$hash] -cnotmatch '^[0-9a-f]{64}$' -or
                 $Record.$hash -cne $Actual[$hash]) { [void]$errors.Add('FOREIGN_BUFFER_DIGEST') }
         }
     } catch { [void]$errors.Add('CORRUPT_BUFFER_BINDING') }
