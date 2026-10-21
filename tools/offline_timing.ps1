@@ -91,6 +91,134 @@ function Write-TimingMetadata([string]$Path, [byte[]]$Payload, [switch]$Final) {
     try { $stream.Write($Payload); $stream.Flush($true) } finally { $stream.Dispose() }
 }
 
+function Test-TimingRecords([object[]]$Records, [hashtable]$Binding, [decimal]$DeadlineNs,
+        [switch]$Auxiliary) {
+    # The actual file reader and bounded literal fixtures share this checker.
+    $errors=New-Object 'Collections.Generic.HashSet[string]'
+    $identity=$null; $previous=-1L; $sequence=0; $bootstrap=0; $terminal=0; $cost=$null
+    $events=@('bootstrap','guard_ready','start_written','ticket_issued','popen_begin','popen_end',
+        'job_assigned','gate_released','communicate_begin','communicate_end','communicate_timeout',
+        'cleanup_begin','cleanup_end','exit_written','child_reconciled','collection_end','pytest_enter',
+        'pytest_return','session_finish','pytest_report_begin','pytest_report_end','reconcile_begin',
+        'reconcile_end','final_begin','final_end','atexit','command_report_read','native_result',
+        'writer_end','substantive_progress','pytest_import_begin','pytest_import_end','child_launch','native_buffers')
+    $roles=@('supervisor','lane-worker','command')
+    if ($Auxiliary) {
+        $events=@('bootstrap','ticket_issued','child_launch','exit_written','native_buffers','writer_end')
+        $roles=@('entry','worker','supervisor','lane-worker','notebook-check','f2-probe','f2-preflight',
+            'f2-script','f2-notebook','f2-hook','f2-precommit','f2-hook-check','f2-spawn','flog-probe',
+            'flog-worker','native-git','f3-control','command','d1-worker')
+    }
+    try {
+        if ($Records.Count -eq 0 -or $Records.Count -gt 4096) { [void]$errors.Add('CORRUPT') }
+        foreach ($row in $Records) {
+            if ($null -eq $identity) { $identity=$row }
+            $sequence++
+            foreach ($field in @('seq','mono_ns','pid','creation_100ns','value','phase')) {
+                if ($row.$field -isnot [int] -and $row.$field -isnot [long]) { [void]$errors.Add('CORRUPT') }
+            }
+            if ($row.seq -ne $sequence -or $row.mono_ns -lt 0 -or $row.mono_ns -lt $previous -or $row.pid -le 0 -or
+                $row.creation_100ns -le 0) { [void]$errors.Add('CORRUPT') }
+            if ($row.mono_ns -gt $DeadlineNs) { [void]$errors.Add('LATE') }
+            if ($row.event -cnotin $events) { [void]$errors.Add('UNKNOWN_EVENT') }
+            if ($row.run_id -cne $Binding.run_id -or $row.tested_sha -cne $Binding.tested_sha -or
+                $row.source_digest -cne $Binding.source_digest -or $row.lane -cne 'f3' -or
+                $row.ticket_id -cnotmatch '^[0-9a-f]{32}$' -or $row.role -cnotin $roles) { [void]$errors.Add('FOREIGN') }
+            foreach ($field in @('ticket_id','role','pid','creation_100ns')) {
+                if ($row.$field -cne $identity.$field) { [void]$errors.Add('FOREIGN') }
+            }
+            if ($row.event -ceq 'bootstrap') { $bootstrap++; if ($sequence -ne 1) { [void]$errors.Add('CORRUPT') } }
+            if ($row.event -ceq 'writer_end') {
+                $terminal++; $cost=$row.value
+                if ($sequence -ne $Records.Count -or $row.value -lt 0) { [void]$errors.Add('CORRUPT') }
+            }
+            $previous=$row.mono_ns
+        }
+        if ($bootstrap -eq 0 -or $terminal -eq 0) { [void]$errors.Add('MISSING') }
+        if ($bootstrap -gt 1 -or $terminal -gt 1) { [void]$errors.Add('DUPLICATE_TERMINAL') }
+    } catch { [void]$errors.Add('CORRUPT') }
+    return @{ valid=($errors.Count -eq 0); errors=@($errors | Sort-Object); identity=$identity;
+        sync_ns=$cost; exceeded=($null -ne $cost -and $cost -gt 1000000000) }
+}
+
+function Read-TimingStream([string]$Path, [hashtable]$Binding, [decimal]$DeadlineNs,
+        [switch]$Auxiliary) {
+    $records=New-Object 'Collections.Generic.List[object]'
+    foreach ($line in [IO.File]::ReadLines($Path)) {
+        if ($records.Count -ge 4096 -or [Text.Encoding]::UTF8.GetByteCount($line) -gt 4096) { throw 'TRACE_RECORD_BUDGET' }
+        $records.Add(($line | ConvertFrom-Json))
+    }
+    $result=Test-TimingRecords -Records @($records.ToArray()) -Binding $Binding -DeadlineNs $DeadlineNs -Auxiliary:$Auxiliary
+    $result.records=@($records.ToArray())
+    return $result
+}
+
+function Test-TimingAggregateCost([object[]]$Tickets, [object[]]$Writers, [object[]]$Records,
+        [object[]]$Auxiliary=@()) {
+    # Walk existing admitted ancestry directly. This is no native graph index.
+    $errors=New-Object 'Collections.Generic.HashSet[string]'
+    $commands=@{}; $outside=0L; $exceeded=$false
+    try {
+        foreach ($writer in $Writers) {
+            if ($writer.role -ceq 'command') {
+                if ($commands.ContainsKey($writer.ticket_id)) { [void]$errors.Add('AMBIGUOUS_COST') }
+                $commands[$writer.ticket_id]=0L
+            }
+        }
+        if ($commands.Count -eq 0) { [void]$errors.Add('UNKNOWN_COMMAND_COST') }
+        $roots=@($Writers | Where-Object { $_.role -ceq 'supervisor' })
+        if ($roots.Count -ne 1) { [void]$errors.Add('UNKNOWN_COST_ANCESTRY') }
+        $writersSeen=New-Object 'Collections.Generic.HashSet[string]'
+        foreach ($writer in @($Writers)+@($Auxiliary)) {
+            if (-not $writersSeen.Add($writer.ticket_id)) { [void]$errors.Add('AMBIGUOUS_COST'); continue }
+            $ends=@($Records | Where-Object { $_.ticket_id -ceq $writer.ticket_id -and $_.event -ceq 'writer_end' })
+            if ($ends.Count -ne 1 -or ($ends[0].value -isnot [int] -and $ends[0].value -isnot [long]) -or $ends[0].value -lt 0) {
+                [void]$errors.Add('UNKNOWN_COST'); continue
+            }
+            $cost=[long]$ends[0].value; $cursor=$writer.ticket_id; $target=$null
+            $seen=New-Object 'Collections.Generic.HashSet[string]'
+            while ($true) {
+                if (-not $seen.Add($cursor)) { [void]$errors.Add('AMBIGUOUS_COST_ANCESTRY'); break }
+                if ($commands.ContainsKey($cursor)) {
+                    if ($null -ne $target -and $target -cne $cursor) { [void]$errors.Add('AMBIGUOUS_COST_ANCESTRY'); break }
+                    $target=$cursor
+                }
+                if ($roots.Count -eq 1 -and $cursor -ceq $roots[0].ticket_id) {
+                    if ($null -eq $target) { $outside+=$cost } else { $commands[$target]+=$cost }
+                    break
+                }
+                $matches=@($Tickets | Where-Object { $_.ticket_id -ceq $cursor })
+                if ($matches.Count -ne 1 -or $matches[0].parent_id -cnotmatch '^[0-9a-f]{32}$') {
+                    [void]$errors.Add('UNKNOWN_COST_ANCESTRY'); break
+                }
+                $cursor=$matches[0].parent_id
+            }
+        }
+        foreach ($cost in $commands.Values) { if ($cost -gt 1000000000) { $exceeded=$true } }
+    } catch { [void]$errors.Add('UNKNOWN_COST') }
+    return @{ valid=($errors.Count -eq 0); errors=@($errors | Sort-Object); exceeded=$exceeded;
+        commands=$commands; outside_commands_ns=$outside }
+}
+
+function Test-TimingBufferBinding([object]$Record, [hashtable]$Actual) {
+    $errors=New-Object 'Collections.Generic.HashSet[string]'
+    try {
+        if ($Record.event -cne 'native_buffers' -or $Record.value -ne 1 -or $Record.phase -ne 1 -or
+            ($Record.value -isnot [int] -and $Record.value -isnot [long]) -or
+            ($Record.phase -isnot [int] -and $Record.phase -isnot [long])) { [void]$errors.Add('MISSING_BUFFER_BINDING') }
+        if ($Record.child_id -cne $Actual.child_id -or $Record.child_id -cnotmatch '^[0-9a-f]{32}$') { [void]$errors.Add('FOREIGN_BUFFER_TICKET') }
+        foreach ($prefix in @('stdout','stderr')) {
+            $size=$prefix+'_bytes'; $hash=$prefix+'_sha256'
+            if (($Record.$size -isnot [int] -and $Record.$size -isnot [long]) -or $Record.$size -lt 0 -or
+                ($Actual[$size] -isnot [int] -and $Actual[$size] -isnot [long]) -or $Actual[$size] -lt 0 -or
+                $Record.$size -ne $Actual[$size]) { [void]$errors.Add('FOREIGN_BUFFER_BYTES') }
+            if ($Record.$hash -cnotmatch '^[0-9a-f]{64}$' -or $Actual[$hash] -cnotmatch '^[0-9a-f]{64}$' -or
+                $Record.$hash -cne $Actual[$hash]) { [void]$errors.Add('FOREIGN_BUFFER_DIGEST') }
+        }
+    } catch { [void]$errors.Add('CORRUPT_BUFFER_BINDING') }
+    return @{ valid=($errors.Count -eq 0); errors=@($errors | Sort-Object) }
+}
+
 function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
         [object[]]$Records, [hashtable]$External, [hashtable]$Starts, [hashtable]$Binding,
         [object[]]$Auxiliary = @()) {
@@ -630,43 +758,23 @@ public static class F3TimingNative {
     $writerRecords = New-Object 'Collections.Generic.List[object]'
     $roles = @{supervisor=0; 'lane-worker'=0; command=0}
     $settledNs = [decimal]([Diagnostics.Stopwatch]::GetTimestamp()) * 1000000000 / [Diagnostics.Stopwatch]::Frequency
+    $streamBinding=@{run_id=$spec.run_id; tested_sha=$spec.tested_sha; source_digest=$spec.source_digest}
     foreach ($slot in $slots) {
         $writerBytes += $slot.Length
         if ($slot.Name -cnotmatch '^slot-0[0-4]\.jsonl$' -or $slot.Length -gt 524280) { throw 'WRITER_BUDGET' }
-        $sequence = 0
-        $previous = -1L
-        $events = @{}
-        $identity = $null
-        foreach ($line in [IO.File]::ReadLines($slot.FullName)) {
-            if ([Text.Encoding]::UTF8.GetByteCount($line) -gt 4096) { throw 'TRACE_RECORD_BUDGET' }
-            $row = $line | ConvertFrom-Json
-            $writerRecords.Add($row)
-            if ($null -eq $identity) { $identity=$row }
-            $sequence++
-            foreach ($field in @('seq','mono_ns','pid','creation_100ns','value','phase')) {
-                if ($row.$field -isnot [int] -and $row.$field -isnot [long]) { $invalid=$true }
-            }
-            if ($row.pid -le 0 -or $row.creation_100ns -le 0) { $invalid=$true }
-            if ($row.seq -ne $sequence -or $row.mono_ns -lt $previous -or $row.mono_ns -gt $settledNs -or
-                $row.run_id -cne $spec.run_id -or $row.tested_sha -cne $spec.tested_sha -or
-                $row.lane -cne 'f3' -or $row.ticket_id -cne $identity.ticket_id -or
-                $row.source_digest -cne $spec.source_digest -or
-                $row.role -cne $identity.role -or $row.pid -ne $identity.pid -or
-                $row.creation_100ns -ne $identity.creation_100ns) { $invalid=$true }
-            $previous = $row.mono_ns
-            $events[$row.event] = $true
-            if ($row.event -eq 'writer_end' -and $row.value -gt 1000000000) { throw 'SYNC_BUDGET' }
-        }
-        if ($null -eq $identity -or -not $events.ContainsKey('bootstrap') -or
-            -not $events.ContainsKey('writer_end')) { $invalid=$true }
-        elseif (-not $owned.ContainsKey(('{0}:{1}' -f $identity.pid,$identity.creation_100ns))) { $invalid=$true }
+        $parsed=Read-TimingStream -Path $slot.FullName -Binding $streamBinding -DeadlineNs $settledNs
+        if (-not $parsed.valid) { $invalid=$true }
+        if ($parsed.exceeded) { throw 'SYNC_BUDGET' }
+        foreach ($row in $parsed.records) { $writerRecords.Add($row) }
+        $identity=$parsed.identity
+        if ($null -ne $identity -and -not $owned.ContainsKey(('{0}:{1}' -f $identity.pid,$identity.creation_100ns))) { $invalid=$true }
         if ($null -ne $identity) {
             $writerIdentities.Add($identity)
             if ($identities.ContainsKey($identity.ticket_id) -or -not $roles.ContainsKey($identity.role)) { $invalid=$true }
             else { $identities[$identity.ticket_id]=$true; $roles[$identity.role]++ }
         }
-        Write-Observation @{ event='writer_checked'; records=$sequence; bytes=$slot.Length;
-            complete=($events.ContainsKey('writer_end')) }
+        Write-Observation @{ event='writer_checked'; records=$parsed.records.Count; bytes=$slot.Length;
+            complete=$parsed.valid; errors=$parsed.errors }
     }
     if ($roles.supervisor -ne 1 -or $roles['lane-worker'] -ne 1 -or $roles.command -ne 3) { $invalid=$true }
     # AUX supplies only nonprofile issuer provenance, never another detailed
@@ -675,37 +783,16 @@ public static class F3TimingNative {
     $auxiliaryBytes = 0L
     $auxiliary = @(Get-ChildItem -LiteralPath (Join-Path $run 'timing') -Filter 'aux-*.jsonl')
     if ($auxiliary.Count -gt 32) { throw 'AUXILIARY_BUDGET' }
-    $existingRoles = @('entry','worker','supervisor','lane-worker','notebook-check','f2-probe','f2-preflight',
-        'f2-script','f2-notebook','f2-hook','f2-precommit','f2-hook-check','f2-spawn','flog-probe',
-        'flog-worker','native-git','f3-control','command','d1-worker')
     foreach ($slot in $auxiliary) {
         if ($slot.Name -cnotmatch '^aux-(0[0-9]|[12][0-9]|3[01])\.jsonl$' -or $slot.Length -gt 8184) { throw 'AUXILIARY_BUDGET' }
         $auxiliaryBytes += $slot.Length
-        $sequence=0; $previous=-1L; $events=@{}; $identity=$null
-        foreach ($line in [IO.File]::ReadLines($slot.FullName)) {
-            if ([Text.Encoding]::UTF8.GetByteCount($line) -gt 4096) { throw 'TRACE_RECORD_BUDGET' }
-            $row = $line | ConvertFrom-Json
-            $writerRecords.Add($row)
-            if ($null -eq $identity) { $identity=$row }
-            $sequence++
-            foreach ($field in @('seq','mono_ns','pid','creation_100ns','value','phase')) {
-                if ($row.$field -isnot [int] -and $row.$field -isnot [long]) { $invalid=$true }
-            }
-            if ($row.seq -ne $sequence -or $row.mono_ns -lt $previous -or $row.mono_ns -gt $settledNs -or
-                $row.run_id -cne $spec.run_id -or $row.tested_sha -cne $spec.tested_sha -or
-                $row.source_digest -cne $spec.source_digest -or $row.lane -cne 'f3' -or
-                $row.ticket_id -cnotmatch '^[0-9a-f]{32}$' -or $row.ticket_id -cne $identity.ticket_id -or
-                $row.role -cnotin $existingRoles -or $row.role -cne $identity.role -or
-                $row.pid -le 0 -or $row.pid -ne $identity.pid -or
-                $row.creation_100ns -le 0 -or $row.creation_100ns -ne $identity.creation_100ns -or
-                $row.event -cnotin @('bootstrap','ticket_issued','child_launch','exit_written','native_buffers','writer_end')) { $invalid=$true }
-            $previous=$row.mono_ns; $events[$row.event]=$true
-            if ($row.event -ceq 'writer_end' -and $row.value -gt 1000000000) { throw 'SYNC_BUDGET' }
-        }
-        if ($null -eq $identity -or -not $events.ContainsKey('bootstrap') -or -not $events.ContainsKey('writer_end')) { $invalid=$true }
-        else { $auxiliaryIdentities.Add($identity) }
-        Write-Observation @{ event='auxiliary_checked'; records=$sequence; bytes=$slot.Length;
-            complete=($events.ContainsKey('writer_end')) }
+        $parsed=Read-TimingStream -Path $slot.FullName -Binding $streamBinding -DeadlineNs $settledNs -Auxiliary
+        if (-not $parsed.valid) { $invalid=$true }
+        if ($parsed.exceeded) { throw 'SYNC_BUDGET' }
+        foreach ($row in $parsed.records) { $writerRecords.Add($row) }
+        if ($null -ne $parsed.identity) { $auxiliaryIdentities.Add($parsed.identity) }
+        Write-Observation @{ event='auxiliary_checked'; records=$parsed.records.Count; bytes=$slot.Length;
+            complete=$parsed.valid; errors=$parsed.errors }
     }
     # Completeness includes explicit native coverage/gaps. Missing native reports
     # are facts of the original failure, never synthesized by this observer.
@@ -746,6 +833,14 @@ public static class F3TimingNative {
     if (-not $coverage.valid) { $invalid=$true }
     Write-Observation @{ event='identity_coverage'; tickets=$coverage.tickets; covered=$coverage.covered;
         valid=$coverage.valid; errors=$coverage.errors }
+    $aggregate=Test-TimingAggregateCost -Tickets @($authoritativeTickets.ToArray()) `
+        -Writers @($writerIdentities.ToArray()) -Auxiliary @($auxiliaryIdentities.ToArray()) `
+        -Records @($writerRecords.ToArray())
+    if (-not $aggregate.valid) { $invalid=$true }
+    if ($aggregate.exceeded) { throw 'SYNC_BUDGET' }
+    Write-Observation @{ event='command_sync_cost'; valid=$aggregate.valid; errors=$aggregate.errors;
+        command_ns=$aggregate.commands; outside_commands_ns=$aggregate.outside_commands_ns;
+        uninstrumented_commands_and_tail='UNKNOWN_NOT_MEASURED' }
     Write-Observation @{ event='native_coverage'; missing_start=$missingStart; missing_final=$missingFinal;
         missing_exit=$missingExit; missing_buffers=$missingBuffers; pipe_eof_timestamp='UNKNOWN'; unittest_return_timestamp='UNKNOWN' }
     # All bytes are retained locally. Only aliases/hashes can enter a public projection.
@@ -759,6 +854,19 @@ public static class F3TimingNative {
             $seal.Add(@{ store=$store.alias; name=$relative; bytes=$file.Length;
                 sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() })
         }
+    }
+    # Compare the sole reader's original-byte fingerprints to the exact private
+    # file facts used in this immutable manifest. No second pipe read or hash pass.
+    foreach ($ticket in $authoritativeTickets) {
+        $id=$ticket.ticket_id
+        $claims=@($writerRecords | Where-Object { $_.event -ceq 'native_buffers' -and $_.child_id -ceq $id })
+        $stdoutFacts=@($seal | Where-Object { $_.store -ceq 'run' -and $_.name -ceq "timing/native/$id.stdout" })
+        $stderrFacts=@($seal | Where-Object { $_.store -ceq 'run' -and $_.name -ceq "timing/native/$id.stderr" })
+        if ($claims.Count -ne 1 -or $stdoutFacts.Count -ne 1 -or $stderrFacts.Count -ne 1) { $invalid=$true; continue }
+        $binding=Test-TimingBufferBinding -Record $claims[0] -Actual @{
+            child_id=$id; stdout_bytes=$stdoutFacts[0].bytes; stderr_bytes=$stderrFacts[0].bytes;
+            stdout_sha256=$stdoutFacts[0].sha256; stderr_sha256=$stderrFacts[0].sha256 }
+        if (-not $binding.valid) { $invalid=$true }
     }
     $self.Refresh()
     $finalCpu=$self.TotalProcessorTime.TotalSeconds+$helperCpu

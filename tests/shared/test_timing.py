@@ -209,6 +209,27 @@ def test_timing_storage_failure_is_not_complete():
     for values in ((None, b''), ('decoded stdout', ''), (b'', None)):
         assert guard.timing_verdict(0, valid=guard.timing_buffer_phase(*values) == 1) == {
             'NATIVE_VERDICT': 0, 'DIAGNOSTIC_VERDICT': 'INVALID'}
+    # Independently recorded SHA-256 literals for b'abc' and empty stderr.
+    # A fresh seal of substituted/truncated retained bytes cannot replace the
+    # original sole-reader witness, even when both files still exist.
+    expected = dict(event='native_buffers', value=1, phase=1, child_id='5' * 32,
+        stdout_bytes=3, stderr_bytes=0,
+        stdout_sha256='ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+        stderr_sha256='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+    retained = {key: value for key, value in expected.items()
+                if key not in {'event', 'value', 'phase'}}
+    assert guard.timing_buffer_binding_errors(expected, retained) == []
+    for changed in ({'stdout_bytes': 2}, {'stderr_bytes': 1},
+                    {'stdout_sha256': '0' * 64}, {'stderr_sha256': '0' * 64}):
+        assert guard.timing_buffer_binding_errors(expected, {**retained, **changed}) == [
+            'BUFFER_BINDING_MISMATCH']
+    assert guard.timing_buffer_binding_errors(expected, dict(retained, child_id='6' * 32)) == [
+        'FOREIGN_BUFFER_BINDING']
+    assert guard.timing_buffer_binding_errors(dict(expected, stdout_bytes=None), retained) == [
+        'CORRUPT']
+    assert guard.timing_buffer_binding_errors(
+        {key: value for key, value in expected.items() if key != 'stdout_sha256'}, retained) == [
+            'MISSING_BUFFER_BINDING']
 
 
 def test_timing_public_report_excludes_synthetic_private_values():

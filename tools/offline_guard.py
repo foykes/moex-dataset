@@ -84,14 +84,15 @@ def timing_public(record):
             'read_calls', 'read_ns', 'ticket_calls', 'ticket_ns', 'reconcile_ns',
             'setup', 'call', 'teardown', 'passed', 'failed', 'skipped', 'child_id',
             'setup_ns', 'call_ns', 'teardown_ns', 'clock_error_ns', 'issuer_id',
-            'child_pid', 'child_creation_100ns', 'child_parent_pid', 'child_exit_100ns'}
+            'child_pid', 'child_creation_100ns', 'child_parent_pid', 'child_exit_100ns',
+            'stdout_bytes', 'stderr_bytes', 'stdout_sha256', 'stderr_sha256'}
     public = {}
     for key, value in record.items():
         if key not in keys:
             continue
         pattern = ('[0-9a-f]{32}' if key in {'run_id', 'ticket_id', 'child_id', 'issuer_id'} else
                    '[0-9a-f]{40}' if key == 'tested_sha' else
-                   '[0-9a-f]{64}' if key == 'source_digest' else None)
+                   '[0-9a-f]{64}' if key in {'source_digest', 'stdout_sha256', 'stderr_sha256'} else None)
         if pattern:
             if isinstance(value, str) and re.fullmatch(pattern, value):
                 public[key] = value
@@ -100,6 +101,9 @@ def timing_public(record):
                 public[key] = value
         elif key in {'lane', 'role'}:
             if value in ({'f3'} if key == 'lane' else ROLES):
+                public[key] = value
+        elif key in {'stdout_bytes', 'stderr_bytes'}:
+            if type(value) is int and 0 <= value <= 9223372036854775807:
                 public[key] = value
         elif type(value) is int:
             public[key] = value
@@ -623,6 +627,39 @@ def timing_buffer_phase(stdout, stderr, *, complete=True, previous=None):
     return 1
 
 
+def timing_buffer_binding_errors(record, actual):
+    """Pure check against independently obtained retained-file fingerprints.
+
+    The caller validates the full event/run/issuer identity separately. The
+    actual child_id comes from the authoritative ticket/file association.
+    """
+    if not isinstance(record, dict) or not isinstance(actual, dict):
+        return ['CORRUPT']
+    if (record.get('event') != 'native_buffers' or record.get('value') != 1
+            or record.get('phase') != 1):
+        return ['MISSING_BUFFER_BINDING']
+    fields = ('stdout_bytes', 'stderr_bytes', 'stdout_sha256', 'stderr_sha256')
+    if any(key not in value for value in (record, actual) for key in ('child_id', *fields)):
+        return ['MISSING_BUFFER_BINDING']
+    if type(record['value']) is not int or type(record['phase']) is not int:
+        return ['CORRUPT']
+    for value in (record, actual):
+        if not isinstance(value['child_id'], str) or not re.fullmatch('[0-9a-f]{32}', value['child_id']):
+            return ['CORRUPT']
+        for key in ('stdout_bytes', 'stderr_bytes'):
+            if type(value[key]) is not int or not 0 <= value[key] <= 9223372036854775807:
+                return ['CORRUPT']
+        for key in ('stdout_sha256', 'stderr_sha256'):
+            if not isinstance(value[key], str) or not re.fullmatch('[0-9a-f]{64}', value[key]):
+                return ['CORRUPT']
+    errors = []
+    if record['child_id'] != actual['child_id']:
+        errors.append('FOREIGN_BUFFER_BINDING')
+    if any(record[key] != actual[key] for key in fields):
+        errors.append('BUFFER_BINDING_MISMATCH')
+    return errors
+
+
 def _timing_passive(function, *args):
     """Observation failures have no exception path back into native behavior."""
     try:
@@ -719,7 +756,10 @@ def timing_native_bundle(ticket, stdout, stderr):
                     stream.flush()
                     os.fsync(stream.fileno())
         child.update(buffers=fingerprint, buffer_phase=1, buffer_emitted=True)
-        _timing_emit('native_buffers', 1, 1, child['binding'])
+        binding = dict(child['binding'], stdout_bytes=fingerprint[0][0],
+            stdout_sha256=fingerprint[0][1].hex(), stderr_bytes=fingerprint[1][0],
+            stderr_sha256=fingerprint[1][1].hex())
+        _timing_emit('native_buffers', 1, 1, binding)
     except BaseException:
         _timing_abort()
     finally:
