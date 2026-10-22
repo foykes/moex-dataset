@@ -58,8 +58,9 @@ def test_export_negative_canary_oracle_rejects_each_surface(repo, private):
 
 def test_expected_node_inventory_is_unique_source_bound_and_closed(oracle):
     identifiers = oracle['expected_node_ids']
-    assert len(identifiers) == 300
+    assert len(identifiers) == 315
     assert len(identifiers) == len(set(identifiers))
+    assert identifiers == sorted(identifiers)
     assert all(name.startswith('tests/d2/test_') and '::test_' in name for name in identifiers)
     assert {name.split('::', 1)[0] for name in identifiers} == {
         'tests/d2/test_supervision.py', 'tests/d2/test_targets.py',
@@ -68,6 +69,47 @@ def test_expected_node_inventory_is_unique_source_bound_and_closed(oracle):
     assert len([name for name in identifiers if '::test_native_case[' in name]) == 56
     data = ('\n'.join(identifiers) + '\n').encode('utf-8')
     assert hashlib.sha256(data).hexdigest() == oracle['expected_node_ids_sha256']
+
+
+@pytest.mark.parametrize('mutation', ['none', 'false_nonstart', 'unknown_nonstart', 'invented_return',
+    'foreign_timeout', 'unknown_flog_timeout', 'late_healthy_exit', 'foreign_witness_pid',
+    'old_projection_false', 'early_projection'])
+def test_worker_outcome_validator_rejects_contradictory_evidence(helper, mutation):
+    workers = {role: dict(started=True, pid=100 + index, exitcode=0, timed_out=False,
+                         execution_state='RETURNED', normal_return_observed=True)
+               for index, role in enumerate(('google', 'ftp'))}
+    workers['google'].update(exitcode=-15, timed_out=True, execution_state='GO_RELEASED', normal_return_observed=False)
+    observation = dict(case='hang_google', result=dict(workers=workers, failed_required_channels=['google']),
+        logging_outcomes=[dict(worker_id=role, started=True, exit_status=row['exitcode'], timed_out=row['timed_out'])
+                          for role, row in workers.items()], deadline_observations=[
+            dict(worker_id='ftp', pid=101, state='EXIT_OBSERVED', exitcode=0, before_ns=8, after_ns=9, deadline_ns=10),
+            dict(worker_id='google', pid=100, state='LIVE_AFTER_DEADLINE', exitcode=None, before_ns=10, after_ns=11, deadline_ns=10)])
+    observation['timeout_baseline'] = dict(source_sha256='bb34634018373ebdf89d386fd9d002ad767d161f90d9cec981532a9c671e154b',
+        boundary='BEFORE_CLEANUP', observed_ns=11, healthy_worker='ftp', healthy_pid=101, actual_exitcode=0, healthy_registered=True,
+        global_deadline_detected=True, old_worker_timed_out=True, old_flog_timed_out=True, old_truth_assertion_red=True)
+    if mutation == 'false_nonstart':
+        workers['google']['execution_state'] = 'NOT_STARTED'
+    elif mutation == 'unknown_nonstart':
+        workers['google'].update(started=None, pid=None, execution_state='NOT_STARTED')
+    elif mutation == 'invented_return':
+        workers['google']['normal_return_observed'] = True
+    elif mutation == 'foreign_timeout':
+        workers['ftp']['timed_out'] = True
+    elif mutation == 'unknown_flog_timeout':
+        workers['ftp']['timed_out'] = None
+    elif mutation == 'late_healthy_exit':
+        observation['deadline_observations'][0]['after_ns'] = 10
+    elif mutation == 'foreign_witness_pid':
+        observation['deadline_observations'][0]['pid'] = 999
+    elif mutation == 'old_projection_false':
+        observation['timeout_baseline']['old_flog_timed_out'] = False
+    elif mutation == 'early_projection':
+        observation['timeout_baseline']['observed_ns'] = 9
+    if mutation == 'none':
+        helper.d2_validate_worker_observations(observation)
+    else:
+        with pytest.raises(helper.PolicyError):
+            helper.d2_validate_worker_observations(observation)
 
 
 def test_linux_policy_does_not_admit_d2_child_as_arbitrary_command(guard):

@@ -301,3 +301,13 @@ Changing the helper also requires source-bound legacy checks and, after any
 eventual owner-approved merge, separate real D2, LNX-03 and LNX-02 verification
 on the actual merge SHA. Neither a development branch PASS nor foundation within
 D2 replaces those post-merge checks or the outstanding Stage B integration gates.
+
+The PR #122 outcome correction retains the original 300 node IDs and 56 native
+cases, adding 15 narrow observation/validator controls (315 total). Real hang
+cases observe the existing Popen-owned waitpid call without an extra reaper.
+They distinguish a healthy sibling observed exited before the common deadline
+from its live peer at expiry. The old 9d76bc2 diagnostic assignments are pinned
+and evaluated only as a test-only baseline at that actual pre-cleanup boundary;
+they never drive production classification. This is not a full old-SHA CI run
+and supplies no missing historical CI5 timestamp. Missing or unreached witnesses
+fail the oracle rather than being replaced by a guessed timing outcome.

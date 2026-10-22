@@ -451,9 +451,13 @@ def _native_controller(ticket, guard, fixture, vendor):
     post_bind_witness = {}
     serialization_witness = {}
     processes, reports, outcomes, phase_reads, releases, constructor = [], [], [], [], [], []
+    deadline_observations = []
+    deadline_ns = None
+    timeout_baseline = {}
     real_popen = subprocess.Popen
     real_fork_exec = subprocess._fork_exec
     real_waitpid = os.waitpid
+    real_poll_waitpid = subprocess._del_safe.__dict__['waitpid']
     real_finalize = run_logging.finalize_logging
     real_outcome = run_logging.record_worker_outcome
     real_read = upload._d2_read_checkpoint
@@ -461,6 +465,7 @@ def _native_controller(ticket, guard, fixture, vendor):
     real_inventory = upload._d2_run_inventory
     real_fdopen = upload._d2_fdopen
     real_check_tracker = upload._d2_check_tracker
+    real_settle = upload._d2_settle
     real_upload_io, old_trace = upload.io, sys.gettrace()
     go_released = False
     active_role = None
@@ -530,7 +535,18 @@ def _native_controller(ticket, guard, fixture, vendor):
             constructor.append({'event': 'FORK_EXEC_RETURNED', 'worker_id': active_role, 'pid': pid})
         return pid
     def waitpid(pid, options):
+        before_ns = time.monotonic_ns()
         result = real_waitpid(pid, options)
+        after_ns = time.monotonic_ns()
+        if case in {'hang_google', 'hang_ftp'} and deadline_ns is not None:
+            role = next((role for role, process in processes if process.pid == pid), None)
+            state = ('EXIT_OBSERVED' if result[0] == pid else
+                     'LIVE_AFTER_DEADLINE' if result[0] == 0 and before_ns >= deadline_ns else None)
+            if role in {'google', 'ftp'} and state is not None and not any(
+                    row['worker_id'] == role and row['state'] == state for row in deadline_observations):
+                deadline_observations.append(dict(worker_id=role, pid=pid, state=state,
+                    exitcode=os.waitstatus_to_exitcode(result[1]) if result[0] == pid else None,
+                    before_ns=before_ns, after_ns=after_ns, deadline_ns=deadline_ns))
         if case in {'constructor_error', 'tracker_death', 'preupload_stage_failure',
                     'post_context_bind_failure', 'serialization_write_failure'} and active_role is not None and result[0] == pid:
             constructor.append({'event': 'WAITPID_RETURNED', 'worker_id': active_role,
@@ -572,7 +588,8 @@ def _native_controller(ticket, guard, fixture, vendor):
         finally:
             reader_role = previous
     def release(runtime, children):
-        nonlocal go_released
+        nonlocal go_released, deadline_ns
+        deadline_ns = int(runtime.deadline * 1_000_000_000)
         closed_before_go = all(row['closed'] for row in reader_lifetimes)
         result = real_go(runtime, children)
         releases.append(dict(ready_reads=sum(row['phase'] == 'BEFORE_GO' for row in phase_reads),
@@ -584,15 +601,51 @@ def _native_controller(ticket, guard, fixture, vendor):
         inventory_observations.append(dict(phase='AFTER_GO' if go_released else 'BEFORE_GO',
             worker_pids=[process.pid for process in actual], worker_exits=[process.poll() for process in actual]))
         return real_inventory(root, limits, **options)
+    def settle(children, **options):
+        runtime = upload._D2_ACTIVE
+        if (case in {'hang_google', 'hang_ftp'} and not timeout_baseline
+                and runtime is not None and runtime.deadline_detected):
+            # Replay only the two exact old diagnostic RHS expressions at the
+            # real pre-cleanup boundary. Never execute old launch/cleanup code
+            # or feed this test-only projection into a production decision.
+            pin = _oracle(repo)['review_timeout_baseline']
+            source = base64.b64decode(pin['supervise_base64'], validate=True)
+            if (pin['head'] != '9d76bc2f7fa9012253e41bbc292cc13caf983e14'
+                    or pin['upload_sha256'] != '7ca607fe56538faf1242dcbbbaec30687b68461d1f69593d5f67aadd38c335a8'
+                    or hashlib.sha256(source).hexdigest() != 'bb34634018373ebdf89d386fd9d002ad767d161f90d9cec981532a9c671e154b'):
+                raise AssertionError('D2_REVIEW_BASELINE_SOURCE')
+            keywords = [keyword.value for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
+                        for keyword in node.keywords if keyword.arg == 'timed_out']
+            if len(keywords) != 2 or [ast.unparse(node) for node in keywords] != [
+                    'runtime.deadline_detected', 'runtime.deadline_detected and process is not None']:
+                raise AssertionError('D2_REVIEW_BASELINE_ASSIGNMENTS')
+            hanging = 'google' if case == 'hang_google' else 'ftp'
+            healthy = 'ftp' if hanging == 'google' else 'google'
+            process = next(process for role, process in processes if role == healthy)
+            namespace = {'runtime': runtime, 'process': process, '__builtins__': {}}
+            old = [eval(compile(ast.Expression(body=node), 'immutable-review-baseline', 'eval'), namespace)
+                   for node in keywords]
+            timeout_baseline.update(source_sha256=pin['supervise_sha256'], boundary='BEFORE_CLEANUP',
+                observed_ns=time.monotonic_ns(), healthy_worker=healthy, healthy_pid=process.pid,
+                healthy_registered=healthy in runtime.context['_expected'],
+                actual_exitcode=process.poll(), global_deadline_detected=runtime.deadline_detected,
+                old_worker_timed_out=old[0], old_flog_timed_out=old[1],
+                old_truth_assertion_red=old != [False, False])
+        return real_settle(children, **options)
     subprocess.Popen = popen
     subprocess._fork_exec = fork_exec
     os.waitpid = waitpid
+    if case in {'hang_google', 'hang_ftp'}:
+        # CPython poll captures this waitpid alias at import. Forward exactly
+        # that one Popen-owned wait; an extra wait consumer would steal status.
+        subprocess._del_safe.waitpid = staticmethod(waitpid)
     run_logging.finalize_logging = finalize
     run_logging.record_worker_outcome = outcome
     upload._d2_read_checkpoint = read
     upload._d2_release_go = release
     upload._d2_run_inventory = inventory
     upload._d2_fdopen = fdopen
+    upload._d2_settle = settle
     sink, status, primary = {}, 0, None
     real_upload_main, old_argv = upload.main, sys.argv
     prior_stages = {name: sys.modules.get(name) for name in ('data_gathering', 'dividends', 'tech', 'dohodru_data')}
@@ -750,12 +803,14 @@ def _native_controller(ticket, guard, fixture, vendor):
         subprocess.Popen = real_popen
         subprocess._fork_exec = real_fork_exec
         os.waitpid = real_waitpid
+        subprocess._del_safe.waitpid = real_poll_waitpid
         run_logging.finalize_logging = real_finalize
         run_logging.record_worker_outcome = real_outcome
         upload._d2_read_checkpoint = real_read
         upload._d2_release_go = real_go
         upload._d2_run_inventory = real_inventory
         upload._d2_fdopen = real_fdopen
+        upload._d2_settle = real_settle
         upload._d2_check_tracker = real_check_tracker
         upload.io = real_upload_io
         sys.settrace(old_trace)
@@ -838,6 +893,8 @@ def _native_controller(ticket, guard, fixture, vendor):
         post_bind_witness=post_bind_witness,
         serialization_witness=serialization_witness,
         constructor_observations=constructor,
+        deadline_observations=deadline_observations,
+        timeout_baseline=timeout_baseline,
         fd_inventory_unchanged=fd_clean, foreign_fd_intact=foreign_intact,
         raw_fd_inventory_clean=fd_clean, owned_fd_inventory_clean=owned_fd_clean, fd_attribution=fd_attribution,
         fd_inventory_delta=fd_delta, heap_observations=dict(before=before_heap, after=after_heap),

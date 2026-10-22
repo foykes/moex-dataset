@@ -5455,8 +5455,8 @@ def d2_validate_tests(tests, sha, complete=False):
                     or any(not 1 <= int(node[8:]) <= len(nodes) for node in failed_nodes)):
                 raise PolicyError('d2-linux-failed-node-ledger-mismatch')
         d2_validate_native_cases(tests['native_cases'], require_complete=passed)
-        if passed and (tests['collected'] != 300 or tests['native_collected'] != 56
-                or tests['node_ids_sha256'] != '4072cf243d4fc1a556a68b8ad923d23d8b4168bb10aa57d56649b42aefa67a3f'):
+        if passed and (tests['collected'] != 315 or tests['native_collected'] != 56
+                or tests['node_ids_sha256'] != 'c3d08ac0cc6899d3da247bb3ad34bfcd003778192e8eaa421f18bf6d86f2d7ae'):
             raise PolicyError('d2-linux-node-inventory-mismatch')
     return tests
 
@@ -5729,6 +5729,76 @@ def d2_validate_fd_attribution(observation, complete=False, case=None):
             raise PolicyError('d2-linux-fd-owned-settlement-incomplete')
 
 
+def d2_validate_worker_observations(observation, complete=True):
+    workers = observation['result'].get('workers')
+    if type(workers) is not dict or set(workers) != {'google', 'ftp'}:
+        raise PolicyError('d2-linux-worker-results-invalid')
+    phases = {'STARTED', 'READY', 'GO_RELEASED', 'RETURNED', 'FAILED', 'INTERRUPTED'}
+    for role, row in workers.items():
+        if type(row) is not dict:
+            raise PolicyError('d2-linux-worker-result-fields-invalid')
+        started, phase, timeout = row.get('started'), row.get('execution_state'), row.get('timed_out')
+        if (started is not None and type(started) is not bool
+                or timeout is not None and type(timeout) is not bool
+                or started is False and (phase != 'NOT_STARTED' or row.get('pid') is not None)
+                or started is None and (phase != 'UNKNOWN' or row.get('pid') is not None)
+                or started is True and (phase not in phases or type(row.get('pid')) is not int)
+                or phase not in {'RETURNED', 'FAILED', 'INTERRUPTED'} and row.get('normal_return_observed') is not False):
+            raise PolicyError('d2-linux-worker-phase-invalid')
+        outcomes = [item for item in observation['logging_outcomes'] if item['worker_id'] == role]
+        if any(item['timed_out'] is not timeout or item['started'] is not started
+               or item['exit_status'] != row.get('exitcode') for item in outcomes):
+            raise PolicyError('d2-linux-worker-logging-outcome-disagrees')
+    events = observation['deadline_observations']
+    if type(events) is not list or len(events) > 4:
+        raise PolicyError('d2-linux-worker-deadline-observations-invalid')
+    seen = set()
+    for event in events:
+        keys = {'worker_id', 'pid', 'state', 'exitcode', 'before_ns', 'after_ns', 'deadline_ns'}
+        if (type(event) is not dict or set(event) != keys or event['worker_id'] not in workers
+                or event['state'] not in {'EXIT_OBSERVED', 'LIVE_AFTER_DEADLINE'}
+                or (event['worker_id'], event['state']) in seen
+                or event['pid'] != workers[event['worker_id']]['pid']
+                or any(type(event[key]) is not int or event[key] <= 0
+                       for key in ('pid', 'before_ns', 'after_ns', 'deadline_ns'))
+                or event['before_ns'] > event['after_ns']
+                or event['state'] == 'EXIT_OBSERVED' and type(event['exitcode']) is not int
+                or event['state'] == 'LIVE_AFTER_DEADLINE' and (
+                    event['exitcode'] is not None or event['before_ns'] < event['deadline_ns'])):
+            raise PolicyError('d2-linux-worker-deadline-observation-invalid')
+        seen.add((event['worker_id'], event['state']))
+    case = observation['case']
+    baseline = observation['timeout_baseline']
+    if case in {'hang_google', 'hang_ftp'} and complete:
+        hanging = 'google' if case == 'hang_google' else 'ftp'
+        healthy = 'ftp' if hanging == 'google' else 'google'
+        timely = [row for row in events if row['worker_id'] == healthy and row['state'] == 'EXIT_OBSERVED']
+        late = [row for row in events if row['worker_id'] == hanging and row['state'] == 'LIVE_AFTER_DEADLINE']
+        failed = observation['result']['failed_required_channels']
+        outcomes = {row['worker_id']: row for row in observation['logging_outcomes']}
+        if (len(timely) != 1 or timely[0]['exitcode'] != 0 or timely[0]['after_ns'] >= timely[0]['deadline_ns']
+                or len(late) != 1 or workers[healthy]['timed_out'] is not False
+                or workers[hanging]['timed_out'] is not True or healthy in failed or hanging not in failed
+                or outcomes.get(healthy, {}).get('timed_out') is not False
+                or outcomes.get(hanging, {}).get('timed_out') is not True):
+            raise PolicyError('d2-linux-worker-deadline-proof-incomplete')
+        keys = {'source_sha256', 'boundary', 'observed_ns', 'healthy_worker', 'healthy_pid',
+                'actual_exitcode', 'healthy_registered', 'global_deadline_detected', 'old_worker_timed_out',
+                'old_flog_timed_out', 'old_truth_assertion_red'}
+        if (type(baseline) is not dict or set(baseline) != keys
+                or baseline['source_sha256'] != 'bb34634018373ebdf89d386fd9d002ad767d161f90d9cec981532a9c671e154b'
+                or baseline['boundary'] != 'BEFORE_CLEANUP' or baseline['healthy_worker'] != healthy
+                or baseline['healthy_pid'] != workers[healthy]['pid'] or baseline['actual_exitcode'] != 0
+                or type(baseline['observed_ns']) is not int or baseline['observed_ns'] < late[0]['deadline_ns']
+                or any(baseline[key] is not True for key in ('healthy_registered', 'global_deadline_detected',
+                    'old_worker_timed_out', 'old_flog_timed_out', 'old_truth_assertion_red'))):
+            raise PolicyError('d2-linux-worker-deadline-baseline-incomplete')
+    elif case not in {'hang_google', 'hang_ftp'} and events:
+        raise PolicyError('d2-linux-worker-deadline-observation-unexpected')
+    if case not in {'hang_google', 'hang_ftp'} and baseline != {}:
+        raise PolicyError('d2-linux-worker-deadline-baseline-unexpected')
+
+
 def d2_validate_native_cases(cases, require_complete=True):
     if type(cases) is not list or len(cases) > len(D2_LINUX_CASES):
         raise PolicyError('d2-linux-case-list-invalid')
@@ -5765,7 +5835,8 @@ def d2_validate_native_cases(cases, require_complete=True):
                 'platform_evidence', 'google_projection_observed', 'ftp_targets_observed', 'worker_witnesses',
                 'tracker_probes', 'preupload_witness', 'post_bind_witness', 'serialization_witness',
                 'fd_inventory_delta', 'heap_observations', 'cache_provenance',
-                'raw_fd_inventory_clean', 'owned_fd_inventory_clean', 'fd_attribution'}
+                'raw_fd_inventory_clean', 'owned_fd_inventory_clean', 'fd_attribution',
+                'deadline_observations', 'timeout_baseline'}
             is_baseline = case['case'].startswith('baseline_')
             allowed = baseline if is_baseline else native
             if (type(observation) is not dict or set(observation) != allowed
@@ -5774,6 +5845,7 @@ def d2_validate_native_cases(cases, require_complete=True):
                         else type(observation.get('application_exit')) is not int)):
                 raise PolicyError('d2-linux-case-observation-fields-invalid')
             if not is_baseline:
+                d2_validate_worker_observations(observation, require_complete)
                 d2_validate_fd_diagnostics(observation['fd_inventory_delta'], observation['heap_observations'])
                 d2_validate_fd_attribution(observation, require_complete, case['case'])
                 serialization = observation['serialization_witness']

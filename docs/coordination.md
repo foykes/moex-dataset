@@ -824,3 +824,19 @@ closure, production/staging, MOEX/Google/FTP writes, cron, full reload, D4/D5/D6
 or Windows recovery is authorized by this append. Rollback needs an explicit
 controlled revert with publication stopped; it restores old D2 defects, not a
 production recovery. Worktrees, immutable environments and evidence are retained.
+
+### D2 Linux Stage B: PR #122 narrow outcome correction, 2026-10-22
+
+The owner CODE_CHANGES grant supersedes the earlier scoped acceptance for the
+new correction review. H17 remains held by D2 for its exact 17 paths; no transfer
+or new shared scope is implied. D2B-REV-01 separates per-worker deadline proof
+from parent expiry; D2B-REV-02 preserves actual birth/READY/individual GO phases
+when terminal evidence is unavailable. F-LOG API and publication contracts stay
+unchanged. Source-bound old-assignment RED and corrected native GREEN evidence
+are distinct from historical CI5, whose healthy-exit timing is unavailable.
+
+The separate bounded grant permits one package, at most two substantive commits,
+two discovery/attempt-2 Linux cycles, four compatible local canonical runs and
+one final syntax dispatch. New grants are exact-run/SHA and revoked in finally.
+Frozen Windows/U, all original evidence, #117 and external D1/integration gates
+remain preserved. STOP after CODE_REVIEW_R2_HANDOFF; no merge or publication.

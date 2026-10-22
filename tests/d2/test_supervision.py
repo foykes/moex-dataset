@@ -43,10 +43,63 @@ def serialized(value):
                        separators=(',', ':'), allow_nan=False) + '\n').encode('ascii')
 
 
+def assert_started_phase_truth(observation):
+    for row in observation['result']['workers'].values():
+        if row['started'] is True:
+            assert row['execution_state'] != 'NOT_STARTED'
+        elif row['started'] is None:
+            assert row['execution_state'] == 'UNKNOWN'
+        else:
+            assert row['execution_state'] == 'NOT_STARTED'
+    case = observation['case']
+    if case in {'checkpoint_missing', 'checkpoint_corrupt', 'checkpoint_oversize',
+                'hang_google', 'hang_ftp'}:
+        role = 'ftp' if case == 'hang_ftp' else 'google'
+        row = observation['result']['workers'][role]
+        assert row['started'] is True and row['execution_state'] == 'GO_RELEASED'
+        assert row['normal_return_observed'] is False
+        assert 'GO_ENTERED' in observation['worker_witnesses'][role]
+        assert any(item['commit_state'] == 'UNKNOWN' for item in row['outputs'])
+
+
+def assert_timeout_channel_truth(observation):
+    case = observation['case']
+    if case not in {'hang_google', 'hang_ftp'}:
+        return
+    hanging = 'google' if case == 'hang_google' else 'ftp'
+    healthy = 'ftp' if hanging == 'google' else 'google'
+    result = observation['result']
+    assert result['workers'][healthy]['timed_out'] is False
+    assert result['workers'][hanging]['timed_out'] is True
+    assert healthy not in result['failed_required_channels']
+    assert hanging in result['failed_required_channels']
+    outcomes = {row['worker_id']: row for row in observation['logging_outcomes']}
+    assert outcomes[healthy]['timed_out'] is False and outcomes[hanging]['timed_out'] is True
+
+
 def test_fixed_native_inventory_is_independent(guard):
     assert guard.D2_CASES == NATIVE_CASES
     assert guard.D2_BASELINE_CASES == BASELINE_CASES
     assert guard.D2_CONTROLLER_SECONDS == 75
+
+
+@pytest.mark.parametrize('case', ['timely', 'late_terminal', 'crossing_terminal', 'live_then_exit0', 'cleanup_exit0'])
+def test_per_worker_deadline_requires_actual_observation(upload, monkeypatch, case):
+    # Unit clock/process controls supplement, never replace, the real waitpid witness.
+    codes = iter([None, 0] if case == 'live_then_exit0' else [None] if case == 'cleanup_exit0' else [0])
+    stamps = iter([10.1, 10.2, 11.0, 11.1] if case == 'live_then_exit0' else
+                  [9.0, 9.1] if case in {'timely', 'cleanup_exit0'} else
+                  [9.9, 10.1] if case == 'crossing_terminal' else [10.1, 10.2])
+    item = {'process': types.SimpleNamespace(poll=lambda: next(codes)), 'deadline_state': 'UNOBSERVED'}
+    monkeypatch.setattr(upload, 'time', types.SimpleNamespace(monotonic=lambda: next(stamps)))
+    upload._d2_observe_process(item, 10.0)
+    if case == 'live_then_exit0':
+        assert upload._d2_observe_process(item, 10.0) == 0
+    elif case == 'cleanup_exit0':
+        item['process'].returncode = 0  # Settlement outside supervision cannot prove its timing.
+    expected = False if case == 'timely' else True if case == 'live_then_exit0' else None
+    assert upload._d2_worker_timeout(item, True) is expected
+    assert upload._d2_worker_timeout(item, False) is False
 
 
 @pytest.mark.native
@@ -83,6 +136,8 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
                 assert all(row['exitcode'] == 0 for row in actual)
         return
     result = observation['result']
+    assert_started_phase_truth(observation)
+    assert_timeout_channel_truth(observation)
     assert result['committed_outputs'] == []
     assert set(result['workers']) == {'google', 'ftp'}
     assert all(worker['required'] is True for worker in result['workers'].values())
@@ -210,6 +265,25 @@ def test_native_case(case, guard, repo, native_scratch, native_results):
         assert observation['cleanup_requested'] is True
         assert observation['target_entered_before_deadline'] is True
         assert observation['parent_elapsed_seconds'] >= 15
+    if case in {'hang_google', 'hang_ftp'}:
+        hanging = 'google' if case == 'hang_google' else 'ftp'
+        healthy = 'ftp' if hanging == 'google' else 'google'
+        events = observation['deadline_observations']
+        timely = [row for row in events if row['worker_id'] == healthy and row['state'] == 'EXIT_OBSERVED']
+        late_live = [row for row in events if row['worker_id'] == hanging and row['state'] == 'LIVE_AFTER_DEADLINE']
+        assert len(timely) == len(late_live) == 1
+        assert timely[0]['exitcode'] == 0 and timely[0]['after_ns'] < timely[0]['deadline_ns']
+        assert late_live[0]['exitcode'] is None and late_live[0]['before_ns'] >= late_live[0]['deadline_ns']
+        assert all(row['pid'] == by_role[row['worker_id']]['pid'] for row in events)
+        baseline = observation['timeout_baseline']
+        assert baseline['boundary'] == 'BEFORE_CLEANUP'
+        assert baseline['source_sha256'] == 'bb34634018373ebdf89d386fd9d002ad767d161f90d9cec981532a9c671e154b'
+        assert baseline['healthy_worker'] == healthy and baseline['healthy_pid'] == by_role[healthy]['pid']
+        assert baseline['healthy_registered'] is True
+        assert baseline['actual_exitcode'] == 0 and baseline['observed_ns'] >= late_live[0]['deadline_ns']
+        assert baseline['global_deadline_detected'] is True
+        assert baseline['old_worker_timed_out'] is baseline['old_flog_timed_out'] is True
+        assert baseline['old_truth_assertion_red'] is True
     if case == 'cleanup_unsettled':
         assert any(not worker['settled'] for worker in result['workers'].values())
         assert persisted is None

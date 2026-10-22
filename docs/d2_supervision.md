@@ -79,6 +79,15 @@ its separate ten-second budget. Blocking native construction or OS I/O prevents
 an absolute 3600-second wall-clock guarantee. A live or unsettled worker excludes
 success even when a cleanup request was issued.
 
+The overall deadline and each worker's timeout are separate observations. An
+actual terminal poll completed before the deadline proves that worker timely.
+An actual live poll begun at/after expiry proves its missed deadline. A first
+late or crossing terminal observation proves neither: `timed_out` remains null,
+the worker cannot succeed and its unknown boolean F-LOG outcome is not invented.
+TERM/KILL settlement, including a later exit zero, never upgrades timing proof.
+The healthy sibling keeps `timed_out=false` in both D2 and F-LOG and is not a
+failed channel merely because its peer exhausted the common budget.
+
 Closed native D2 fixtures use a validated 15-second work profile and a 75-second
 outer containment watchdog. The outer lane remains bounded to 900 seconds.
 There is no arbitrary CLI deadline override. A hang passes its negative oracle
@@ -101,6 +110,15 @@ Readers use bounded regular-file reads with no-follow and inode/owner/link
 checks. Replacement failure is nonzero; it does not authorize a rename adapter,
 foreign-reader bypass or silent retry. Missing, corrupt, partial, oversize,
 stale-run/attempt/PID/sequence/token and leftover evidence fail closed.
+
+Parent `execution_state` retains the last proved phase: `STARTED` after an
+actual process owner, `READY` after checkpoint validation, and `GO_RELEASED`
+only after that worker's successful GO pipe write. GO_RELEASED proves delivery
+to the pipe, not worker consumption or remote mutation. Missing/invalid or
+nonterminal final evidence retains that phase with unknown terminal outcome,
+never NOT_STARTED or invented RETURNED. Unknown constructor birth is UNKNOWN;
+only proved non-start is NOT_STARTED. A valid terminal checkpoint is required
+for RETURNED/FAILED/INTERRUPTED and normal-return evidence.
 
 | Observation | Meaning |
 |---|---|

@@ -1223,6 +1223,28 @@ def _d2_settle(children, *, deadline=None):
             time.sleep(.05)
 
 
+def _d2_observe_process(item, deadline):
+    # Bracket the actual poll. A late terminal observation does not establish
+    # when the OS exit happened; cleanup must never upgrade that timing proof.
+    before = time.monotonic()
+    code = item['process'].poll()
+    after = time.monotonic()
+    if item.get('deadline_state', 'UNOBSERVED') == 'UNOBSERVED':
+        if code is not None and after < deadline:
+            item['deadline_state'] = 'SETTLED_BEFORE_DEADLINE'
+        elif code is None and before >= deadline:
+            item['deadline_state'] = 'LIVE_AT_DEADLINE'
+    return code
+
+
+def _d2_worker_timeout(item, deadline_detected):
+    if not deadline_detected or item.get('deadline_state') == 'SETTLED_BEFORE_DEADLINE':
+        return False
+    if item.get('deadline_state') == 'LIVE_AT_DEADLINE':
+        return True
+    return None  # No observation proves either timeliness or a live deadline miss.
+
+
 def _d2_release_go(runtime, children):
     import run_logging
     _d2_check_tracker(runtime)
@@ -1233,7 +1255,9 @@ def _d2_release_go(runtime, children):
     # _d2_read_checkpoint uses context-managed readers. No reader survives GO.
     runtime.go_released = True  # The first successful write may already release mutation.
     for item in children:
-        os.write(item['go'], b'G')
+        if os.write(item['go'], b'G') != 1:
+            raise _d2_error('D2_GO_WRITE_FAILED')
+        item['go_sent'] = True
         runtime.close_fd(item['go'])
 
 
@@ -1282,7 +1306,8 @@ def _d2_supervise(session, plan, runtime, result_sink):
     try:
         for index, role in enumerate(('google', 'ftp')):
             item = dict(role=role, process=None, pidfd=None, identity=None, birth_attempted=False,
-                        ready=None, go=None, bootstrap=None, witness=None, ready_record=None)
+                        ready=None, go=None, bootstrap=None, witness=None, ready_record=None,
+                        go_sent=False, deadline_state='UNOBSERVED')
             runtime.children.append(item)
             if runtime.case == 'start_' + role + '_before':
                 _d2_fault(runtime)
@@ -1354,7 +1379,7 @@ def _d2_supervise(session, plan, runtime, result_sink):
             if not run_logging.check_logging_health(session)['healthy']:
                 raise _d2_error('D2_LOGGING_INCOMPLETE')
             for item in list(pending):
-                if item['process'].poll() is not None:
+                if _d2_observe_process(item, runtime.deadline) is not None:
                     raise _d2_error('D2_CHILD_BEFORE_READY')
                 readable, _, _ = select.select([item['ready']], [], [], 0)
                 if readable:
@@ -1396,7 +1421,8 @@ def _d2_supervise(session, plan, runtime, result_sink):
         _d2_release_go(runtime, runtime.children)
         while True:
             _d2_check_tracker(runtime)
-            alive = [item for item in runtime.children if item['process'].poll() is None]
+            alive = [item for item in runtime.children
+                     if _d2_observe_process(item, runtime.deadline) is None]
             if not alive:
                 if time.monotonic() >= runtime.deadline:
                     runtime.deadline_detected = True
@@ -1415,6 +1441,16 @@ def _d2_supervise(session, plan, runtime, result_sink):
             time.sleep(.1)
     except BaseException as error:
         primary = error
+        if time.monotonic() >= runtime.deadline:
+            runtime.deadline_detected = True
+        # Capture per-worker timing before TERM/KILL/wait. Neither exit0 after
+        # cleanup nor a sibling's deadline is evidence about this worker.
+        for item in runtime.children:
+            if item['process'] is not None:
+                try:
+                    _d2_observe_process(item, runtime.deadline)
+                except BaseException:
+                    pass  # Preserve the primary error and still request owned cleanup.
         runtime.cleanup_requested = True
         _d2_settle(runtime.children)
     finally:
@@ -1428,7 +1464,9 @@ def _d2_supervise(session, plan, runtime, result_sink):
                 process.poll()
                 settled = process.returncode is not None
                 row.update(pid=process.pid, exitcode=process.returncode, settled=settled,
-                    alive=not settled, timed_out=runtime.deadline_detected,
+                    alive=not settled, timed_out=_d2_worker_timeout(item, runtime.deadline_detected),
+                    execution_state='GO_RELEASED' if item['go_sent'] else
+                        'READY' if item['ready_record'] is not None else 'STARTED',
                     cleanup_confirmed=settled, reaped=settled, process_identity=item['identity'],
                     pidfd_bound=item['pidfd'] is not None)
                 if settled and runtime.go_released:
@@ -1442,20 +1480,22 @@ def _d2_supervise(session, plan, runtime, result_sink):
                             'normal_return_observed', 'diagnostics_state', 'error_code', 'outputs')})
                         row['checkpoint_state'] = 'VALID'
                     except BaseException:
-                        row.update(checkpoint_state='INVALID', error_code='D2_CHECKPOINT_INVALID')
+                        row.update(checkpoint_state='INVALID', diagnostics_state='INCOMPLETE',
+                                   error_code='D2_CHECKPOINT_INVALID')
                         for output in row['outputs']:
                             output.update(transfer_state='UNKNOWN', commit_state='UNKNOWN')
             if attempted and process is None:
-                row.update(alive=True, error_code='D2_BIRTH_UNKNOWN')
+                row.update(alive=True, execution_state='UNKNOWN', error_code='D2_BIRTH_UNKNOWN')
                 _D2_UNSETTLED.append(item)
             if runtime.go_released and not row['settled']:
                 for output in row['outputs']:
                     output.update(transfer_state='UNKNOWN', commit_state='UNKNOWN')
-            if not (attempted and process is None) and role in session['_expected']:
+            if (not (attempted and process is None) and row['timed_out'] is not None
+                    and role in session['_expected']):
                 try:
                     run_logging.record_worker_outcome(session, role, started=process is not None,
                         exit_status=process.returncode if process is not None else None,
-                        timed_out=runtime.deadline_detected and process is not None)
+                        timed_out=row['timed_out'])
                 except BaseException:
                     if primary is None:
                         primary = _d2_error('D2_LOGGING_INCOMPLETE')
