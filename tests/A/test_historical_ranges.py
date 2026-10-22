@@ -1139,3 +1139,1434 @@ def test_linux_checkpoint_proven_namespace_stale_sample_has_no_get(gathering, mo
         with pytest.raises(ValueError, match='A3_ISS_RANGE_CAPACITY_EXCEEDED'):
             gathering._a3_history('SBER', 'Акции', '2024-03-01', '2024-03-02', 24)
     assert calls == [] and writers == []
+
+
+# F07 committed diagnostic helpers: explicit offline transport only.
+# Origin SHA256: 052f3e6b51f1f5f19c749cf86dee16ec9ba331463d524812dd4323943e56f89a.
+# Plain helpers are prefixed here to preserve the original historical tests;
+# the actual product is loaded in full from its canonical admitted source file.
+import base64 as _f07_base64
+from contextlib import contextmanager as _f07_contextmanager
+from datetime import date as _f07_date
+import importlib.util as _f07_importlib
+import csv as _f07_csv
+import numbers as _f07_numbers
+import sys as _f07_sys
+import uuid as _f07_uuid
+
+_F07_LIMITS = dict(seconds=2700, gets=512, bytes=134217728, rows=250000,
+              frame_bytes=134217728, evidence_bytes=268435456,
+              body_bytes=8388608)
+_F07_ROLES = ("REFERENCE_BEFORE", "CANDIDATE", "REFERENCE_AFTER")
+_F07_CASES = tuple(
+    dict(ticker=ticker, interval=interval, from_date=bounds[0], till_date=bounds[1])
+    for ticker in ("SBER", "MOEX")
+    for interval, bounds in (
+        (24, ("2023-02-27", "2024-03-02")),
+        (60, ("2023-02-27", "2024-03-02")),
+        (10, ("2024-01-30", "2024-03-02")),
+        (1, ("2024-02-23", "2024-03-02")),
+    )
+)
+
+
+def _f07_encoded(value):
+    return json.dumps(value, ensure_ascii=True, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _f07_digest(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def _f07_annotate(primary, label):
+    try:
+        primary.add_note(label)
+    except BaseException:
+        pass
+
+
+class _F07Refusal(ValueError):
+    pass
+
+
+class _F07Sink:
+    """One new private root; every output byte reserves the same finite quota.
+
+    Reservation is monotone even on partial writes. Complete sealing requires
+    actual bytes == reserved bytes, a known file inventory and matching hashes.
+    Source code, old evidence and arbitrary external files are never imported.
+    """
+    def __init__(self, root, quota, writer=None):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=False)
+        self.quota = quota
+        self.reserved = 0
+        self.files = {}
+        self.failed = False
+        self.writer = writer or (lambda stream, data: stream.write(data))
+
+    def reserve(self, size):
+        if self.failed or size < 0 or self.reserved + size > self.quota:
+            self.failed = True
+            raise _F07Refusal("F07_TOTAL_EVIDENCE_CAPACITY")
+        self.reserved += size
+
+    def write(self, name, data, *, reserved=False):
+        if self.failed or Path(name).name != name or name in self.files:
+            self.failed = True
+            raise _F07Refusal("F07_EVIDENCE_STATE_OR_PATH")
+        if not reserved:
+            self.reserve(len(data))
+        path = self.root / name
+        try:
+            with path.open("xb") as stream:
+                amount = self.writer(stream, data)
+                if amount != len(data):
+                    raise OSError("F07_SHORT_EVIDENCE_WRITE")
+                stream.flush()
+            if path.is_symlink() or path.stat().st_size != len(data):
+                raise OSError("F07_EVIDENCE_SIZE_MISMATCH")
+            if _f07_digest(path.read_bytes()) != _f07_digest(data):
+                raise OSError("F07_EVIDENCE_HASH_MISMATCH")
+            self.files[name] = dict(bytes=len(data), sha256=_f07_digest(data))
+        except BaseException:
+            self.failed = True
+            raise
+
+    def audit(self):
+        if self.failed:
+            raise _F07Refusal("F07_EVIDENCE_PREVIOUS_FAILURE")
+        actual = list(self.root.iterdir())
+        if {path.name for path in actual} != set(self.files):
+            self.failed = True
+            raise _F07Refusal("F07_EVIDENCE_INVENTORY_MISMATCH")
+        size = 0
+        for path in actual:
+            fact = self.files[path.name]
+            if (path.is_symlink() or not path.is_file()
+                    or path.stat().st_size != fact["bytes"]
+                    or _f07_digest(path.read_bytes()) != fact["sha256"]):
+                self.failed = True
+                raise _F07Refusal("F07_EVIDENCE_CONTENT_MISMATCH")
+            size += fact["bytes"]
+        if size != self.reserved or size > self.quota:
+            self.failed = True
+            raise _F07Refusal("F07_EVIDENCE_ACCOUNTING_MISMATCH")
+        return size
+
+
+class _F07Harness:
+    def __init__(self, root, *, limits=None, clock=time.monotonic, writer=None):
+        self.limits = dict(_F07_LIMITS if limits is None else limits)
+        if set(self.limits) != set(_F07_LIMITS) or any(
+                (not isinstance(value, (int, float)) if name == "seconds" else type(value) is not int)
+                or isinstance(value, bool) or not math.isfinite(value)
+                or value <= 0 or value > _F07_LIMITS[name]
+                for name, value in self.limits.items()):
+            raise _F07Refusal("F07_LIMITS_MUST_NOT_EXCEED_APPROVED_PROTOCOL")
+        self.clock = clock
+        self.started = clock()
+        self.sink = _F07Sink(root, self.limits["evidence_bytes"], writer)
+        self.used = dict(gets=0, bytes=0, rows=0)
+        self.attempts = {role: 0 for role in _F07_ROLES}
+        self.records = []
+        self.active = None
+        self.failed = False
+        self.sealed = False
+
+    def check(self):
+        if self.failed or self.sealed or self.sink.failed:
+            raise _F07Refusal("F07_CAPTURE_NOT_ACTIVE")
+        if self.clock() - self.started >= self.limits["seconds"]:
+            self.failed = True
+            raise TimeoutError("F07_DEADLINE")
+
+    def admit_rows(self, amount, *, frame_bytes=0):
+        self.check()
+        if (not isinstance(amount, int) or amount < 0
+                or self.used["rows"] + amount > self.limits["rows"]
+                or frame_bytes < 0 or frame_bytes > self.limits["frame_bytes"]):
+            self.failed = True
+            raise _F07Refusal("F07_ROWS_OR_FRAME_CAPACITY")
+        self.used["rows"] += amount
+
+    def get(self, role, request, case, start, *, attempt=1, request_bounds=None, **kwargs):
+        """Call injected request(case,start,**kwargs), never requests.get itself.
+
+        All retry attempts and terminal requests use this method. Policy (retry,
+        HTTPS, endpoints, 3s success sleep, native exception) stays with the caller.
+        A response body is accessible only through bounded .raw.read().
+        """
+        self.check()
+        if (role not in _F07_ROLES or case not in _F07_CASES or type(start) is not int
+                or start < 0 or type(attempt) is not int or attempt < 1
+                or self.active is not None):
+            self.failed = True
+            raise _F07Refusal("F07_ATTEMPT_SCOPE_OR_UNCLOSED_RESPONSE")
+        bounds = dict(from_date=case['from_date'], till_date=case['till_date']) if request_bounds is None else request_bounds
+        if (type(bounds) is not dict or set(bounds) != {'from_date', 'till_date'}
+                or any(type(value) is not str for value in bounds.values())
+                or not case['from_date'] <= bounds['from_date'] <= bounds['till_date'] <= case['till_date']):
+            self.failed = True
+            raise _F07Refusal('F07_ATTEMPT_REQUEST_BOUNDS')
+        if self.used["gets"] >= self.limits["gets"]:
+            self.failed = True
+            raise _F07Refusal("F07_GET_CAPACITY")
+        # Physical attempts are charged before invoking even a failing transport.
+        self.used["gets"] += 1
+        self.attempts[role] += 1
+        record = dict(role=role, case=dict(case), start=start, attempt=attempt,
+                      ordinal=self.used["gets"], status=None, codec=None,
+                      request_bounds=dict(bounds),
+                      captured_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                      terminal=False, body_complete=False, body_sha256=None, body_bytes=0,
+                      source_error_type=None)
+        try:
+            response = request(case, start, **kwargs)
+        except BaseException as primary:
+            record["source_error_type"] = type(primary).__name__
+            try:
+                self._retain(record, b"")
+            except BaseException:
+                _f07_annotate(primary, "F07_SECONDARY_EVIDENCE_FAILED")
+            raise
+        try:
+            wrapped = _F07Response(self, response, record)
+        except BaseException as primary:
+            record["source_error_type"] = type(primary).__name__
+            try:
+                response.close()
+            except BaseException:
+                _f07_annotate(primary, "F07_SECONDARY_NATIVE_CLOSE_FAILED")
+            try:
+                self._retain(record, b"")
+            except BaseException:
+                _f07_annotate(primary, "F07_SECONDARY_EVIDENCE_FAILED")
+            raise
+        self.active = wrapped
+        return wrapped
+
+    def _retain(self, record, body):
+        record = dict(record, body_bytes=len(body), body_sha256=_f07_digest(body))
+        # Both raw and its encoded duplicate are retained and charged. No
+        # convenient raw-body-only approximation may substitute for byte totals.
+        envelope = _f07_encoded(dict(record, body_base64=_f07_base64.b64encode(body).decode("ascii")))
+        prefix = f"attempt-{record['ordinal']:04d}"
+        self.sink.reserve(len(body) + len(envelope))
+        self.sink.write(prefix + ".body", body, reserved=True)
+        self.sink.write(prefix + ".json", envelope, reserved=True)
+        self.records.append(record)
+
+    def seal(self):
+        self.check()
+        if self.active is not None or len(self.records) != self.used["gets"]:
+            self.failed = True
+            raise _F07Refusal("F07_INCOMPLETE_ATTEMPT_INVENTORY")
+        self.sink.audit()
+        manifest = _f07_encoded(dict(payload_files=self.sink.files, used=self.used,
+                                attempts=self.attempts, records=self.records))
+        receipt = dict(status="CAPTURE_RECORDED_NOT_ACCEPTANCE",
+                       source_acceptance="NOT_VERIFIED", live_authority="NOT_GRANTED_BY_ARTIFACT",
+                       manifest_sha256=_f07_digest(manifest), used=self.used,
+                       attempts=self.attempts, files=len(self.sink.files) + 2,
+                       evidence_bytes=0)
+        while True:
+            data = _f07_encoded(receipt)
+            final_size = self.sink.reserved + len(manifest) + len(data)
+            if receipt["evidence_bytes"] == final_size:
+                break
+            receipt["evidence_bytes"] = final_size
+        # Reserve BOTH final outputs before either write. The receipt has no
+        # COMPLETE label; only the returned result follows the final audit.
+        self.sink.reserve(len(manifest) + len(data))
+        self.sink.write("manifest.json", manifest, reserved=True)
+        self.sink.write("receipt.json", data, reserved=True)
+        actual = self.sink.audit()
+        self.check()
+        self.sealed = True
+        return dict(status="OFFLINE_ACCOUNTED_CAPTURE_COMPLETE_SOURCE_UNVERIFIED",
+                    evidence_bytes=actual, files=len(self.sink.files),
+                    manifest_sha256=_f07_digest(manifest), receipt_sha256=_f07_digest(data),
+                    used=dict(self.used), attempts=dict(self.attempts))
+
+    def run(self, work):
+        """No partial result. Native/source primary wins over evidence cleanup.
+
+        work(harness) is trusted diagnostic orchestration using injected sessions.
+        Successful returned work alone is insufficient: sealing must also pass.
+        """
+        try:
+            result = work(self)
+            seal = self.seal()
+            return result, seal
+        except BaseException as primary:
+            self.failed = True
+            if self.active is not None:
+                try:
+                    self.active.close(primary=primary)
+                except BaseException:
+                    _f07_annotate(primary, "F07_SECONDARY_CLOSE_OR_EVIDENCE_FAILED")
+            # No success receipt is returned or written. Partial files remain in
+            # this new root; the native caller retains its failure externally.
+            raise
+
+
+class _F07Response:
+    def __init__(self, harness, response, record):
+        self.harness, self.response, self.record = harness, response, record
+        self.status_code = response.status_code
+        self.headers = response.headers
+        self.encoding = response.encoding
+        self.record.update(status=self.status_code, codec=self.encoding)
+        self.raw = _F07RawBody(self)
+        self.body = bytearray()
+        self.closed = False
+        self.eof = False
+        self.read_primary = None
+
+    def read(self, amount, *, decode_content=False):
+        self.harness.check()
+        if self.closed or type(amount) is not int or amount <= 0 or decode_content:
+            self.harness.failed = True
+            raise _F07Refusal("F07_BOUNDED_IDENTITY_READ_REQUIRED")
+        available = self.harness.limits["bytes"] - self.harness.used["bytes"]
+        if available <= 0:
+            self.harness.failed = True
+            raise _F07Refusal("F07_RETURNED_BYTES_CAPACITY")
+        take = min(amount, 65536, available,
+                   self.harness.limits["body_bytes"] - len(self.body) + 1)
+        if take <= 0:
+            self.harness.failed = True
+            raise _F07Refusal("F07_BODY_CAPACITY")
+        try:
+            part = self.response.raw.read(take, decode_content=False)
+        except BaseException as primary:
+            # A2 may keep this error in a local and close outside its except
+            # block. sys.exception() then cannot identify the pending source
+            # fault; retain its exact identity without declaring capture failed.
+            self.read_primary = primary
+            self.record['source_error_type'] = type(primary).__name__
+            self.record['read_failed'] = True
+            raise
+        if not isinstance(part, bytes) or len(part) > take:
+            self.harness.failed = True
+            raise _F07Refusal("F07_TRANSPORT_READ_CONTRACT")
+        self.harness.used["bytes"] += len(part)
+        self.body.extend(part)
+        if len(self.body) > self.harness.limits["body_bytes"]:
+            self.harness.failed = True
+            raise _F07Refusal("F07_BODY_CAPACITY")
+        self.eof = not part
+        return part
+
+    def mark_terminal(self):
+        # Parser, not empty transport body, decides that candles has zero rows.
+        if not self.eof:
+            self.harness.failed = True
+            raise _F07Refusal("F07_TERMINAL_BEFORE_BODY_COMPLETE")
+        self.record["terminal"] = True
+
+    def raise_for_status(self):
+        return self.response.raise_for_status()
+
+    def close(self, *, primary=None):
+        if self.closed:
+            return
+        # Native callers close in finally: preserve the exception currently
+        # propagating even when the caller did not pass it explicitly.
+        if primary is None:
+            primary = _f07_sys.exception()
+        self.closed = True
+        observed_read_only = primary is None and self.read_primary is not None
+        pending = self.read_primary if observed_read_only else primary
+        cleanup_failed = False
+        self.record["body_complete"] = self.eof
+        if pending is not None:
+            self.record["source_error_type"] = type(pending).__name__
+        elif self.status_code == 200 and not self.eof:
+            pending = _F07Refusal("F07_SUCCESS_BODY_NOT_COMPLETE")
+        try:
+            self.response.close()
+        except BaseException as close_error:
+            cleanup_failed = True
+            if pending is None:
+                pending = close_error
+                self.record["source_error_type"] = type(close_error).__name__
+            else:
+                _f07_annotate(pending, "F07_SECONDARY_NATIVE_CLOSE_FAILED")
+        try:
+            self.harness._retain(self.record, bytes(self.body))
+        except BaseException as evidence_error:
+            cleanup_failed = True
+            if pending is None:
+                pending = evidence_error
+            else:
+                _f07_annotate(pending, "F07_SECONDARY_EVIDENCE_FAILED")
+        finally:
+            self.harness.active = None
+            self.body.clear()
+        if pending is not None and pending is not primary:
+            # The real caller already owns the read error. A clean close must
+            # return normally so its existing retry policy remains effective.
+            # Secondary cleanup/evidence failure still signals that same error
+            # to native A2, which stops rather than starting another GET.
+            if observed_read_only and not cleanup_failed:
+                return
+            self.harness.failed = True
+            raise pending
+
+
+class _F07RawBody:
+    def __init__(self, response):
+        self.response = response
+        # Preserve the original multi-occurrence header object. Flattened
+        # response.headers is not a native raw-header proof.
+        self.headers = response.response.raw.headers
+
+    def read(self, amount, decode_content=False):
+        return self.response.read(amount, decode_content=decode_content)
+
+    def close(self):
+        return self.response.close()
+
+    def release_conn(self):
+        return self.response.response.raw.release_conn()
+
+
+class _F07CaseSession:
+    """Explicit session facade. Adds no source-access or runtime authority."""
+    def __init__(self, harness, role, case, session):
+        if role not in _F07_ROLES or case not in _F07_CASES:
+            raise _F07Refusal("F07_SESSION_SCOPE")
+        self.harness, self.role = harness, role
+        self.case, self.session = dict(case), session
+        self.attempts = {}
+
+    def get(self, url, **kwargs):
+        self.harness.check()
+        try:
+            parts = urlsplit(url)
+            params = parse_qs(parts.query, keep_blank_values=True, strict_parsing=True)
+            expected_path = ("/iss/engines/stock/markets/shares/securities/"
+                             + self.case["ticker"] + "/candles.csv")
+            valid = (parts.scheme == "https" and parts.netloc == "iss.moex.com"
+                     and not parts.fragment and parts.path == expected_path
+                     and set(kwargs) <= {"headers", "timeout", "verify", "allow_redirects", "stream"}
+                     and set(params) == {"from", "till", "interval", "start"}
+                     and all(len(value) == 1 for value in params.values())
+                     and params["interval"] == [str(self.case["interval"])]
+                     and 1 <= len(params["start"][0]) <= 10
+                     and params["start"][0].isascii() and params["start"][0].isdigit()
+                     and kwargs.get("verify") is True
+                     and kwargs.get("allow_redirects") is False
+                     and kwargs.get("stream") is True)
+            if valid:
+                lower, upper = params["from"][0], params["till"][0]
+                valid = (_f07_date.fromisoformat(lower).isoformat() == lower
+                         and _f07_date.fromisoformat(upper).isoformat() == upper
+                         and self.case["from_date"] <= lower <= upper <= self.case["till_date"])
+            if not valid:
+                raise ValueError("scope")
+        except (ValueError, TypeError, KeyError):
+            self.harness.failed = True
+            raise _F07Refusal("F07_ENDPOINT_BOUNDARY") from None
+        attempt = self.attempts.get(url, 0) + 1
+        self.attempts[url] = attempt
+        return self.harness.get(self.role, lambda case, start: self.session.get(url, **kwargs),
+                                self.case, int(params["start"][0]), attempt=attempt,
+                                request_bounds=dict(from_date=lower, till_date=upper))
+
+
+class _F07RequestsFacade:
+    """Only the candle path's get and original exception identities are exposed."""
+    def __init__(self, session, original):
+        self.get = session.get
+        self.exceptions = original.exceptions
+        self.Timeout = original.Timeout
+
+
+@_f07_contextmanager
+def _f07_candidate_requests(namespace, session):
+    """Bind only an approved fresh fixture namespace, never global requests.get.
+
+    Loading/source admission is external. Real data_gathering module globals and
+    the requests module dictionary are rejected. The namespace must already have
+    exact admitted definitions, with a distinct _f07_candidate_* module name.
+    """
+    if (not isinstance(namespace, dict)
+            or not str(namespace.get("__name__", "")).startswith("_f07_candidate_")
+            or "requests" not in namespace):
+        raise _F07Refusal("F07_OWNED_FIXTURE_NAMESPACE_REQUIRED")
+    original = namespace["requests"]
+    if namespace is getattr(original, "__dict__", None):
+        raise _F07Refusal("F07_GLOBAL_REQUESTS_NAMESPACE_FORBIDDEN")
+    facade = _F07RequestsFacade(session, original)
+    namespace["requests"] = facade
+    try:
+        yield facade
+    finally:
+        primary = _f07_sys.exception()
+        if namespace.get("requests") is not facade:
+            session.harness.failed = True
+            if primary is None:
+                raise _F07Refusal("F07_FIXTURE_BINDING_DRIFT")
+            _f07_annotate(primary, "F07_FIXTURE_BINDING_DRIFT")
+        else:
+            namespace["requests"] = original
+
+
+
+class _F07LiteralReply:
+    def __init__(self, body=b"", *, status=200, error=None):
+        self.raw = self
+        self.stream = io.BytesIO(body)
+        self.status_code = status
+        self.headers = {"Content-Type": "text/csv"}
+        self.encoding = "utf-8"
+        self.error = error
+        self.closed = False
+
+    def read(self, amount, decode_content=False):
+        if self.error is not None:
+            raise self.error
+        return self.stream.read(amount)
+
+    def close(self):
+        self.closed = True
+
+    def release_conn(self):
+        return "released"
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise OSError("literal HTTP fault", self.status_code)
+
+
+def _f07_consume(harness, role, request, *, case=_F07_CASES[0], start=0, attempt=1, terminal=False):
+    response = harness.get(role, request, case, start, attempt=attempt)
+    chunks = []
+    try:
+        while True:
+            part = response.raw.read(65536, decode_content=False)
+            if not part:
+                break
+            chunks.append(part)
+        if terminal:
+            response.mark_terminal()
+        return b"".join(chunks)
+    finally:
+        response.close()
+
+
+def test_f07_accounting_eight_cases_literal_dates_no_source_acceptance(tmp_path):
+    assert [(c["ticker"], c["interval"], c["from_date"], c["till_date"]) for c in _F07_CASES] == [
+        ("SBER", 24, "2023-02-27", "2024-03-02"),
+        ("SBER", 60, "2023-02-27", "2024-03-02"),
+        ("SBER", 10, "2024-01-30", "2024-03-02"),
+        ("SBER", 1, "2024-02-23", "2024-03-02"),
+        ("MOEX", 24, "2023-02-27", "2024-03-02"),
+        ("MOEX", 60, "2023-02-27", "2024-03-02"),
+        ("MOEX", 10, "2024-01-30", "2024-03-02"),
+        ("MOEX", 1, "2024-02-23", "2024-03-02"),
+    ]
+    h = _F07Harness(tmp_path / "capture")
+    def work(current):
+        for case in _F07_CASES:
+            for role in _F07_ROLES:
+                _f07_consume(current, role, lambda *_: _F07LiteralReply(b"literal"), case=case, terminal=True)
+        return "observed offline only"
+    result, seal = h.run(work)
+    assert result == "observed offline only"
+    assert seal["used"] == {"gets": 24, "bytes": 168, "rows": 0}
+    assert seal["attempts"] == {role: 8 for role in _F07_ROLES}
+    assert seal["files"] == 50
+    receipt = json.loads((h.sink.root / "receipt.json").read_bytes())
+    assert receipt["source_acceptance"] == "NOT_VERIFIED"
+    assert receipt["status"] == "CAPTURE_RECORDED_NOT_ACCEPTANCE"
+    assert receipt["evidence_bytes"] == sum(p.stat().st_size for p in h.sink.root.iterdir())
+
+
+def test_f07_accounting_raw_and_base64_envelope_and_final_files_share_exact_quota(tmp_path):
+    h = _F07Harness(tmp_path / "capture")
+    h.run(lambda current: _f07_consume(current, "CANDIDATE", lambda *_: _F07LiteralReply(b"abc"), terminal=True))
+    body = (h.sink.root / "attempt-0001.body").read_bytes()
+    envelope_bytes = (h.sink.root / "attempt-0001.json").read_bytes()
+    envelope = json.loads(envelope_bytes)
+    assert body == b"abc" and envelope["body_base64"] == "YWJj"
+    assert _f07_base64.b64decode(envelope["body_base64"]) == b"abc"
+    assert h.sink.reserved == sum(p.stat().st_size for p in h.sink.root.iterdir())
+    assert h.sink.reserved > 3 + 4 + len(envelope_bytes)
+    assert set(h.sink.files) == {"attempt-0001.body", "attempt-0001.json", "manifest.json", "receipt.json"}
+
+
+@pytest.mark.parametrize("body", [b"", b"abc"])
+def test_f07_accounting_empty_body_metadata_and_base64_refuse_raw_only_budget(tmp_path, body):
+    limits = dict(_F07_LIMITS, evidence_bytes=max(1, len(body)))
+    h = _F07Harness(tmp_path / "capture", limits=limits)
+    with pytest.raises(_F07Refusal, match="F07_TOTAL_EVIDENCE_CAPACITY"):
+        h.run(lambda current: _f07_consume(current, "CANDIDATE", lambda *_: _F07LiteralReply(body)))
+    assert not h.sealed
+    assert not (h.sink.root / "receipt.json").exists()
+
+
+def test_f07_accounting_final_manifest_receipt_must_also_fit(tmp_path):
+    first = _F07Harness(tmp_path / "first")
+    _f07_consume(first, "CANDIDATE", lambda *_: _F07LiteralReply(b"abc"))
+    payload_size = first.sink.reserved
+    limits = dict(_F07_LIMITS, evidence_bytes=payload_size)
+    h = _F07Harness(tmp_path / "second", limits=limits)
+    with pytest.raises(_F07Refusal, match="F07_TOTAL_EVIDENCE_CAPACITY"):
+        h.run(lambda current: _f07_consume(current, "CANDIDATE", lambda *_: _F07LiteralReply(b"abc")))
+    assert not h.sealed
+    assert not (h.sink.root / "manifest.json").exists()
+    assert not (h.sink.root / "receipt.json").exists()
+
+
+@pytest.mark.parametrize("physical_count", [512, 513])
+def test_f07_accounting_exact_512_aggregate_candidate_references_retry_and_terminal(tmp_path, physical_count):
+    h = _F07Harness(tmp_path / "capture")
+    calls = []
+    def request(case, start):
+        calls.append(start)
+        return _F07LiteralReply(b"", status=503 if len(calls) == 1 else 200)
+    def work(current):
+        for i in range(physical_count):
+            role = _F07_ROLES[i % 3]
+            _f07_consume(current, role, request, start=i, attempt=2 if i == 1 else 1, terminal=i == 511)
+    if physical_count == 513:
+        with pytest.raises(_F07Refusal, match="F07_GET_CAPACITY"):
+            h.run(work)
+        assert not h.sealed and not (h.sink.root / "receipt.json").exists()
+    else:
+        _, seal = h.run(work)
+        assert seal["used"]["gets"] == 512 and h.sealed
+    assert len(calls) == 512
+    assert h.used == {"gets": 512, "bytes": 0, "rows": 0}
+    assert h.attempts == {"REFERENCE_BEFORE": 171, "CANDIDATE": 171, "REFERENCE_AFTER": 170}
+    assert h.records[0]["status"] == 503
+    assert h.records[1]["attempt"] == 2
+    assert h.records[-1]["terminal"] is True
+    assert len(calls) == 512  # 513 refuses BEFORE another transport call
+
+
+def test_f07_accounting_failed_transport_attempt_charged_before_call_and_no_partial_return(tmp_path):
+    h = _F07Harness(tmp_path / "capture")
+    primary = OSError("source fault", 37)
+    calls = []
+    def request(*_):
+        calls.append(h.used["gets"])
+        raise primary
+    with pytest.raises(OSError) as caught:
+        h.run(lambda current: current.get("CANDIDATE", request, _F07_CASES[0], 0))
+    assert caught.value is primary and caught.value.args == ("source fault", 37)
+    assert calls == [1] and h.used["gets"] == 1
+    assert h.records[0]["source_error_type"] == "OSError"
+    assert not h.sealed and not (h.sink.root / "receipt.json").exists()
+
+
+def test_f07_accounting_native_attempt_fault_can_follow_existing_retry_policy(tmp_path):
+    h = _F07Harness(tmp_path / "capture")
+    primary = TimeoutError("same retry primary", 180)
+    observed = []
+    def request(*_):
+        observed.append(h.used["gets"])
+        if len(observed) == 1:
+            raise primary
+        return _F07LiteralReply(b"literal")
+    def work(current):
+        try:
+            current.get("CANDIDATE", request, _F07_CASES[0], 0)
+        except TimeoutError as caught:
+            assert caught is primary and caught.args == ("same retry primary", 180)
+        assert not current.failed
+        return _f07_consume(current, "CANDIDATE", request, attempt=2, terminal=True)
+    result, seal = h.run(work)
+    assert result == b"literal" and observed == [1, 2]
+    assert seal["used"] == {"gets": 2, "bytes": 7, "rows": 0}
+    assert h.records[0]["source_error_type"] == "TimeoutError"
+    assert h.records[1]["attempt"] == 2 and h.records[1]["terminal"]
+
+
+def test_f07_accounting_read_fault_native_primary_survives_secondary_evidence_failure(tmp_path):
+    primary = TimeoutError("original native", 180)
+    def failing_writer(stream, data):
+        stream.write(data[:1])
+        raise OSError("secondary evidence failure")
+    h = _F07Harness(tmp_path / "capture", writer=failing_writer)
+    def work(current):
+        response = current.get("CANDIDATE", lambda *_: _F07LiteralReply(error=primary), _F07_CASES[0], 0)
+        response.raw.read(3)
+        raise AssertionError("unreachable")
+    with pytest.raises(TimeoutError) as caught:
+        h.run(work)
+    assert caught.value is primary and caught.value.args == ("original native", 180)
+    assert not h.sealed and not (h.sink.root / "receipt.json").exists()
+
+
+def test_f07_accounting_native_finally_close_preserves_read_primary_object(tmp_path):
+    primary = TimeoutError("native finally primary", 180)
+    def failing_writer(stream, data):
+        raise OSError("secondary close evidence")
+    h = _F07Harness(tmp_path / "capture", writer=failing_writer)
+    with pytest.raises(TimeoutError) as caught:
+        h.run(lambda current: _f07_consume(current, "CANDIDATE", lambda *_: _F07LiteralReply(error=primary)))
+    assert caught.value is primary and primary.args == ("native finally primary", 180)
+    assert not h.sealed
+
+
+def test_f07_accounting_partial_evidence_write_is_failure_no_success_receipt(tmp_path):
+    def partial_writer(stream, data):
+        if data:
+            stream.write(data[:1])
+            return 1
+        return 0
+    h = _F07Harness(tmp_path / "capture", writer=partial_writer)
+    with pytest.raises(OSError, match="F07_SHORT_EVIDENCE_WRITE"):
+        h.run(lambda current: _f07_consume(current, "CANDIDATE", lambda *_: _F07LiteralReply(b"abcd")))
+    assert (h.sink.root / "attempt-0001.body").read_bytes() == b"a"
+    assert h.sink.reserved > 1 and h.sink.failed and not h.sealed
+    assert not (h.sink.root / "receipt.json").exists()
+
+
+@pytest.mark.parametrize("tamper", ["extra", "changed", "missing"])
+def test_f07_accounting_inventory_content_tamper_cannot_seal(tmp_path, tamper):
+    h = _F07Harness(tmp_path / "capture")
+    def work(current):
+        _f07_consume(current, "CANDIDATE", lambda *_: _F07LiteralReply(b"abc"))
+        body = current.sink.root / "attempt-0001.body"
+        if tamper == "extra":
+            (current.sink.root / "unaccounted").write_bytes(b"x")
+        elif tamper == "changed":
+            body.write_bytes(b"xyz")
+        else:
+            body.unlink()
+        return "must never return"
+    with pytest.raises(_F07Refusal, match="F07_EVIDENCE_(INVENTORY|CONTENT)_MISMATCH"):
+        h.run(work)
+    assert not h.sealed and not (h.sink.root / "receipt.json").exists()
+
+
+def test_f07_accounting_wire_body_rows_deadline_caps_and_no_next_transport(tmp_path):
+    calls = []
+    h = _F07Harness(tmp_path / "body", limits=dict(_F07_LIMITS, body_bytes=3))
+    def request(*_):
+        calls.append(1)
+        return _F07LiteralReply(b"abcd")
+    with pytest.raises(_F07Refusal, match="F07_BODY_CAPACITY"):
+        h.run(lambda current: _f07_consume(current, "CANDIDATE", request))
+    assert calls == [1] and h.used["bytes"] == 4 and not h.sealed
+    assert not (h.sink.root / "receipt.json").exists()
+    rows = _F07Harness(tmp_path / "rows", limits=dict(_F07_LIMITS, rows=1))
+    with pytest.raises(_F07Refusal, match="F07_ROWS_OR_FRAME_CAPACITY"):
+        rows.run(lambda current: current.admit_rows(2))
+    ticks = iter([0, 2700])
+    deadline = _F07Harness(tmp_path / "time", clock=lambda: next(ticks))
+    with pytest.raises(TimeoutError, match="F07_DEADLINE"):
+        deadline.run(lambda current: current.get("CANDIDATE", request, _F07_CASES[0], 0))
+    assert calls == [1] and deadline.used["gets"] == 0
+
+
+def test_f07_accounting_source_primary_after_prefix_suppresses_later_role_and_result(tmp_path):
+    h = _F07Harness(tmp_path / "capture")
+    primary = RuntimeError("late original", 9)
+    roles = []
+    def work(current):
+        roles.append("REFERENCE_BEFORE")
+        _f07_consume(current, roles[-1], lambda *_: _F07LiteralReply(b"exact raw 9007199254740993"))
+        raise primary
+    with pytest.raises(RuntimeError) as caught:
+        h.run(work)
+    assert caught.value is primary and primary.args == ("late original", 9)
+    assert roles == ["REFERENCE_BEFORE"] and h.used["gets"] == 1
+    assert not h.sealed and not (h.sink.root / "receipt.json").exists()
+
+
+def test_f07_accounting_no_multiple_unclosed_responses_or_unbounded_reads(tmp_path):
+    h = _F07Harness(tmp_path / "capture")
+    response = h.get("CANDIDATE", lambda *_: _F07LiteralReply(b"abc"), _F07_CASES[0], 0)
+    with pytest.raises(_F07Refusal, match="UNCLOSED_RESPONSE"):
+        h.get("REFERENCE_AFTER", lambda *_: _F07LiteralReply(), _F07_CASES[0], 0)
+    with pytest.raises(_F07Refusal, match="F07_SUCCESS_BODY_NOT_COMPLETE"):
+        response.close()
+    assert h.used["gets"] == 1 and h.failed
+    other = _F07Harness(tmp_path / "other")
+    response = other.get("CANDIDATE", lambda *_: _F07LiteralReply(b"abc"), _F07_CASES[0], 0)
+    with pytest.raises(_F07Refusal, match="F07_BOUNDED_IDENTITY_READ_REQUIRED"):
+        response.raw.read(-1)
+    with pytest.raises(_F07Refusal, match="F07_SUCCESS_BODY_NOT_COMPLETE"):
+        response.close()
+    assert other.used["gets"] == 1 and other.failed
+
+
+_F07_URL = ("https://iss.moex.com/iss/engines/stock/markets/shares/securities/SBER/"
+       "candles.csv?from=2023-02-27&till=2024-03-02&interval=24&start=0")
+_F07_REQUEST_KWARGS = dict(verify=True, allow_redirects=False, stream=True)
+
+
+def test_f07_accounting_explicit_session_and_fixture_namespace_intercept_all_three_roles(tmp_path):
+    h = _F07Harness(tmp_path / "capture")
+    calls = []
+    replies = []
+    original = SimpleNamespace(exceptions=SimpleNamespace(RequestException=OSError), Timeout=TimeoutError)
+    def forbidden_global_get(*args, **kwargs):
+        raise AssertionError("global transport must not be used")
+    original.get = forbidden_global_get
+    class Session:
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            response = _F07LiteralReply(b"literal")
+            replies.append(response)
+            return response
+    # A fresh namespace performs the same requests global lookup as the native
+    # candle functions. It is deliberately NOT the real product/module loader.
+    namespace = {"__name__": "_f07_candidate_literal", "requests": original}
+    exec("def candidate(url, kwargs):\n    return requests.get(url, **kwargs)\n", namespace)
+    def work(current):
+        bodies = []
+        for role in _F07_ROLES:
+            session = _F07CaseSession(current, role, _F07_CASES[0], Session())
+            with _f07_candidate_requests(namespace, session) as facade:
+                assert facade.exceptions is original.exceptions and facade.Timeout is TimeoutError
+                response = namespace["candidate"](_F07_URL, _F07_REQUEST_KWARGS)
+                assert response.raw.headers is replies[-1].raw.headers
+                assert response.raise_for_status() is None
+                assert response.raw.release_conn() == "released"
+                bodies.append(response.raw.read(65536))
+                assert response.raw.read(65536) == b""
+                response.mark_terminal()
+                response.close()
+            assert namespace["requests"] is original and original.get is forbidden_global_get
+        return bodies
+    result, seal = h.run(work)
+    assert result == [b"literal", b"literal", b"literal"]
+    assert len(calls) == 3 and all(reply.closed for reply in replies)
+    assert seal["used"] == {"gets": 3, "bytes": 21, "rows": 0}
+    assert seal["attempts"] == {role: 1 for role in _F07_ROLES}
+
+
+@pytest.mark.parametrize("mutation", ["http", "host", "ticker", "date", "interval", "duplicate", "redirect", "params",
+                                       "params_none", "proxies", "auth", "hooks", "cookies", "data", "json", "unknown"])
+def test_f07_accounting_explicit_session_boundary_refuses_before_transport(tmp_path, mutation):
+    h = _F07Harness(tmp_path / "capture")
+    calls = []
+    class Session:
+        def get(self, *args, **kwargs):
+            calls.append(1)
+            raise AssertionError("transport must not run")
+    url = _F07_URL
+    replacements = {"http": ("https:", "http:"), "host": ("iss.moex.com", "example.com"),
+                    "ticker": ("SBER/", "MOEX/"), "date": ("2023-02-27", "2023-02-26"),
+                    "interval": ("interval=24", "interval=1"), "duplicate": ("start=0", "start=0&start=1")}
+    kwargs = dict(_F07_REQUEST_KWARGS)
+    if mutation == "redirect":
+        kwargs["allow_redirects"] = True
+    elif mutation == "params":
+        # requests applies params after this URL was validated. This must be
+        # rejected before GET rather than silently changing the charged scope.
+        kwargs["params"] = {"interval": "1", "from": "1900-01-01"}
+    elif mutation == "params_none":
+        kwargs["params"] = None
+    elif mutation in {"proxies", "auth", "hooks", "cookies", "data", "json", "unknown"}:
+        # Reject unsupported options even with an inert value. The endpoint
+        # contract must not depend on requests silently ignoring a value.
+        kwargs[mutation] = None
+    else:
+        before, after = replacements[mutation]
+        url = url.replace(before, after)
+    session = _F07CaseSession(h, "CANDIDATE", _F07_CASES[0], Session())
+    with pytest.raises(_F07Refusal, match="F07_ENDPOINT_BOUNDARY"):
+        h.run(lambda current: session.get(url, **kwargs))
+    assert not calls and h.used["gets"] == 0 and not h.sealed
+
+
+def test_f07_accounting_real_product_namespace_is_not_mutated(tmp_path):
+    h = _F07Harness(tmp_path / "capture")
+    session = _F07CaseSession(h, "CANDIDATE", _F07_CASES[0], SimpleNamespace())
+    namespace = {"__name__": "data_gathering", "requests": object()}
+    before = dict(namespace)
+    with pytest.raises(_F07Refusal, match="F07_OWNED_FIXTURE_NAMESPACE_REQUIRED"):
+        with _f07_candidate_requests(namespace, session):
+            raise AssertionError("must not enter")
+    assert namespace == before
+
+
+# The following orchestration is deliberately offline: a live session/entrypoint
+# is absent. Full-source loading and the existing native pytest boundary supply
+# candidate identity; the reference uses its own CSV and numeric comparisons.
+_F07_PRODUCT_SHA256 = '6e3697bb1f99031e40211996757b1b4a89c34cb46b954b1ae0cd4c80a84adabb'
+_F07_PUBLIC = ('open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end', 'ticker')
+_F07_DATES = {
+    24: ('2023-02-28', '2023-03-02', '2023-03-03', '2024-03-01'),
+    60: ('2023-02-28', '2023-03-02', '2023-03-03', '2024-03-01'),
+    10: ('2024-01-31', '2024-02-02', '2024-02-03', '2024-03-01'),
+    1: ('2024-02-23', '2024-02-24', '2024-02-25', '2024-03-01'),
+}
+_F07_LEAVES = {
+    24: (('2023-03-02', '2024-03-02'), ('2023-02-27', '2023-03-03')),
+    60: (('2023-03-02', '2024-03-02'), ('2023-02-27', '2023-03-03')),
+    10: (('2024-02-02', '2024-03-02'), ('2024-01-30', '2024-02-03')),
+    1: (('2024-02-24', '2024-03-02'), ('2024-02-23', '2024-02-25')),
+}
+
+
+class _F07Clock:
+    def __init__(self):
+        self.elapsed = 0.
+        self.sleeps = []
+
+    def now(self):
+        return self.elapsed
+
+    def sleep(self, seconds):
+        assert seconds == 3
+        self.sleeps.append(seconds)
+        self.elapsed += seconds
+
+
+@pytest.fixture
+def f07_candidate(monkeypatch):
+    import mds_offline_guard as guard
+
+    root = Path(__file__).resolve().parents[2]
+    source = root / 'data_gathering.py'
+    context = guard._CONTEXT
+    metadata = guard.report_metadata()
+    assert guard._INSTALLED is True and context.started and not context.finished
+    assert context.root == root and metadata['source_mode'] == 'commit'
+    assert metadata['pid'] == __import__('os').getpid()
+    assert metadata['source_digest'] == context.source_digest
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == _F07_PRODUCT_SHA256
+    monkeypatch.syspath_prepend(str(root))
+    name = '_f07_candidate_' + _f07_uuid.uuid4().hex
+    specification = _f07_importlib.spec_from_file_location(name, source)
+    module = _f07_importlib.module_from_spec(specification)
+    _f07_sys.modules[name] = module
+    original_get = requests.get
+    try:
+        specification.loader.exec_module(module)
+        assert Path(module.__file__) == source
+        for function in (module.moex_query, module._a3_history, module._a2_candle_frame):
+            assert function.__globals__ is vars(module)
+            assert Path(function.__code__.co_filename) == source
+        assert module.requests is requests and module._a3_offline_test_profile() is True
+        yield module
+    finally:
+        assert requests.get is original_get
+        assert guard._CONTEXT is context and guard._INSTALLED is True
+        assert context.started and not context.finished
+        _f07_sys.modules.pop(name, None)
+
+
+def _f07_literal_rows(case, *, unsafe=False):
+    rows = []
+    for position, day in enumerate(_F07_DATES[case['interval']]):
+        opening = ('0.5' if position == 3 else '9007199254740993') if unsafe else '100'
+        rows.append((opening, '101', '102', '99', '202000', '2000',
+                     day + ' 00:00:00', day + ' 00:00:59'))
+    return rows
+
+
+def _f07_body(rows):
+    return (HEADER + ''.join(';'.join(row) + '\n' for row in rows)).encode('utf-8')
+
+
+class _F07ModelSession:
+    """Literal closed/closed endpoint model; no assertion about real ISS."""
+    def __init__(self, role, case, calls, *, retry=False, primary=None,
+                 changed=False, malformed=False, unsafe=False, empty=False, read_primary=None):
+        self.role, self.case, self.calls = role, case, calls
+        self.retry, self.primary = retry, primary
+        self.changed, self.malformed, self.unsafe, self.empty = changed, malformed, unsafe, empty
+        self.read_primary = read_primary
+        self.called = 0
+        self.replies = []
+
+    def get(self, url, **kwargs):
+        params = parse_qs(urlsplit(url).query, strict_parsing=True)
+        self.called += 1
+        self.calls.append(dict(role=self.role, case=dict(self.case), params=params,
+                               verify=kwargs.get('verify'), redirects=kwargs.get('allow_redirects'),
+                               stream=kwargs.get('stream')))
+        if self.primary is not None:
+            raise self.primary
+        status = 503 if self.retry and self.called == 1 else 200
+        rows = [] if self.empty else _f07_literal_rows(self.case, unsafe=self.unsafe)
+        if self.changed:
+            rows[0] = ('999', *rows[0][1:])
+        lower, upper = params['from'][0], params['till'][0]
+        rows = [row for row in rows if lower <= row[6][:10] <= upper]
+        start = int(params['start'][0])
+        # Unsafe fixtures split numeric pages so the real assembly must audit
+        # int64/float64 promotion; the reference still sees raw literal cells.
+        page = rows[start:start + 1] if self.unsafe and self.role == 'CANDIDATE' else rows[start:]
+        body = b'INVALID\n' if self.malformed else _f07_body(page)
+        if status != 200:
+            body = b''
+        value = response(status=status)
+        value.encoding = 'utf-8'
+        value.raw = Raw(body, value.headers.items())
+        if self.read_primary is not None and self.called == 1:
+            primary = self.read_primary
+
+            class FailedRead(Raw):
+                def read(self, amount, decode_content=False):
+                    assert type(amount) is int and 0 < amount <= 65536
+                    assert decode_content is False
+                    raise primary
+
+            value.raw = FailedRead(body, value.headers.items())
+        self.replies.append(value)
+        return value
+
+
+def _f07_url(case, start):
+    return ('https://iss.moex.com/iss/engines/stock/markets/shares/securities/'
+            + case['ticker'] + '/candles.csv?from=' + case['from_date']
+            + '&till=' + case['till_date'] + '&interval=' + str(case['interval'])
+            + '&start=' + str(start))
+
+
+def _f07_reference_records(body, codec='utf-8'):
+    text = body.decode(codec, errors='strict')
+    table = list(_f07_csv.reader(io.StringIO(text, newline=''), delimiter=';', strict=True))
+    if (len(table) < 2 or table[0] != ['candles']
+            or table[1] != list(_F07_PUBLIC[:8])):
+        raise _F07Refusal('F07_REFERENCE_SCHEMA')
+    rows = [tuple(row) for row in table[2:] if row]
+    if any(len(row) != 8 for row in rows):
+        raise _F07Refusal('F07_REFERENCE_SCHEMA')
+    return rows
+
+
+def _f07_reference_codec(headers):
+    # Independent closed consumer profile, never requests' encoding guess.
+    values = headers.getlist('Content-Type')
+    encodings = headers.getlist('Content-Encoding')
+    if (len(values) != 1 or len(encodings) > 1
+            or encodings and encodings[0].strip().lower() != 'identity'):
+        raise _F07Refusal('F07_REFERENCE_SCHEMA')
+    value = values[0]
+    if type(value) is not str:
+        raise _F07Refusal('F07_REFERENCE_SCHEMA')
+    parts = [item.strip().lower() for item in value.split(';')]
+    if parts[0] != 'text/csv' or len(parts) > 2:
+        raise _F07Refusal('F07_REFERENCE_SCHEMA')
+    if len(parts) == 1:
+        return 'cp1251'
+    parameter = parts[1].split('=', 1)
+    if len(parameter) != 2 or parameter[0].strip() != 'charset':
+        raise _F07Refusal('F07_REFERENCE_SCHEMA')
+    name = parameter[1].strip().strip('"')
+    codec = {'utf-8': 'utf-8', 'utf8': 'utf-8', 'cp1251': 'cp1251',
+             'windows-1251': 'cp1251'}.get(name)
+    if codec is None:
+        raise _F07Refusal('F07_REFERENCE_SCHEMA')
+    return codec
+
+
+def _f07_reference(harness, role, case, session, clock):
+    adapter = _F07CaseSession(harness, role, case, session)
+    start, result, seen = 0, [], set()
+    while True:
+        current = adapter.get(_f07_url(case, start), headers={'Accept-Encoding': 'identity'},
+                              timeout=(5, 30), verify=True, allow_redirects=False, stream=True)
+        try:
+            current.raise_for_status()
+            if current.status_code != 200:
+                raise _F07Refusal('F07_REFERENCE_TRANSPORT')
+            chunks = []
+            while True:
+                part = current.raw.read(65536, decode_content=False)
+                if not part:
+                    break
+                chunks.append(part)
+            codec = _f07_reference_codec(current.raw.headers)
+            rows = _f07_reference_records(b''.join(chunks), codec)
+            current.record['codec'] = codec
+            harness.admit_rows(len(rows))
+            current.record['validated_rows'] = len(rows)
+            if not rows:
+                current.mark_terminal()
+        finally:
+            current.close()
+        clock.sleep(3)
+        harness.check()
+        if not rows:
+            return result
+        for row in rows:
+            if row[6] in seen or result and row[6] <= result[-1][6]:
+                raise _F07Refusal('F07_REFERENCE_ORDER_OR_OVERLAP')
+            seen.add(row[6])
+            result.append(row)
+        start += len(rows)
+
+
+def _f07_number(value):
+    if isinstance(value, _f07_numbers.Integral) and not isinstance(value, bool):
+        return int(value), 1, False
+    if not isinstance(value, _f07_numbers.Real) or not math.isfinite(value):
+        raise _F07Refusal('F07_NUMERIC_VALUE')
+    native = float(value)
+    return (*native.as_integer_ratio(), native == 0 and math.copysign(1, native) < 0)
+
+
+def _f07_compare(case, before, frame, after):
+    if before != after:
+        raise _F07Refusal('F07_SOURCE_CHANGED_NOT_VERIFIED')
+    expected = {}
+    for row in before:
+        if row[6] in expected or expected and row[6] <= next(reversed(expected)):
+            raise _F07Refusal('F07_REFERENCE_ORDER_OR_OVERLAP')
+        expected[row[6]] = row
+    if list(frame.columns) != (list(_F07_PUBLIC) if expected else []):
+        raise _F07Refusal('F07_CANDIDATE_SCHEMA')
+    actual = {}
+    for row in frame.itertuples(index=False, name=None):
+        if row[6] in actual or actual and row[6] <= next(reversed(actual)):
+            raise _F07Refusal('F07_CANDIDATE_ORDER_OR_DUPLICATE')
+        actual[row[6]] = row
+    if set(actual) != set(expected):
+        raise _F07Refusal('F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED')
+    for key, source in expected.items():
+        parsed = actual[key]
+        for position in range(6):
+            token = source[position].strip(' \t')
+            literal = int(token) if token.lstrip('+-').isdigit() else float(token)
+            if _f07_number(parsed[position]) != _f07_number(literal):
+                raise _F07Refusal('F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED')
+        if parsed[6:8] != source[6:8] or parsed[8] != case['ticker']:
+            raise _F07Refusal('F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED')
+    return dict(case=dict(case), status='OBSERVED_RANGE_MATCH_SOURCE_ACCEPTANCE_OPEN',
+                rows=len(frame), source_acceptance='NOT_VERIFIED')
+
+
+@_f07_contextmanager
+def _f07_candidate_binding(module, harness, case, session):
+    original_charge, original_frame = module._a3_charge, module._a2_candle_frame
+    original_codec = module._a2_candle_codec
+
+    def charge(counter, amount, primary=None):
+        result = original_charge(counter, amount, primary)
+        if counter == 'rows':
+            try:
+                harness.admit_rows(amount)
+            except BaseException:
+                if primary is not None:
+                    raise primary
+                raise
+        return result
+
+    def validated(frame, rows):
+        result = original_frame(frame, rows)
+        harness.admit_rows(0, frame_bytes=int(frame.memory_usage(index=True, deep=True).sum()))
+        current = harness.active
+        if current is None or current.record['role'] != 'CANDIDATE':
+            raise _F07Refusal('F07_CANDIDATE_RESPONSE_IDENTITY')
+        current.record['validated_rows'] = len(rows)
+        if not rows:
+            current.mark_terminal()
+        return result
+
+    def codec(response, content):
+        result = original_codec(response, content)
+        current = harness.active
+        if current is None or current.record['role'] != 'CANDIDATE':
+            raise _F07Refusal('F07_CANDIDATE_RESPONSE_IDENTITY')
+        current.record['codec'] = result
+        return result
+
+    module._a3_charge, module._a2_candle_frame = charge, validated
+    module._a2_candle_codec = codec
+    try:
+        adapter = _F07CaseSession(harness, 'CANDIDATE', case, session)
+        with _f07_candidate_requests(vars(module), adapter):
+            yield
+    finally:
+        module._a3_charge, module._a2_candle_frame = original_charge, original_frame
+        module._a2_candle_codec = original_codec
+
+
+def _f07_run_protocol(module, harness, clock, calls, *, cases=_F07_CASES, retry=False,
+                      primary=None, changed=False, malformed=False, unsafe=False, empty=False,
+                      read_primary=None):
+    import mds_offline_guard as guard
+
+    metadata = guard.report_metadata()
+    if metadata['source_mode'] != 'commit' or module._a3_offline_test_profile() is not True:
+        raise _F07Refusal('F07_NATIVE_SOURCE_ADMISSION')
+    original_time = module.time
+    original_get = requests.get
+    module.time = SimpleNamespace(perf_counter=clock.now, sleep=clock.sleep, time=lambda: 1709380800.)
+
+    def work(current):
+        provenance = dict(source_sha=metadata['tested_sha'], source_digest=metadata['source_digest'],
+                          source_mode=metadata['source_mode'], product_sha256=_F07_PRODUCT_SHA256,
+                          bootstrap_digest=metadata['bootstrap_digest'], ticket_id=metadata['ticket_id'],
+                          run_id=metadata['run_id'], role=metadata['role'], pid=metadata['pid'],
+                          candidate='FULL_CANONICAL_SOURCE_IMPORT', network='MOCKED_ONLY',
+                          source_acceptance='NOT_VERIFIED', live_authority='NOT_GRANTED')
+        current.sink.write('source-binding.json', _f07_encoded(provenance))
+        reports = []
+        with module._a3_source_diagnostic_scope():
+            for ordinal, case in enumerate(cases, 1):
+                before_session = _F07ModelSession('REFERENCE_BEFORE', case, calls, unsafe=unsafe, empty=empty)
+                before = _f07_reference(current, 'REFERENCE_BEFORE', case, before_session, clock)
+                candidate_session = _F07ModelSession('CANDIDATE', case, calls, retry=retry,
+                    primary=primary, malformed=malformed, unsafe=unsafe, empty=empty,
+                    read_primary=read_primary)
+                with _f07_candidate_binding(module, current, case, candidate_session):
+                    frame = module._a3_history(case['ticker'], 'Акции', case['from_date'],
+                                               case['till_date'], case['interval'])
+                current.admit_rows(0, frame_bytes=int(frame.memory_usage(index=True, deep=True).sum()))
+                after_session = _F07ModelSession('REFERENCE_AFTER', case, calls,
+                                                 changed=changed, unsafe=unsafe, empty=empty)
+                after = _f07_reference(current, 'REFERENCE_AFTER', case, after_session, clock)
+                report = _f07_compare(case, before, frame, after)
+                current.sink.write(f'comparison-{ordinal:02d}.json', _f07_encoded(report))
+                reports.append(report)
+        return reports
+
+    try:
+        return harness.run(work)
+    finally:
+        module.time = original_time
+        assert requests.get is original_get
+
+
+def test_f07_native_eight_case_candidate_reference_accounting(f07_candidate, tmp_path, writers):
+    clock, calls = _F07Clock(), []
+    harness = _F07Harness(tmp_path / 'capture', clock=clock.now)
+    reports, seal = _f07_run_protocol(f07_candidate, harness, clock, calls, retry=True)
+    assert len(reports) == 8 and sum(item['rows'] for item in reports) == 32
+    assert [item['case'] for item in reports] == list(_F07_CASES)
+    assert all(item['status'] == 'OBSERVED_RANGE_MATCH_SOURCE_ACCEPTANCE_OPEN' for item in reports)
+    assert seal['used']['gets'] == 72 and seal['used']['rows'] == 112
+    assert seal['attempts'] == dict(REFERENCE_BEFORE=16, CANDIDATE=40, REFERENCE_AFTER=16)
+    assert clock.sleeps == [3] * 72 and clock.elapsed == 216
+    assert len(calls) == 72 and writers == []
+    for case in _F07_CASES:
+        current = [item for item in calls if item['case'] == case and item['role'] == 'CANDIDATE']
+        bounds = [(item['params']['from'][0], item['params']['till'][0]) for item in current]
+        first, second = _F07_LEAVES[case['interval']]
+        assert bounds == [first, first, first, second, second]
+        assert [item['params']['start'][0] for item in current] == ['0', '0', '3', '0', '3']
+        assert all(item['params']['interval'] == [str(case['interval'])] for item in current)
+        assert all(item['verify'] is True and item['redirects'] is False and item['stream'] is True
+                   for item in current)
+    assert sum(record['terminal'] for record in harness.records) == 32
+    candidate = [record for record in harness.records if record['role'] == 'CANDIDATE']
+    assert sum(record.get('validated_rows', 0) for record in candidate) == 48
+    assert sum(record['status'] == 503 for record in candidate) == 8
+    assert seal['used']['bytes'] == sum(record['body_bytes'] for record in harness.records)
+    assert seal['evidence_bytes'] == sum(path.stat().st_size for path in harness.sink.root.iterdir())
+    assert seal['evidence_bytes'] > seal['used']['bytes'] * 2
+    assert seal['files'] == 155  # 72 bodies +72 envelopes +8 comparisons +provenance +manifest/receipt.
+    assert harness.sink.audit() == seal['evidence_bytes']
+
+
+def test_f07_native_empty_cases_keep_all_terminals_and_zero_columns(f07_candidate, tmp_path, writers):
+    clock, calls = _F07Clock(), []
+    harness = _F07Harness(tmp_path / 'capture', clock=clock.now)
+    reports, seal = _f07_run_protocol(f07_candidate, harness, clock, calls, empty=True)
+    assert [item['rows'] for item in reports] == [0] * 8
+    assert seal['used']['gets'] == 32 and seal['used']['rows'] == 0
+    assert seal['attempts'] == dict(REFERENCE_BEFORE=8, CANDIDATE=16, REFERENCE_AFTER=8)
+    assert all(item['terminal'] for item in harness.records)
+    assert clock.sleeps == [3] * 32 and writers == []
+
+
+@pytest.mark.parametrize('fault', ['gets', 'rows', 'evidence', 'source_changed', 'schema', 'unsafe'])
+def test_f07_native_refusal_after_prefix_has_no_next_case_or_writer(
+        f07_candidate, tmp_path, writers, fault):
+    clock, calls = _F07Clock(), []
+    limits = dict(_F07_LIMITS)
+    if fault == 'gets':
+        limits['gets'] = 3  # Reference-before completed; only first candidate page fits.
+    elif fault == 'rows':
+        limits['rows'] = 6  # Four reference rows +first candidate's three refuses.
+    elif fault == 'evidence':
+        limits['evidence_bytes'] = 1
+    harness = _F07Harness(tmp_path / 'capture', clock=clock.now, limits=limits)
+    expected = dict(gets='F07_GET_CAPACITY', rows='F07_ROWS_OR_FRAME_CAPACITY',
+                    evidence='F07_TOTAL_EVIDENCE_CAPACITY',
+                    source_changed='F07_SOURCE_CHANGED_NOT_VERIFIED',
+                    schema='A2_ISS_RESPONSE_SCHEMA_INVALID', unsafe='A3_ISS_NUMERIC_ASSEMBLY_LOSS')[fault]
+    with pytest.raises(ValueError, match='^' + expected + '$'):
+        _f07_run_protocol(f07_candidate, harness, clock, calls,
+                          changed=fault == 'source_changed', malformed=fault == 'schema', unsafe=fault == 'unsafe')
+    assert harness.failed and not harness.sealed and writers == []
+    assert all(item['case'] == _F07_CASES[0] for item in calls)
+    assert not (harness.sink.root / 'receipt.json').exists()
+    if fault == 'gets':
+        assert len(calls) == 3 and calls[-1]['role'] == 'CANDIDATE'
+    if fault == 'evidence':
+        assert calls == []
+    if fault not in ('source_changed',):
+        assert not any(item['role'] == 'REFERENCE_AFTER' for item in calls)
+
+
+def test_f07_native_primary_survives_late_evidence_failure(f07_candidate, tmp_path, writers):
+    clock, calls = _F07Clock(), []
+    primary = requests.exceptions.SSLError('F07_LITERAL_NATIVE_PRIMARY')
+    writes = []
+
+    def write(stream, data):
+        writes.append(stream.name)
+        # Source binding and both reference pages are retained first. Evidence
+        # on the candidate's failed physical attempt must preserve its primary.
+        if len(writes) >= 6:
+            raise OSError('F07_LITERAL_SECONDARY_EVIDENCE')
+        return stream.write(data)
+
+    harness = _F07Harness(tmp_path / 'capture', clock=clock.now, writer=write)
+    with pytest.raises(requests.exceptions.SSLError) as captured:
+        _f07_run_protocol(f07_candidate, harness, clock, calls, primary=primary)
+    assert captured.value is primary and type(primary) is requests.exceptions.SSLError
+    assert primary.args == ('F07_LITERAL_NATIVE_PRIMARY',)
+    assert 'F07_SECONDARY_EVIDENCE_FAILED' in primary.__notes__
+    assert [item['role'] for item in calls] == ['REFERENCE_BEFORE', 'REFERENCE_BEFORE', 'CANDIDATE']
+    assert harness.used['gets'] == 3 and harness.failed and not harness.sealed
+    assert writers == [] and not (harness.sink.root / 'receipt.json').exists()
+
+
+def test_f07_native_read_timeout_preserves_retry_policy_and_full_sleep(
+        f07_candidate, tmp_path, writers):
+    clock, calls = _F07Clock(), []
+    primary = requests.exceptions.ReadTimeout('F07_LITERAL_READ_PRIMARY')
+    harness = _F07Harness(tmp_path / 'capture', clock=clock.now)
+    reports, seal = _f07_run_protocol(f07_candidate, harness, clock, calls,
+                                      cases=_F07_CASES[:1], read_primary=primary)
+    assert len(reports) == 1 and reports[0]['rows'] == 4
+    assert seal['used']['gets'] == 9 and seal['used']['rows'] == 14
+    assert seal['attempts'] == dict(REFERENCE_BEFORE=2, CANDIDATE=5, REFERENCE_AFTER=2)
+    assert clock.sleeps == [3] * 9 and clock.elapsed == 27
+    candidate = [item for item in harness.records if item['role'] == 'CANDIDATE']
+    assert candidate[0]['source_error_type'] == 'ReadTimeout'
+    assert candidate[0]['body_complete'] is False
+    assert candidate[0]['body_bytes'] == 0 and candidate[0]['attempt'] == 1
+    assert candidate[1]['attempt'] == 2 and candidate[1]['start'] == 0
+    assert primary.args == ('F07_LITERAL_READ_PRIMARY',) and writers == []
+    assert seal['evidence_bytes'] == sum(path.stat().st_size for path in harness.sink.root.iterdir())
+
+
+def test_f07_native_read_primary_survives_secondary_evidence_failure_without_retry(
+        f07_candidate, tmp_path, writers):
+    clock, calls = _F07Clock(), []
+    primary = requests.exceptions.ReadTimeout('F07_LITERAL_READ_AND_EVIDENCE_PRIMARY', 180)
+    writes = []
+
+    def write(stream, data):
+        writes.append(stream.name)
+        if len(writes) >= 6:
+            raise OSError('F07_LITERAL_READ_SECONDARY_EVIDENCE')
+        return stream.write(data)
+
+    harness = _F07Harness(tmp_path / 'capture', clock=clock.now, writer=write)
+    with pytest.raises(requests.exceptions.ReadTimeout) as captured:
+        _f07_run_protocol(f07_candidate, harness, clock, calls,
+                          cases=_F07_CASES[:1], read_primary=primary)
+    assert captured.value is primary and type(primary) is requests.exceptions.ReadTimeout
+    assert primary.args == ('F07_LITERAL_READ_AND_EVIDENCE_PRIMARY', 180)
+    assert [item['role'] for item in calls] == ['REFERENCE_BEFORE', 'REFERENCE_BEFORE', 'CANDIDATE']
+    assert harness.used['gets'] == 3 and harness.failed and not harness.sealed
+    assert clock.sleeps == [3, 3] and writers == []
+    assert not (harness.sink.root / 'receipt.json').exists()
+
+
+@pytest.mark.parametrize('fault', ['membership', 'numeric', 'signed_zero', 'source_changed', 'ticker'])
+def test_f07_independent_comparison_refuses_literal_corruption(fault):
+    case = _F07_CASES[0]
+    source = [('9007199254740993', '101', '102', '99', '202000', '2000',
+               '2024-03-01 00:00:00', '2024-03-01 00:00:59')]
+    after = list(source)
+    values = [[9007199254740993, 101, 102, 99, 202000, 2000, source[0][6], source[0][7], 'SBER']]
+    if fault == 'membership':
+        values = []
+    elif fault == 'numeric':
+        values[0][0] = float(9007199254740993)
+    elif fault == 'signed_zero':
+        source = [('-0.0', *source[0][1:])]
+        after = list(source)
+        values[0][0] = 0.
+    elif fault == 'source_changed':
+        after = [('100', *source[0][1:])]
+    else:
+        values[0][8] = 'MOEX'
+    frame = pd.DataFrame(values, columns=_F07_PUBLIC)
+    expected = ('F07_SOURCE_CHANGED_NOT_VERIFIED' if fault == 'source_changed'
+                else 'F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED')
+    with pytest.raises(ValueError, match='^' + expected + '$'):
+        _f07_compare(case, source, frame, after)
+
+
+@pytest.mark.parametrize('position', range(6))
+@pytest.mark.parametrize('token,exact,rounded', [
+    (' 9007199254740993 ', 9007199254740993, 9007199254740992.0),
+    ('\t9007199254740993\t', 9007199254740993, 9007199254740992.0),
+    (' \t+9007199254740993\t ', 9007199254740993, 9007199254740992.0),
+    ('\t -9007199254740993 \t', -9007199254740993, -9007199254740992.0),
+])
+@pytest.mark.parametrize('candidate_kind', ['exact_integer', 'rounded_float'])
+def test_f07_padded_integer_reference_keeps_literal_precision(
+        position, token, exact, rounded, candidate_kind):
+    case = _F07_CASES[0]
+    cells = ['100', '101', '102', '99', '202000', '2000',
+             '2024-03-01 00:00:00', '2024-03-01 00:00:59']
+    cells[position] = token
+    raw_row = tuple(cells)
+    body = _f07_body([raw_row])
+    before = _f07_reference_records(body)
+    after = _f07_reference_records(body)
+    values = [100, 101, 102, 99, 202000, 2000, cells[6], cells[7], 'SBER']
+    values[position] = exact if candidate_kind == 'exact_integer' else rounded
+    frame = pd.DataFrame({
+        name: pd.Series([value], dtype=(
+            'object' if index >= 6 else
+            'float64' if index == position and candidate_kind == 'rounded_float' else 'int64'))
+        for index, (name, value) in enumerate(zip(_F07_PUBLIC, values))
+    })
+    dtypes = tuple(frame.dtypes)
+    if candidate_kind == 'exact_integer':
+        report = _f07_compare(case, before, frame, after)
+        assert report == dict(case=dict(case), status='OBSERVED_RANGE_MATCH_SOURCE_ACCEPTANCE_OPEN',
+                              rows=1, source_acceptance='NOT_VERIFIED')
+    else:
+        with pytest.raises(ValueError, match='^F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED$'):
+            _f07_compare(case, before, frame, after)
+    assert before == after == [raw_row]
+    assert before[0][position] == token and _f07_body(before) == body
+    assert tuple(frame.dtypes) == dtypes
+
+
+@pytest.mark.parametrize('position', range(6))
+@pytest.mark.parametrize('token,matching,opposite', [
+    (' -0.0 ', -0.0, 0.0),
+    ('\t+0.0\t', 0.0, -0.0),
+])
+@pytest.mark.parametrize('candidate_kind', ['same_sign', 'opposite_sign'])
+def test_f07_padded_reference_preserves_signed_zero(
+        position, token, matching, opposite, candidate_kind):
+    case = _F07_CASES[0]
+    cells = ['100', '101', '102', '99', '202000', '2000',
+             '2024-03-01 00:00:00', '2024-03-01 00:00:59']
+    cells[position] = token
+    raw_row = tuple(cells)
+    body = _f07_body([raw_row])
+    before = _f07_reference_records(body)
+    after = _f07_reference_records(body)
+    values = [100, 101, 102, 99, 202000, 2000, cells[6], cells[7], 'SBER']
+    values[position] = matching if candidate_kind == 'same_sign' else opposite
+    frame = pd.DataFrame({
+        name: pd.Series([value], dtype=(
+            'object' if index >= 6 else 'float64' if index == position else 'int64'))
+        for index, (name, value) in enumerate(zip(_F07_PUBLIC, values))
+    })
+    if candidate_kind == 'same_sign':
+        assert _f07_compare(case, before, frame, after)['rows'] == 1
+    else:
+        with pytest.raises(ValueError, match='^F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED$'):
+            _f07_compare(case, before, frame, after)
+    assert before == after == [raw_row]
+    assert before[0][position] == token and _f07_body(before) == body
+    assert math.copysign(1, frame.iloc[0, position]) == math.copysign(1, values[position])
