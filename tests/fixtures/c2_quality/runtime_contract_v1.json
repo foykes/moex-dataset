@@ -1,0 +1,1044 @@
+{
+  "fixture_id": "mds.c2.runtime.fixtures/1",
+  "origin": "SYNTHETIC_ONLY",
+  "schema_sha256": "a0daced78e661713d75a5f768df5a354f5caf3c82a9f0a76a7ca53f10ad19619",
+  "raw_utf8": "{\"synthetic\":[0.1]}",
+  "message": {
+    "schema_id": "mds.c2.runtime",
+    "schema_version": 1,
+    "schema_sha256": "a0daced78e661713d75a5f768df5a354f5caf3c82a9f0a76a7ca53f10ad19619",
+    "context": {
+      "run_id": "SYN_RUN_1",
+      "snapshot_id": "SYN_SNAPSHOT_1",
+      "dataset_id": "SYN_DIVIDENDS",
+      "as_of": "2026-10-19T18:00:00Z"
+    },
+    "candidate_release_id": "SYN_CANDIDATE_1",
+    "producer": {
+      "role": "Q_ASSESSOR",
+      "producer_id": "SYN_Q_1",
+      "profile_id": "SYN_PROFILE_1",
+      "profile_version": 1,
+      "profile_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "canonical": {
+      "context": {
+        "run_id": "SYN_RUN_1",
+        "snapshot_id": "SYN_SNAPSHOT_1",
+        "dataset_id": "SYN_DIVIDENDS",
+        "as_of": "2026-10-19T18:00:00Z"
+      },
+      "columns": [
+        "ISIN",
+        "TRADE_CODE",
+        "dt",
+        "value",
+        "currency"
+      ],
+      "row_count": 1,
+      "rows": [
+        [
+          {
+            "kind": "TEXT",
+            "value": "SYN_ISIN"
+          },
+          {
+            "kind": "TEXT",
+            "value": "SYN_SECID"
+          },
+          {
+            "kind": "TEXT",
+            "value": "2111-01-01"
+          },
+          {
+            "kind": "FLOAT64",
+            "value": "0x1.999999999999ap-4"
+          },
+          {
+            "kind": "TEXT",
+            "value": "RUB"
+          }
+        ]
+      ],
+      "content_sha256": "fc79c6b157a3229faa90daf94724d450d987076170634907e63b5e5ef200debe",
+      "bindings_sha256": "8972755298278e81bf9f6e99e09ad9427f82922a451d6fa374a29c69893f4662",
+      "bindings": [
+        {
+          "canonical_ordinal": 0,
+          "source_id": "SYN_SOURCE_1",
+          "source_ordinal": 0
+        }
+      ]
+    },
+    "source_bindings": [
+      {
+        "source_id": "SYN_SOURCE_1",
+        "acquisition_id": "SYN_ACQUISITION_1",
+        "source_kind": "SYNTHETIC_ONLY",
+        "raw_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+        "raw_length": 19,
+        "acquired_at": "2026-10-19T18:05:00Z",
+        "contract_evidence_ref": null,
+        "coverage_evidence_ref": null,
+        "null_reasons": {
+          "contract_evidence_ref": "NOT_AVAILABLE",
+          "coverage_evidence_ref": "NOT_AVAILABLE"
+        }
+      }
+    ],
+    "evidence": [
+      {
+        "evidence_id": "SYN_EVIDENCE_1",
+        "context": {
+          "run_id": "SYN_RUN_1",
+          "snapshot_id": "SYN_SNAPSHOT_1",
+          "dataset_id": "SYN_DIVIDENDS",
+          "as_of": "2026-10-19T18:00:00Z"
+        },
+        "candidate_release_id": "SYN_CANDIDATE_1",
+        "source_id": "SYN_SOURCE_1",
+        "subject_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+        "status": "SYNTHETIC_ONLY",
+        "assessor_role": "E_VERIFIER",
+        "assessor_id": "SYN_E_1",
+        "profile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "created_at": "2026-10-19T18:06:00Z",
+        "valid_until": "2026-10-20T18:00:00Z",
+        "null_reasons": {}
+      }
+    ],
+    "previous": {
+      "presence": "NOT_VERIFIED",
+      "previous_release_id": null,
+      "previous_snapshot_id": null,
+      "previous_as_of": null,
+      "evidence_ref": null,
+      "null_reasons": {
+        "previous_release_id": "NOT_AVAILABLE",
+        "previous_snapshot_id": "NOT_AVAILABLE",
+        "previous_as_of": "NOT_AVAILABLE",
+        "evidence_ref": "NOT_AVAILABLE"
+      }
+    },
+    "assessment": {
+      "status": "NOT_VERIFIED",
+      "checks": [
+        {
+          "check_id": "SOURCE_SEMANTICS",
+          "status": "NOT_VERIFIED",
+          "evidence_ref": "SYN_EVIDENCE_1",
+          "reason": "UNVERIFIED_EVIDENCE"
+        }
+      ]
+    },
+    "null_reasons": {}
+  },
+  "trusted": {
+    "context": {
+      "run_id": "SYN_RUN_1",
+      "snapshot_id": "SYN_SNAPSHOT_1",
+      "dataset_id": "SYN_DIVIDENDS",
+      "as_of": "2026-10-19T18:00:00Z"
+    },
+    "candidate_release_id": "SYN_CANDIDATE_1",
+    "producer": {
+      "role": "Q_ASSESSOR",
+      "producer_id": "SYN_Q_1",
+      "profile_id": "SYN_PROFILE_1",
+      "profile_version": 1,
+      "profile_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "canonical": {
+      "context": {
+        "run_id": "SYN_RUN_1",
+        "snapshot_id": "SYN_SNAPSHOT_1",
+        "dataset_id": "SYN_DIVIDENDS",
+        "as_of": "2026-10-19T18:00:00Z"
+      },
+      "columns": [
+        "ISIN",
+        "TRADE_CODE",
+        "dt",
+        "value",
+        "currency"
+      ],
+      "row_count": 1,
+      "content_sha256": "fc79c6b157a3229faa90daf94724d450d987076170634907e63b5e5ef200debe",
+      "bindings_sha256": "8972755298278e81bf9f6e99e09ad9427f82922a451d6fa374a29c69893f4662"
+    },
+    "source_bindings": [
+      {
+        "source_id": "SYN_SOURCE_1",
+        "acquisition_id": "SYN_ACQUISITION_1",
+        "source_kind": "SYNTHETIC_ONLY",
+        "raw_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+        "raw_length": 19,
+        "acquired_at": "2026-10-19T18:05:00Z",
+        "contract_evidence_ref": null,
+        "coverage_evidence_ref": null,
+        "null_reasons": {
+          "contract_evidence_ref": "NOT_AVAILABLE",
+          "coverage_evidence_ref": "NOT_AVAILABLE"
+        }
+      }
+    ],
+    "evidence": [
+      {
+        "evidence_id": "SYN_EVIDENCE_1",
+        "context": {
+          "run_id": "SYN_RUN_1",
+          "snapshot_id": "SYN_SNAPSHOT_1",
+          "dataset_id": "SYN_DIVIDENDS",
+          "as_of": "2026-10-19T18:00:00Z"
+        },
+        "candidate_release_id": "SYN_CANDIDATE_1",
+        "source_id": "SYN_SOURCE_1",
+        "subject_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+        "status": "SYNTHETIC_ONLY",
+        "assessor_role": "E_VERIFIER",
+        "assessor_id": "SYN_E_1",
+        "profile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "created_at": "2026-10-19T18:06:00Z",
+        "valid_until": "2026-10-20T18:00:00Z",
+        "null_reasons": {}
+      }
+    ],
+    "previous": {
+      "presence": "NOT_VERIFIED",
+      "previous_release_id": null,
+      "previous_snapshot_id": null,
+      "previous_as_of": null,
+      "evidence_ref": null,
+      "null_reasons": {
+        "previous_release_id": "NOT_AVAILABLE",
+        "previous_snapshot_id": "NOT_AVAILABLE",
+        "previous_as_of": "NOT_AVAILABLE",
+        "evidence_ref": "NOT_AVAILABLE"
+      }
+    },
+    "evaluation_as_of": "2026-10-19T18:10:00Z",
+    "acquisition_window": {
+      "start": "2026-10-19T18:00:00Z",
+      "end": "2026-10-19T18:10:00Z"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "unknown-envelope-field",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "PRIVATE_CANARY_7281"
+          ],
+          "value": true
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "missing-candidate-id",
+      "message_edits": [
+        {
+          "op": "remove",
+          "path": [
+            "candidate_release_id"
+          ]
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "null-candidate-id",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "candidate_release_id"
+          ],
+          "value": null
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "wrong-schema-id",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_id"
+          ],
+          "value": "mds.c2.runtime/2"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "VERSION"
+    },
+    {
+      "case_id": "wrong-schema-version",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_version"
+          ],
+          "value": 2
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "VERSION"
+    },
+    {
+      "case_id": "bool-schema-version",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_version"
+          ],
+          "value": true
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "VERSION"
+    },
+    {
+      "case_id": "payload-digest-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_sha256"
+          ],
+          "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "VERSION"
+    },
+    {
+      "case_id": "extra-context-release-id",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "release_id"
+          ],
+          "value": "SYN_RELEASE"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "null-run-id",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "run_id"
+          ],
+          "value": null
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "unsafe-alias",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "run_id"
+          ],
+          "value": "PRIVATE_CANARY_7281/secret"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "context-run-mismatch",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "run_id"
+          ],
+          "value": "SYN_RUN_OTHER"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "context-snapshot-mismatch",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "snapshot_id"
+          ],
+          "value": "SYN_OTHER_SNAPSHOT"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "context-dataset-mismatch",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "dataset_id"
+          ],
+          "value": "SYN_OTHER_DATASET"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "context-as-of-mismatch",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "as_of"
+          ],
+          "value": "2026-10-19T17:00:00Z"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "invalid-calendar-as-of",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "as_of"
+          ],
+          "value": "2026-02-30T18:00:00Z"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "UTC"
+    },
+    {
+      "case_id": "offset-not-canonical-utc",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "as_of"
+          ],
+          "value": "2026-10-19T18:00:00+00:00"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "acquisition-does-not-replace-cutoff",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "context",
+            "as_of"
+          ],
+          "value": "2026-10-19T18:05:00Z"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "candidate-generation-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "candidate_release_id"
+          ],
+          "value": "SYN_CANDIDATE_OTHER"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "producer-role-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "producer",
+            "role"
+          ],
+          "value": "E_VERIFIER"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "PRODUCER"
+    },
+    {
+      "case_id": "producer-version-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "producer",
+            "profile_version"
+          ],
+          "value": 2
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "PRODUCER"
+    },
+    {
+      "case_id": "producer-profile-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "producer",
+            "profile_sha256"
+          ],
+          "value": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "PRODUCER"
+    },
+    {
+      "case_id": "source-digest-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "source_bindings",
+            0,
+            "raw_sha256"
+          ],
+          "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SOURCE_BINDING"
+    },
+    {
+      "case_id": "source-id-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "source_bindings",
+            0,
+            "source_id"
+          ],
+          "value": "SYN_OTHER_SOURCE"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SOURCE_BINDING"
+    },
+    {
+      "case_id": "source-claims-official",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "source_bindings",
+            0,
+            "source_kind"
+          ],
+          "value": "MOEX_ISS"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SOURCE_BINDING"
+    },
+    {
+      "case_id": "source-bool-count",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "source_bindings",
+            0,
+            "raw_length"
+          ],
+          "value": true
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "duplicate-source-id",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "source_bindings"
+          ],
+          "value": [
+            {
+              "source_id": "SYN_SOURCE_1",
+              "acquisition_id": "SYN_ACQUISITION_1",
+              "source_kind": "SYNTHETIC_ONLY",
+              "raw_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+              "raw_length": 19,
+              "acquired_at": "2026-10-19T18:05:00Z",
+              "contract_evidence_ref": null,
+              "coverage_evidence_ref": null,
+              "null_reasons": {
+                "contract_evidence_ref": "NOT_AVAILABLE",
+                "coverage_evidence_ref": "NOT_AVAILABLE"
+              }
+            },
+            {
+              "source_id": "SYN_SOURCE_1",
+              "acquisition_id": "SYN_ACQUISITION_1",
+              "source_kind": "SYNTHETIC_ONLY",
+              "raw_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+              "raw_length": 19,
+              "acquired_at": "2026-10-19T18:05:00Z",
+              "contract_evidence_ref": null,
+              "coverage_evidence_ref": null,
+              "null_reasons": {
+                "contract_evidence_ref": "NOT_AVAILABLE",
+                "coverage_evidence_ref": "NOT_AVAILABLE"
+              }
+            }
+          ]
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SOURCE_INVENTORY"
+    },
+    {
+      "case_id": "evidence-status-upgrade",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evidence",
+            0,
+            "status"
+          ],
+          "value": "VERIFIED"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "EVIDENCE_BINDING"
+    },
+    {
+      "case_id": "evidence-subject-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evidence",
+            0,
+            "subject_sha256"
+          ],
+          "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "EVIDENCE_BINDING"
+    },
+    {
+      "case_id": "evidence-assessor-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evidence",
+            0,
+            "assessor_role"
+          ],
+          "value": "Q_ASSESSOR"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "EVIDENCE_BINDING"
+    },
+    {
+      "case_id": "evidence-foreign-context",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evidence",
+            0,
+            "context",
+            "run_id"
+          ],
+          "value": "SYN_OTHER_RUN"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "evidence-foreign-candidate",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evidence",
+            0,
+            "candidate_release_id"
+          ],
+          "value": "SYN_OTHER_CANDIDATE"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "duplicate-evidence-id",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evidence"
+          ],
+          "value": [
+            {
+              "evidence_id": "SYN_EVIDENCE_1",
+              "context": {
+                "run_id": "SYN_RUN_1",
+                "snapshot_id": "SYN_SNAPSHOT_1",
+                "dataset_id": "SYN_DIVIDENDS",
+                "as_of": "2026-10-19T18:00:00Z"
+              },
+              "candidate_release_id": "SYN_CANDIDATE_1",
+              "source_id": "SYN_SOURCE_1",
+              "subject_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+              "status": "SYNTHETIC_ONLY",
+              "assessor_role": "E_VERIFIER",
+              "assessor_id": "SYN_E_1",
+              "profile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "created_at": "2026-10-19T18:06:00Z",
+              "valid_until": "2026-10-20T18:00:00Z",
+              "null_reasons": {}
+            },
+            {
+              "evidence_id": "SYN_EVIDENCE_1",
+              "context": {
+                "run_id": "SYN_RUN_1",
+                "snapshot_id": "SYN_SNAPSHOT_1",
+                "dataset_id": "SYN_DIVIDENDS",
+                "as_of": "2026-10-19T18:00:00Z"
+              },
+              "candidate_release_id": "SYN_CANDIDATE_1",
+              "source_id": "SYN_SOURCE_1",
+              "subject_sha256": "78d415b5f2a87d8600742058f8e4cbfda911d5c0d3f4efdca27633f6cc78c3aa",
+              "status": "SYNTHETIC_ONLY",
+              "assessor_role": "E_VERIFIER",
+              "assessor_id": "SYN_E_1",
+              "profile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "created_at": "2026-10-19T18:06:00Z",
+              "valid_until": "2026-10-20T18:00:00Z",
+              "null_reasons": {}
+            }
+          ]
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "EVIDENCE_INVENTORY"
+    },
+    {
+      "case_id": "dangling-check-evidence",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "assessment",
+            "checks",
+            0,
+            "evidence_ref"
+          ],
+          "value": "SYN_UNKNOWN_EVIDENCE"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "REFERENCE"
+    },
+    {
+      "case_id": "pass-with-reason",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "assessment",
+            "checks",
+            0,
+            "status"
+          ],
+          "value": "PASS"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "NULL_REASON"
+    },
+    {
+      "case_id": "bool-as-cell-int",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "canonical",
+            "rows",
+            0,
+            3
+          ],
+          "value": {
+            "kind": "INT",
+            "value": true
+          }
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "noncanonical-float-cell",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "canonical",
+            "rows",
+            0,
+            3
+          ],
+          "value": {
+            "kind": "FLOAT64",
+            "value": "0.1"
+          }
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CELL"
+    },
+    {
+      "case_id": "frame-count-mismatch",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "canonical",
+            "row_count"
+          ],
+          "value": 2
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CANONICAL_BINDING"
+    },
+    {
+      "case_id": "public-column-change",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "canonical",
+            "columns",
+            3
+          ],
+          "value": "amount"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "binding-source-ordinal-change",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "canonical",
+            "bindings",
+            0,
+            "source_ordinal"
+          ],
+          "value": 1
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CANONICAL_BINDING"
+    },
+    {
+      "case_id": "canonical-context-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "canonical",
+            "context",
+            "run_id"
+          ],
+          "value": "SYN_OTHER_RUN"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "CONTEXT"
+    },
+    {
+      "case_id": "previous-null-is-not-absence",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "previous",
+            "presence"
+          ],
+          "value": "ABSENT"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "PREVIOUS"
+    },
+    {
+      "case_id": "previous-generation-substitution",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "previous",
+            "previous_release_id"
+          ],
+          "value": "SYN_FAKE_PREVIOUS"
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "NULL_REASON"
+    },
+    {
+      "case_id": "missing-null-reason",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "source_bindings",
+            0,
+            "null_reasons"
+          ],
+          "value": {}
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "NULL_REASON"
+    },
+    {
+      "case_id": "invented-null-reason",
+      "message_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "null_reasons"
+          ],
+          "value": {
+            "canonical": "NOT_AVAILABLE"
+          }
+        }
+      ],
+      "trusted_edits": [],
+      "expected_code": "NULL_REASON"
+    },
+    {
+      "case_id": "expired-evidence",
+      "message_edits": [],
+      "trusted_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evaluation_as_of"
+          ],
+          "value": "2026-10-21T18:00:00Z"
+        }
+      ],
+      "expected_code": "EVIDENCE_FRESHNESS"
+    },
+    {
+      "case_id": "evidence-from-future",
+      "message_edits": [],
+      "trusted_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "evaluation_as_of"
+          ],
+          "value": "2026-10-19T18:05:30Z"
+        }
+      ],
+      "expected_code": "EVIDENCE_FRESHNESS"
+    },
+    {
+      "case_id": "source-outside-independent-window",
+      "message_edits": [],
+      "trusted_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "acquisition_window",
+            "start"
+          ],
+          "value": "2026-10-19T18:06:00Z"
+        }
+      ],
+      "expected_code": "SOURCE_FRESHNESS"
+    },
+    {
+      "case_id": "unknown-trusted-field",
+      "message_edits": [],
+      "trusted_edits": [
+        {
+          "op": "replace",
+          "path": [
+            "trusted"
+          ],
+          "value": true
+        }
+      ],
+      "expected_code": "SHAPE"
+    },
+    {
+      "case_id": "missing-trust-basis",
+      "message_edits": [],
+      "trusted_edits": [
+        {
+          "op": "remove",
+          "path": [
+            "source_bindings"
+          ]
+        }
+      ],
+      "expected_code": "SHAPE"
+    }
+  ]
+}
