@@ -1,4 +1,4 @@
-"""Legacy LNX-02 replay and the separately admitted closed LNX-03 consumer.
+"""Legacy LNX-02/LNX-03 and the separately admitted closed D2 Linux consumer.
 
 This is not an arbitrary application launcher, sandbox or lock update service.
 All managed Python entries use -I -S -B and install the hook before third-party
@@ -4922,6 +4922,1790 @@ def lnx03_pipeline(args):
     return report, 0 if report['status'] == 'PASS' else 1
 
 
+# D2 Linux is a separate consumer; the accepted LNX-02/03 functions above stay closed.
+D2_LINUX_CASES = (
+    'success', 'google_error', 'ftp_error', 'exit23', 'system_exit0',
+    'system_exit_string', 'abnormal_before_ready', 'abnormal_after_final',
+    'normal_without_final', 'final_then_exit23', 'start_google_before',
+    'start_ftp_before', 'start_google_after_native', 'start_ftp_after_native',
+    'constructor_error', 'hang_google', 'hang_ftp', 'cleanup_unsettled',
+    'partial_google', 'partial_ftp', 'checkpoint_missing', 'checkpoint_corrupt',
+    'checkpoint_oversize', 'checkpoint_stale_run', 'checkpoint_stale_pid',
+    'checkpoint_stale_sequence', 'listener_failure', 'ack_failure',
+    'bootstrap_replay_failure', 'bootstrap_import_failure',
+    'bootstrap_unpickle_failure', 'foreign_fd', 'canary_positive_control',
+    'parent_finalization_raises', 'parent_finalization_incomplete',
+    'postseal_cleanup_failure', 'cancel_google', 'cancel_ftp',
+    'ticket_ftp_failure', 'pidfd_google_failure', 'identity_google_failure',
+    'registry_google_failure', 'registration_google_failure',
+    'registration_ftp_failure', 'bootstrap_pipe_failure', 'replace_failure', 'tracker_death',
+    'preupload_stage_failure',
+    'post_context_bind_failure',
+    'serialization_write_failure',
+) + (
+    'baseline_google_swallowed', 'baseline_ftp_root_swallowed',
+    'baseline_ftp_dividends_swallowed', 'baseline_ftp_tickers_swallowed',
+    'baseline_exit23', 'baseline_hang',
+)
+
+D2_LINUX_PATHS = (
+    'upload.py',
+    'upload.ipynb',
+    'main.py',
+    '.github/lnx02/verify_env.py',
+    '.github/workflows/d2-linux-offline.yml',
+    'tools/offline_linux.py',
+    'tools/offline_guard_linux.py',
+    'tests/d2/conftest.py',
+    'tests/d2/d2_worker.py',
+    'tests/d2/test_supervision.py',
+    'tests/d2/test_targets.py',
+    'tests/d2/test_logging_contract.py',
+    'tests/d2/test_guard_admission.py',
+    'tests/fixtures/d2/expected.json',
+    'docs/d2_supervision.md',
+    'docs/testing.md',
+    'docs/coordination.md',
+)
+# This is the approved path contract, independent of a caller-supplied list.
+D2_LINUX_PATHS_SHA256 = 'e998ff24946da096a06b763f1879247d264bf0a328d4675efa09ee56e3e965ca'
+D2_LINUX_DEPENDENCY_PATHS = D2_LINUX_PATHS + LNX03_PATHS + (
+    'run_logging.py',
+    'requirements/linux-cp314-runtime.lock',
+    'requirements/linux-cp314-test.lock',
+    'requirements/linux-cp314-dev.lock',
+    'requirements/windows-cp314-runtime.lock',
+    'requirements/windows-cp314-test.lock',
+    'requirements/windows-cp314-dev.lock',
+    'requirements/runtime.in', 'requirements/test.in', 'requirements/dev.in',
+)
+D2_LINUX_GRANT_KEYS = frozenset({
+    'approved', 'consumer', 'repository', 'sha', 'base', 'event', 'ref',
+    'actor', 'triggering_actor', 'workflow', 'job', 'run_number', 'attempt', 'ticket_id',
+    'run_id',
+})
+D2_LINUX_RESULT_KEYS = frozenset({
+    'schema_version', 'consumer', 'scope', 'status', 'failure_code', 'source',
+    'authority', 'environment', 'setup', 'isolation', 'foundation', 'cases', 'cleanup',
+})
+D2_LINUX_ENV_KEYS = (
+    'MDS_D2_LINUX_ADMISSION_GRANT', 'MDS_D2_LINUX_SETUP_GRANT',
+    'MDS_D2_LINUX_SUPERVISED_NETNS_GRANT', 'GITHUB_RUN_ID', 'GITHUB_RUN_NUMBER',
+    'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA',
+    'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'TASK_WORKFLOW', 'TASK_JOB',
+    'TASK_RUN_NUMBER', 'TASK_RUN_ATTEMPT', 'TASK_RUN_ID',
+)
+
+
+def d2_grant_json(value):
+    def unique(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise PolicyError('d2-linux-duplicate-grant-key')
+            result[key] = item
+        return result
+    if type(value) is not str or len(value) > 16384:
+        raise PolicyError('d2-linux-grant-missing')
+    try:
+        result = json.loads(value, object_pairs_hook=unique)
+    except (ValueError, TypeError):
+        raise PolicyError('d2-linux-grant-json-invalid') from None
+    if type(result) is not dict:
+        raise PolicyError('d2-linux-grant-object-required')
+    return result
+
+
+def d2_capability(env, grant, name, capability):
+    value = d2_grant_json(env.get(name))
+    if set(value) != D2_LINUX_GRANT_KEYS | {'capability'}:
+        raise PolicyError('d2-linux-capability-fields-invalid')
+    if value != dict(grant, capability=capability):
+        raise PolicyError('d2-linux-capability-not-authorized')
+
+
+def d2_validate_grant(env, sha, base, require_setup=True):
+    grant = d2_grant_json(env.get('MDS_D2_LINUX_ADMISSION_GRANT'))
+    if set(grant) != D2_LINUX_GRANT_KEYS:
+        raise PolicyError('d2-linux-grant-fields-invalid')
+    if any(type(grant[key]) is not str for key in D2_LINUX_GRANT_KEYS - {'approved', 'run_number', 'attempt'}):
+        raise PolicyError('d2-linux-grant-field-types-invalid')
+    if (grant['approved'] is not True or grant['consumer'] != 'd2-linux'
+            or type(sha) is not str or not SHA.fullmatch(sha)
+            or type(base) is not str or not SHA.fullmatch(base)
+            or grant['sha'] != sha or grant['base'] != base
+            or grant['repository'] != 'foykes/moex-dataset'
+            or grant['actor'] != 'foykes' or grant['triggering_actor'] != 'foykes'
+            or grant['workflow'] != '.github/workflows/d2-linux-offline.yml'
+            or grant['job'] != 'd2-linux'
+            or type(grant['run_number']) is not int or grant['run_number'] <= 0
+            or type(grant['attempt']) is not int or grant['attempt'] != 2
+            or type(grant['run_id']) is not str or not re.fullmatch(r'[1-9][0-9]*', grant['run_id'])
+            or type(grant['ticket_id']) is not str or not HEX.fullmatch(grant['ticket_id'])):
+        raise PolicyError('d2-linux-authority-invalid')
+    expected = {
+        'GITHUB_REPOSITORY': grant['repository'], 'GITHUB_SHA': sha,
+        'GITHUB_EVENT_NAME': grant['event'], 'GITHUB_REF': grant['ref'],
+        'GITHUB_ACTOR': grant['actor'], 'GITHUB_TRIGGERING_ACTOR': grant['triggering_actor'],
+        'GITHUB_RUN_NUMBER': str(grant['run_number']), 'GITHUB_RUN_ATTEMPT': '2',
+        'GITHUB_RUN_ID': grant['run_id'],
+        'GITHUB_JOB': grant['job'], 'GITHUB_WORKFLOW_SHA': sha,
+        'GITHUB_WORKFLOW_REF': grant['repository'] + '/' + grant['workflow'] + '@' + grant['ref'],
+        'RUNNER_ENVIRONMENT': 'github-hosted', 'TASK_RUNNER_ENVIRONMENT': 'github-hosted',
+        'TASK_DELETED': 'false', 'GITHUB_ACTIONS': 'true', 'ImageOS': 'ubuntu24',
+    }
+    if any(env.get(key) != value for key, value in expected.items()):
+        raise PolicyError('d2-linux-event-identity-mismatch')
+    mirrors = {
+        'TASK_EVENT': 'GITHUB_EVENT_NAME', 'TASK_EVENT_SHA': 'GITHUB_SHA',
+        'TASK_EVENT_REF': 'GITHUB_REF', 'TASK_REPOSITORY': 'GITHUB_REPOSITORY',
+        'TASK_ACTOR': 'GITHUB_ACTOR', 'TASK_TRIGGERING_ACTOR': 'GITHUB_TRIGGERING_ACTOR',
+        'TASK_JOB': 'GITHUB_JOB', 'TASK_RUN_NUMBER': 'GITHUB_RUN_NUMBER',
+        'TASK_RUN_ATTEMPT': 'GITHUB_RUN_ATTEMPT', 'TASK_RUN_ID': 'GITHUB_RUN_ID',
+    }
+    run_id = env.get('GITHUB_RUN_ID', '')
+    if (not re.fullmatch(r'[1-9][0-9]*', run_id)
+            or any(env.get(key) != env.get(value) for key, value in mirrors.items())
+            or env.get('TASK_WORKFLOW') != grant['workflow']):
+        raise PolicyError('d2-linux-event-mirror-mismatch')
+    if grant['event'] == 'push':
+        if (grant['ref'] != 'refs/heads/codex/mds-d2-linux-stage-b'
+                or base != '25dee502a68128aea752f24ff67dfcb16b615a36'):
+            raise PolicyError('d2-linux-push-ref-not-authorized')
+    elif grant['event'] == 'workflow_dispatch':
+        if grant['ref'] != 'refs/heads/main' or sha != base:
+            raise PolicyError('d2-linux-dispatch-not-authorized')
+    else:
+        raise PolicyError('d2-linux-event-not-authorized')
+    if require_setup:
+        d2_capability(env, grant, 'MDS_D2_LINUX_SETUP_GRANT', 'network-setup')
+    return dict(grant)
+
+
+def d2_claim(claim_root, grant):
+    root = real_components(Path(claim_root).absolute(), directory=True)
+    if not root.is_dir() or set(grant) != D2_LINUX_GRANT_KEYS:
+        raise PolicyError('d2-linux-claim-root-or-identity-invalid')
+    if (hasattr(os, 'getuid') and
+            (root.lstat().st_uid != os.getuid() or stat.S_IMODE(root.lstat().st_mode) != 0o700)):
+        raise PolicyError('d2-linux-claim-root-not-private-owned')
+    if type(grant['ticket_id']) is not str or not HEX.fullmatch(grant['ticket_id']):
+        raise PolicyError('d2-linux-ticket-id-invalid')
+    path = root / (grant['ticket_id'] + '.json')
+    try:
+        write_new(root, path, json_bytes(grant))
+    except OSError:
+        raise PolicyError('d2-linux-ticket-already-claimed-or-unavailable') from None
+    return digest(path)
+
+
+def d2_source_identity(repo, sha, base, observed_main=None):
+    """Bind a clean tested commit to its immutable approved base and scope.
+
+    The fetched main observation is checked once before SETUP. Later source
+    validation deliberately has no dependency on a moving remote reference.
+    Legacy LNX-02 source_identity keeps its original current-main rule.
+    """
+    if (type(sha) is not str or not SHA.fullmatch(sha)
+            or type(base) is not str or not SHA.fullmatch(base)):
+        raise PolicyError('d2-linux-source-identity-invalid')
+    canonical = json.dumps(D2_LINUX_PATHS, ensure_ascii=True, separators=(',', ':')).encode('ascii')
+    if (len(D2_LINUX_PATHS) != 17 or len(set(D2_LINUX_PATHS)) != 17
+            or hashlib.sha256(canonical).hexdigest() != D2_LINUX_PATHS_SHA256):
+        raise PolicyError('d2-linux-approved-path-contract-changed')
+    if git_read(repo, ['rev-parse', 'HEAD']).stdout.decode('ascii').strip() != sha:
+        raise PolicyError('d2-linux-source-head-drift')
+    if git_read(repo, ['cat-file', '-e', base + '^{commit}'], True).returncode:
+        raise PolicyError('d2-linux-approved-base-missing')
+    if git_read(repo, ['merge-base', '--is-ancestor', base, sha], True).returncode:
+        raise PolicyError('d2-linux-base-is-not-source-ancestor')
+    if git_read(repo, ['status', '--porcelain=v1', '--untracked-files=all']).stdout:
+        raise PolicyError('d2-linux-source-is-dirty')
+    changes = git_read(repo, ['diff', '--name-status', '--no-renames', '-z', base, sha, '--']).stdout
+    records = changes.split(b'\0')
+    if records[-1] != b'' or (len(records) - 1) % 2:
+        raise PolicyError('d2-linux-source-diff-invalid')
+    for index in range(0, len(records) - 1, 2):
+        try:
+            name = records[index + 1].decode('utf-8')
+        except UnicodeError:
+            raise PolicyError('d2-linux-source-diff-invalid') from None
+        if records[index] not in {b'A', b'M'} or name not in D2_LINUX_PATHS:
+            raise PolicyError('d2-linux-source-outside-approved-paths')
+    if observed_main is None:
+        return
+    if type(observed_main) is not str or not SHA.fullmatch(observed_main):
+        raise PolicyError('d2-linux-main-observation-invalid')
+    drift = git_read(repo, ['diff', '--name-only', '--no-renames', '-z', base, observed_main, '--']).stdout
+    if drift and not drift.endswith(b'\0'):
+        raise PolicyError('d2-linux-main-drift-invalid')
+    try:
+        drift_names = {name.decode('utf-8') for name in drift.split(b'\0') if name}
+    except UnicodeError:
+        raise PolicyError('d2-linux-main-drift-invalid') from None
+    if drift_names.intersection(D2_LINUX_DEPENDENCY_PATHS):
+        raise PolicyError('d2-linux-main-dependent-interface-drift')
+
+
+def d2_source_manifest(repo):
+    names = D2_LINUX_PATHS + LNX03_PATHS + ('run_logging.py',) + tuple(
+        'requirements/' + LOCK_NAMES[profile] for profile in PROFILES)
+    return {name: digest(contained(repo, repo / name)) for name in names}
+
+
+def d2_fingerprint(root):
+    root = real_components(Path(root).absolute(), directory=True)
+    values = {}
+    for folder, directories, files in os.walk(root, followlinks=False):
+        for name in directories:
+            real_components(Path(folder) / name, directory=True)
+        for name in files:
+            path = Path(folder) / name
+            regular(path)
+            values[path.relative_to(root).as_posix()] = digest(path)
+    return hashlib.sha256(json_bytes(values)).hexdigest()
+
+
+D2_LINUX_STAGE_FIELDS = frozenset({
+    'kind', 'status', 'format', 'helper_sha256', 'identity', 'namespace', 'guard',
+    'failure_code', 'negative_probes', 'observations', 'launcher_started',
+    'child_result_available', 'exit_code', 'signal', 'timed_out', 'termination_confirmed',
+    'parent_namespace_unchanged', 'pid', 'pidfd_bound', 'duration_seconds', 'stdout', 'stderr',
+    'launch_failure_code', 'launch_errno', 'isolation_mode', 'worker_started',
+    'worker_pidfd_bound', 'worker_termination_confirmed', 'supervisor_binary_sha256',
+    'registered_fixture_cleanup',
+})
+D2_LINUX_PRIMITIVE_FIELDS = D2_LINUX_STAGE_FIELDS | {
+    'argv_template', 'system_binary_sha256', 'payload_binary_sha256',
+}
+
+
+def d2_validate_identity(value, helper_sha):
+    fields = {'os', 'os_version', 'architecture', 'python', 'implementation', 'gil_enabled',
+              'glibc', 'python_build', 'soabi', 'py_gil_disabled', 'runner_image_os',
+              'runner_image_version', 'python_executable_name', 'python_executable_sha256',
+              'helper_sha256', 'provisioning_boundary'}
+    if type(value) is not dict or set(value) != fields:
+        raise PolicyError('d2-linux-identity-fields-invalid')
+    return validate_native_identity_evidence(value, helper_sha)
+
+
+def d2_validate_inventory(value):
+    if type(value) is not dict:
+        raise PolicyError('d2-linux-inventory-fields-invalid')
+    expected = {name: record[0] for name, record in parse_lock(
+        (Path(__file__).absolute().parents[2] / 'requirements' / LOCK_NAMES['dev']).read_text(encoding='utf-8')).items()}
+    expected['pip'] = PIP_VERSION
+    if set(value) - set(expected) or any(type(version) is not str or version != expected[name]
+                                        for name, version in value.items()):
+        raise PolicyError('d2-linux-inventory-fields-invalid')
+
+
+def d2_validate_application_observations(value, source_sha, complete):
+    if type(value) is not dict or set(value) - {'process', 'tests'}:
+        raise PolicyError('d2-linux-application-observations-fields-invalid')
+    if complete and (set(value) != {'process', 'tests'}
+            or type(value['process']) is not dict or type(value['tests']) is not dict):
+        raise PolicyError('d2-linux-application-observations-incomplete')
+    process = value.get('process')
+    if process is not None:
+        keys = {'started', 'pid', 'pidfd_bound', 'exit_code', 'timed_out', 'termination_confirmed'}
+        if (type(process) is not dict or set(process) != keys
+                or any(type(process[key]) is not bool for key in keys - {'pid', 'exit_code'})
+                or process['pid'] is not None and (type(process['pid']) is not int or process['pid'] <= 1)
+                or process['exit_code'] is not None and type(process['exit_code']) is not int):
+            raise PolicyError('d2-linux-application-process-fields-invalid')
+        if complete and (process['started'] is not True or process['pidfd_bound'] is not True
+                or process['termination_confirmed'] is not True or process['timed_out'] is not False
+                or process['exit_code'] != 0):
+            raise PolicyError('d2-linux-application-process-incomplete')
+    tests = value.get('tests')
+    if tests is not None:
+        d2_validate_tests(tests, source_sha, complete)
+
+def d2_validate_stage(stage, helper_sha, source_sha, mode, complete=False, primitive=False):
+    allowed = D2_LINUX_PRIMITIVE_FIELDS if primitive else D2_LINUX_STAGE_FIELDS
+    kinds = {'rootless-primitive'} if primitive else {'preflight', 'bootstrap', 'install', 'check', 'application'}
+    if (type(stage) is not dict or set(stage) - allowed or not {'kind', 'status'} <= set(stage)
+            or stage['kind'] not in kinds or stage['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}):
+        raise PolicyError('d2-linux-stage-fields-invalid')
+    successful = stage['status'] == 'PASS'
+    if complete and not successful:
+        raise PolicyError('d2-linux-stage-not-successful')
+    if successful:
+        required = {'helper_sha256', 'launcher_started', 'exit_code', 'signal', 'timed_out',
+            'termination_confirmed', 'parent_namespace_unchanged', 'duration_seconds', 'stdout', 'stderr'}
+        if primitive:
+            required |= {'argv_template', 'system_binary_sha256', 'payload_binary_sha256', 'pid', 'pidfd_bound'}
+        else:
+            required |= {'format', 'identity', 'namespace', 'guard', 'negative_probes',
+                'failure_code', 'observations', 'child_result_available', 'isolation_mode'}
+            required |= ({'pid', 'pidfd_bound'} if mode == 'rootless_user_net' else
+                {'worker_started', 'worker_pidfd_bound', 'worker_termination_confirmed', 'supervisor_binary_sha256'})
+        if not required <= set(stage):
+            raise PolicyError('d2-linux-stage-success-fields-missing')
+    if 'format' in stage and stage['format'] != 'd2-linux-worker-result-v1':
+        raise PolicyError('d2-linux-stage-format-invalid')
+    if 'helper_sha256' in stage and stage['helper_sha256'] != helper_sha:
+        raise PolicyError('d2-linux-stage-helper-invalid')
+    for key in ('launcher_started', 'child_result_available', 'timed_out', 'termination_confirmed',
+                'pidfd_bound', 'worker_started', 'worker_pidfd_bound', 'worker_termination_confirmed'):
+        if key in stage and type(stage[key]) is not bool:
+            raise PolicyError('d2-linux-stage-boolean-invalid')
+    for key in ('exit_code', 'signal', 'pid', 'launch_errno'):
+        if key in stage and stage[key] is not None and type(stage[key]) is not int:
+            raise PolicyError('d2-linux-stage-integer-invalid')
+    if ('parent_namespace_unchanged' in stage and type(stage['parent_namespace_unchanged']) is not bool
+            and stage['parent_namespace_unchanged'] != 'NOT ESTABLISHED'):
+        raise PolicyError('d2-linux-stage-parent-namespace-invalid')
+    if 'duration_seconds' in stage and (type(stage['duration_seconds']) not in {int, float}
+            or not math.isfinite(stage['duration_seconds']) or not 0 <= stage['duration_seconds'] <= 1800):
+        raise PolicyError('d2-linux-stage-duration-invalid')
+    if 'isolation_mode' in stage and stage['isolation_mode'] not in {'rootless_user_net', 'supervised_net'}:
+        raise PolicyError('d2-linux-stage-isolation-invalid')
+    for key in ('failure_code', 'launch_failure_code'):
+        if key in stage and stage[key] is not None and (type(stage[key]) is not str or not known_policy_code(stage[key])):
+            raise PolicyError('d2-linux-stage-failure-code-invalid')
+    for key in ('stdout', 'stderr'):
+        if key not in stage:
+            continue
+        stream = stage[key]
+        if (type(stream) is not dict or set(stream) != {'size_bytes', 'sha256', 'classification', 'safe_summary'}
+                or stream.get('classification') not in STREAM_SUMMARIES
+                or stream.get('safe_summary') != STREAM_SUMMARIES[stream['classification']]
+                or stream != unavailable_stream() and (type(stream['size_bytes']) is not int
+                   or stream['size_bytes'] < 0 or type(stream['sha256']) is not str or not HEX.fullmatch(stream['sha256']))):
+            raise PolicyError('d2-linux-stage-stream-fields-invalid')
+    for key in ('system_binary_sha256', 'payload_binary_sha256'):
+        if key in stage and (type(stage[key]) is not str or not HEX.fullmatch(stage[key])):
+            raise PolicyError('d2-linux-stage-binary-hash-invalid')
+    if 'argv_template' in stage and stage['argv_template'] != ['unshare', '--user', '--map-current-user', '--net', '--', 'true']:
+        raise PolicyError('d2-linux-primitive-command-invalid')
+    if 'supervisor_binary_sha256' in stage:
+        binaries = stage['supervisor_binary_sha256']
+        if (type(binaries) is not dict or set(binaries) != {'sudo', 'unshare', 'setpriv', 'env'}
+                or any(type(value) is not str or not HEX.fullmatch(value) for value in binaries.values())):
+            raise PolicyError('d2-linux-stage-supervisor-hash-invalid')
+    if stage.get('identity') is not None:
+        d2_validate_identity(stage['identity'], helper_sha)
+    if stage.get('namespace') is not None:
+        validate_namespace_evidence(stage['namespace'], mode)
+        if ('ipv6_null_route_count' in stage['namespace']
+                and (type(stage['namespace']['ipv6_null_route_count']) is not int
+                     or not 0 <= stage['namespace']['ipv6_null_route_count'] <= 16)):
+            raise PolicyError('d2-linux-stage-ipv6-count-invalid')
+    if stage.get('guard') is not None:
+        guard = stage['guard']
+        events = {'socket.__new__', 'socket.getaddrinfo', 'socket.connect', 'socket.bind', 'socket.sendto',
+                  'socket.gethostbyname', 'socket.gethostbyaddr', 'socket.getnameinfo', 'socket.sethostname',
+                  'socket.sendmsg', 'subprocess.Popen', 'urllib.Request', 'os.system', 'os.exec', 'os.fork',
+                  'os.forkpty', 'os.spawn', 'os.posix_spawn', 'pty.spawn'}
+        if (type(guard) is not dict or set(guard) != {'registered_before_third_party', 'pid', 'expected_denials', 'unexpected_denials'}
+                or type(guard['registered_before_third_party']) is not bool
+                or type(guard['pid']) is not int or guard['pid'] <= 1
+                or any(type(guard[key]) is not dict or set(guard[key]) - events
+                   or any(type(count) is not int or count < 0 for count in guard[key].values())
+                   for key in ('expected_denials', 'unexpected_denials'))):
+            raise PolicyError('d2-linux-stage-guard-fields-invalid')
+    if stage.get('negative_probes') is not None:
+        probes = stage['negative_probes']
+        if (type(probes) is not dict or set(probes) != {'pid', 'dns_denied_before_resolver', 'child_denied_before_launch', 'requests_fixture'}
+                or type(probes['pid']) is not int or probes['pid'] <= 1
+                or any(type(probes[key]) is not bool for key in probes if key != 'pid')):
+            raise PolicyError('d2-linux-stage-negative-probes-fields-invalid')
+    if 'registered_fixture_cleanup' in stage:
+        cleanup = stage['registered_fixture_cleanup']
+        if (type(cleanup) is not dict or set(cleanup) != {'schema', 'scope', 'status', 'pidfd_confirmed',
+                'already_absent', 'unsettled', 'identity_refusals', 'reaped_by_controller'}
+                or cleanup['schema'] != 'lnx03-emergency-settlement-v1' or cleanup['scope'] != 'REGISTERED_FIXTURES_ONLY'
+                or cleanup['status'] not in {'REGISTERED_EXITED', 'INCOMPLETE'} or cleanup['reaped_by_controller'] is not False
+                or any(type(cleanup[key]) is not int or cleanup[key] < 0
+                       for key in ('pidfd_confirmed', 'already_absent', 'unsettled', 'identity_refusals'))):
+            raise PolicyError('d2-linux-stage-emergency-cleanup-fields-invalid')
+    observations = stage.get('observations', {})
+    fields = {'rootless-primitive': set(), 'preflight': set(), 'bootstrap': {'pip', 'pip_operation'},
+              'install': {'pip', 'pip_operation'}, 'check': {'pip', 'pip_operation', 'inventory', 'synthetic'},
+              'application': {'process', 'tests'}}[stage['kind']]
+    if type(observations) is not dict or set(observations) - fields:
+        raise PolicyError('d2-linux-stage-observations-fields-invalid')
+    if stage['kind'] == 'application':
+        d2_validate_application_observations(observations, source_sha, complete)
+    if 'pip' in observations and observations['pip'] != {
+            'version': PIP_VERSION, 'verified_bootstrap_sha256': PIP_SHA256,
+            'fixed_user_agent_without_child_probes': True}:
+        raise PolicyError('d2-linux-stage-pip-fields-invalid')
+    if 'pip_operation' in observations:
+        operation = observations['pip_operation']
+        if (type(operation) is not dict or set(operation) - {'exit_code', 'pid', 'runpy_same_pid', 'exception_type'}
+                or 'exit_code' not in operation or operation['exit_code'] is not None and type(operation['exit_code']) is not int
+                or 'pid' in operation and (type(operation['pid']) is not int or operation['pid'] <= 1)
+                or 'runpy_same_pid' in operation and type(operation['runpy_same_pid']) is not bool
+                or 'exception_type' in operation and operation['exception_type'] not in PUBLIC_EXCEPTION_TYPES):
+            raise PolicyError('d2-linux-stage-pip-operation-fields-invalid')
+    if 'inventory' in observations:
+        d2_validate_inventory(observations['inventory'])
+    if 'synthetic' in observations:
+        synthetic = observations['synthetic']
+        if (type(synthetic) is not dict or set(synthetic) != {'numpy', 'pandas', 'ta_lib', 'ta_native',
+                'numpy_synthetic', 'ta_sma_synthetic', 'csv_synthetic', 'xlsx_synthetic', 'project_modules_imported'}
+                or synthetic['numpy'] != '2.3.4' or synthetic['pandas'] != '2.3.3' or synthetic['ta_lib'] != '0.6.8'
+                or type(synthetic['ta_native']) is not str or not re.fullmatch(r'[0-9]+(?:[.][0-9]+){1,3}', synthetic['ta_native'])
+                or any(synthetic[key] != 'PASS' for key in ('numpy_synthetic', 'ta_sma_synthetic', 'csv_synthetic', 'xlsx_synthetic'))
+                or synthetic['project_modules_imported'] != []):
+            raise PolicyError('d2-linux-stage-synthetic-fields-invalid')
+    if successful:
+        if (stage['helper_sha256'] != helper_sha or stage['launcher_started'] is not True
+                or stage['exit_code'] != 0 or stage['signal'] is not None or stage['timed_out'] is not False
+                or stage['termination_confirmed'] is not True or stage['parent_namespace_unchanged'] is not True
+                or stage.get('failure_code') is not None or stage.get('launch_failure_code') is not None
+                or stage.get('launch_errno') is not None or 'registered_fixture_cleanup' in stage
+                or any(stage[key]['classification'] == 'unavailable' for key in ('stdout', 'stderr'))):
+            raise PolicyError('d2-linux-stage-success-launch-incomplete')
+        if primitive:
+            if (type(stage['pid']) is not int or stage['pid'] <= 1 or stage['pidfd_bound'] is not True):
+                raise PolicyError('d2-linux-primitive-success-settlement-incomplete')
+            return
+        if (stage['format'] != 'd2-linux-worker-result-v1' or stage['failure_code'] is not None
+                or stage['child_result_available'] is not True
+                or stage['isolation_mode'] != mode or set(observations) != fields
+                or type(stage['identity']) is not dict or type(stage['namespace']) is not dict
+                or type(stage['guard']) is not dict or type(stage['negative_probes']) is not dict):
+            raise PolicyError('d2-linux-stage-success-proof-incomplete')
+        guard, probes = stage['guard'], stage['negative_probes']
+        if (guard['registered_before_third_party'] is not True or guard['unexpected_denials'] != {}
+                or guard['expected_denials'] != {'socket.getaddrinfo': 1, 'subprocess.Popen': 1}
+                or probes['pid'] != guard['pid'] or probes['dns_denied_before_resolver'] is not True
+                or probes['child_denied_before_launch'] is not True
+                or probes['requests_fixture'] is not (stage['kind'] != 'preflight')):
+            raise PolicyError('d2-linux-stage-success-guard-incomplete')
+        if mode == 'rootless_user_net':
+            if (type(stage['pid']) is not int or stage['pid'] != guard['pid']
+                    or stage['pid'] <= 1 or stage['pidfd_bound'] is not True):
+                raise PolicyError('d2-linux-stage-success-process-incomplete')
+        elif (mode != 'supervised_net' or any(stage[key] is not True for key in (
+                'worker_started', 'worker_pidfd_bound', 'worker_termination_confirmed'))):
+            raise PolicyError('d2-linux-stage-success-supervision-incomplete')
+        if stage['kind'] in {'bootstrap', 'install', 'check'}:
+            if observations['pip_operation'] != {'exit_code': 0, 'pid': guard['pid'], 'runpy_same_pid': True}:
+                raise PolicyError('d2-linux-stage-success-pip-incomplete')
+        if stage['kind'] == 'check':
+            inventory = {name: record[0] for name, record in parse_lock(
+                (Path(__file__).absolute().parents[2] / 'requirements' / LOCK_NAMES['dev']).read_text(encoding='utf-8')).items()}
+            if observations['inventory'] != dict(inventory, pip=PIP_VERSION):
+                raise PolicyError('d2-linux-stage-success-inventory-incomplete')
+        if stage['kind'] == 'application':
+            d2_validate_application_observations(observations, source_sha, True)
+
+
+def d2_project_stage(stage, primitive=False):
+    # Runtime export intentionally omits internal readiness/topology records.
+    # The audit path never projects input: unexpected fields are rejected.
+    fields = D2_LINUX_PRIMITIVE_FIELDS if primitive else D2_LINUX_STAGE_FIELDS
+    return {key: copy.deepcopy(value) for key, value in stage.items() if key in fields}
+
+
+def d2_validate_tests(tests, sha, complete=False):
+    keys = {'schema_version', 'phase', 'status', 'source_sha', 'collected', 'passed', 'failed',
+            'deselected', 'skipped', 'native_collected', 'native_passed', 'node_ids_sha256',
+            'node_inventory_state', 'failed_node_ids',
+            'exit_code', 'native_cases', 'failure_code'}
+    if (type(tests) is not dict or set(tests) != keys
+            or tests['schema_version'] != 'd2-linux-runner-result-v1'
+            or type(tests['phase']) is not str or tests['phase'] not in {'foundation', 'application'}
+            or tests['source_sha'] != sha
+            or type(tests['status']) is not str or tests['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}
+            or any(type(tests[key]) is not int or tests[key] < 0 for key in (
+                'collected', 'passed', 'failed', 'deselected', 'skipped', 'native_collected', 'native_passed'))
+            or type(tests['node_ids_sha256']) is not str or not HEX.fullmatch(tests['node_ids_sha256'])
+            or type(tests['node_inventory_state']) is not str
+            or tests['node_inventory_state'] not in {'COMPLETE', 'NOT_AVAILABLE'}
+            or type(tests['exit_code']) is not int or not 0 <= tests['exit_code'] <= 255):
+        raise PolicyError('d2-linux-runner-result-fields-invalid')
+    passed = tests['status'] == 'PASS'
+    if passed != (tests['exit_code'] == 0) or complete and not passed:
+        raise PolicyError('d2-linux-runner-result-exit-mismatch')
+    if passed and (tests['failure_code'] is not None or tests['failed'] or tests['deselected']
+            or tests['skipped'] or tests['passed'] != tests['collected']
+            or tests['node_inventory_state'] != 'COMPLETE' or tests['failed_node_ids'] != []
+            or tests['native_passed'] != tests['native_collected'] or not tests['native_collected']):
+        raise PolicyError('d2-linux-runner-oracles-incomplete')
+    if not passed and (type(tests['failure_code']) is not str
+            or not re.fullmatch('[a-z0-9-]{1,100}', tests['failure_code'])):
+        raise PolicyError('d2-linux-runner-failure-code-required')
+    failed_nodes = tests['failed_node_ids']
+    if tests['node_inventory_state'] == 'NOT_AVAILABLE':
+        if failed_nodes is not None:
+            raise PolicyError('d2-linux-failed-node-inventory-unavailable')
+    elif (type(failed_nodes) is not list
+            or any(type(node) is not str or not re.fullmatch('d2-node-[0-9]{6}', node) for node in failed_nodes)
+            or failed_nodes != sorted(set(failed_nodes)) or len(failed_nodes) != tests['failed']):
+        raise PolicyError('d2-linux-failed-node-inventory-invalid')
+    if tests['phase'] == 'foundation':
+        if not passed and tests['node_inventory_state'] != 'NOT_AVAILABLE':
+            raise PolicyError('d2-linux-foundation-failed-node-ledger-unavailable')
+        lnx03_validate_native_cases(tests['native_cases'], require_complete=passed)
+        if passed and (tests['collected'] != 444 or tests['native_collected'] != 22):
+            raise PolicyError('d2-linux-foundation-inventory-mismatch')
+    else:
+        if tests['node_inventory_state'] == 'COMPLETE':
+            ledger = read_json(Path(__file__).absolute().parents[2] / 'tests/fixtures/d2/expected.json')
+            nodes = ledger.get('expected_node_ids')
+            if (type(nodes) is not list or tests['collected'] != len(nodes)
+                    or tests['node_ids_sha256'] != ledger.get('expected_node_ids_sha256')
+                    or any(not 1 <= int(node[8:]) <= len(nodes) for node in failed_nodes)):
+                raise PolicyError('d2-linux-failed-node-ledger-mismatch')
+        d2_validate_native_cases(tests['native_cases'], require_complete=passed)
+        if passed and (tests['collected'] != 315 or tests['native_collected'] != 56
+                or tests['node_ids_sha256'] != 'c3d08ac0cc6899d3da247bb3ad34bfcd003778192e8eaa421f18bf6d86f2d7ae'):
+            raise PolicyError('d2-linux-node-inventory-mismatch')
+    return tests
+
+
+def d2_validate_result(report):
+    if (type(report) is not dict or set(report) != D2_LINUX_RESULT_KEYS
+            or report['schema_version'] != 'd2-linux-v1'
+            or report['consumer'] != 'd2-linux' or report['scope'] != 'APPLICATION_ADMISSION'
+            or type(report['status']) is not str or report['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}):
+        raise PolicyError('d2-linux-result-fields-invalid')
+    source, authority = report['source'], report['authority']
+    if (type(source) is not dict or set(source) != {'sha', 'base', 'helper_sha256', 'files_sha256'}
+            or any(type(source[key]) is not str or not SHA.fullmatch(source[key]) for key in ('sha', 'base'))
+            or type(source['helper_sha256']) is not str or not HEX.fullmatch(source['helper_sha256'])
+            or type(source['files_sha256']) is not dict
+            or set(source['files_sha256']) != set(D2_LINUX_PATHS) | set(LNX03_PATHS) | {'run_logging.py'} | {
+                'requirements/' + LOCK_NAMES[profile] for profile in PROFILES}
+            or source['files_sha256'].get('.github/lnx02/verify_env.py') != source['helper_sha256']
+            or any(type(value) is not str or not HEX.fullmatch(value) for value in source['files_sha256'].values())):
+        raise PolicyError('d2-linux-result-source-invalid')
+    if (type(authority) is not dict or set(authority) != D2_LINUX_GRANT_KEYS
+            or authority['approved'] is not True
+            or authority['consumer'] != 'd2-linux' or authority['job'] != 'd2-linux'
+            or authority['sha'] != source['sha'] or authority['base'] != source['base']
+            or authority['repository'] != 'foykes/moex-dataset'
+            or authority['actor'] != authority['triggering_actor'] or authority['actor'] != 'foykes'
+            or authority['workflow'] != '.github/workflows/d2-linux-offline.yml'
+            or type(authority['attempt']) is not int or authority['attempt'] != 2
+            or type(authority['run_number']) is not int or authority['run_number'] <= 0
+            or type(authority['run_id']) is not str or not re.fullmatch('[1-9][0-9]*', authority['run_id'])
+            or type(authority['ticket_id']) is not str or not HEX.fullmatch(authority['ticket_id'])):
+        raise PolicyError('d2-linux-result-authority-invalid')
+    if not (authority['event'] == 'push' and authority['ref'] == 'refs/heads/codex/mds-d2-linux-stage-b'
+            and source['base'] == '25dee502a68128aea752f24ff67dfcb16b615a36'
+            or authority['event'] == 'workflow_dispatch' and authority['ref'] == 'refs/heads/main'
+            and source['base'] == source['sha']):
+        raise PolicyError('d2-linux-result-event-invalid')
+    sections = {'environment': {'identity', 'fingerprint_before', 'fingerprint_after', 'inventory', 'pip_check_exit'},
+                'setup': {'authorized', 'completed', 'wheel_count', 'stages'},
+                'isolation': {'mode', 'primitive', 'preflight'}, 'cleanup': {'state', 'owned_deleted'}}
+    for name, keys in sections.items():
+        if type(report[name]) is not dict or set(report[name]) != keys:
+            raise PolicyError('d2-linux-result-section-invalid')
+    environment, setup, isolation = report['environment'], report['setup'], report['isolation']
+    complete = report['status'] == 'PASS'
+    if (type(setup['stages']) is not list or len(setup['stages']) > 6
+            or type(setup['authorized']) is not bool or type(setup['completed']) is not bool
+            or type(setup['wheel_count']) is not int or not 0 <= setup['wheel_count'] <= 82
+            or isolation['mode'] not in {None, 'rootless_user_net', 'supervised_net'}
+            or report['cleanup']['state'] not in {'NOT_CREATED', 'SETTLED', 'INCOMPLETE', 'UNSETTLED'}
+            or type(report['cleanup']['owned_deleted']) is not bool):
+        raise PolicyError('d2-linux-result-state-invalid')
+    if environment['identity'] is not None:
+        d2_validate_identity(environment['identity'], source['helper_sha256'])
+    if environment['inventory'] is not None:
+        d2_validate_inventory(environment['inventory'])
+    for key in ('fingerprint_before', 'fingerprint_after'):
+        if environment[key] is not None and (type(environment[key]) is not str or not HEX.fullmatch(environment[key])):
+            raise PolicyError('d2-linux-result-fingerprint-invalid')
+    if isolation['primitive'] is not None:
+        d2_validate_stage(isolation['primitive'], source['helper_sha256'], source['sha'], isolation['mode'], primitive=True)
+    for stage in setup['stages']:
+        d2_validate_stage(stage, source['helper_sha256'], source['sha'], isolation['mode'], complete=complete)
+    if isolation['preflight'] is not None and (not setup['stages'] or isolation['preflight'] != setup['stages'][0]):
+        raise PolicyError('d2-linux-result-preflight-disagrees')
+    if report['foundation'] is not None:
+        d2_validate_tests(report['foundation'], source['sha'], complete)
+        if report['foundation']['phase'] != 'foundation':
+            raise PolicyError('d2-linux-foundation-phase-invalid')
+    d2_validate_native_cases(report['cases'], require_complete=complete)
+    if complete:
+        expected_inventory = {name: record[0] for name, record in parse_lock(
+            (Path(__file__).absolute().parents[2] / 'requirements' / LOCK_NAMES['dev']).read_text(encoding='utf-8')).items()}
+        if (report['failure_code'] is not None or setup['authorized'] is not True or setup['completed'] is not True
+                or setup['wheel_count'] != 82 or report['cleanup'] != {'state': 'SETTLED', 'owned_deleted': True}
+                or environment['identity'] is None or environment['inventory'] != dict(expected_inventory, pip=PIP_VERSION)
+                or environment['pip_check_exit'] != 0 or type(environment['pip_check_exit']) is not int
+                or environment['fingerprint_before'] is None
+                or environment['fingerprint_before'] != environment['fingerprint_after']
+                or isolation['mode'] is None or isolation['preflight'] is None or isolation['primitive'] is None
+                or report['foundation'] is None or len(setup['stages']) != 6
+                or [stage['kind'] for stage in setup['stages']] != ['preflight', 'bootstrap', 'install', 'check', 'application', 'application']):
+            raise PolicyError('d2-linux-success-evidence-incomplete')
+        if (isolation['mode'] == 'rootless_user_net' and isolation['primitive']['status'] != 'PASS'
+                or isolation['mode'] == 'supervised_net' and not rootless_permission_denied(isolation['primitive'])):
+            raise PolicyError('d2-linux-success-isolation-evidence-incomplete')
+        pids = []
+        for stage in setup['stages']:
+            if (stage.get('status') != 'PASS' or stage.get('exit_code') != 0
+                    or stage.get('termination_confirmed') is not True or stage.get('timed_out') is not False
+                    or isolation['mode'] == 'supervised_net' and stage.get('worker_termination_confirmed') is not True):
+                raise PolicyError('d2-linux-stage-settlement-incomplete')
+        for stage in setup['stages'][4:]:
+            observed = stage['observations']
+            d2_validate_application_observations(observed, source['sha'], True)
+            pids.append(observed['process']['pid'])
+        if (pids[0] == pids[1] or setup['stages'][4]['observations']['tests'] != report['foundation']
+                or setup['stages'][5]['observations']['tests']['phase'] != 'application'
+                or setup['stages'][5]['observations']['tests']['native_cases'] != report['cases']):
+            raise PolicyError('d2-linux-phase-lifetime-or-results-disagree')
+    elif type(report['failure_code']) is not str or not re.fullmatch('[a-z0-9-]{1,100}', report['failure_code']):
+        raise PolicyError('d2-linux-failure-code-required')
+    sanitized(report)
+    data = json_bytes(report)
+    if len(data) > 16 * 1024 * 1024 or re.search(rb'(?i)(https?://|file://|Traceback [(]most recent|LNX03_NATIVE_PRIVATE_CANARY|D2_NATIVE_PRIVATE_CANARY)', data):
+        raise PolicyError('d2-linux-export-private-evidence-refused')
+    return report
+
+def d2_validate_fd_diagnostics(delta, heap):
+    def identity(value):
+        return type(value) is list and len(value) == 4 and all(type(item) is int and item >= 0 for item in value)
+    if type(delta) is not dict or set(delta) != {'added', 'removed', 'changed'}:
+        raise PolicyError('d2-linux-case-fd-delta-fields-invalid')
+    seen = set()
+    for kind in ('added', 'removed', 'changed'):
+        if type(delta[kind]) is not list:
+            raise PolicyError('d2-linux-case-fd-delta-list-invalid')
+        for row in delta[kind]:
+            fields = {'fd', 'before_identity', 'after_identity'} if kind == 'changed' else {'fd', 'identity'}
+            if (type(row) is not dict or set(row) != fields or type(row['fd']) is not int or row['fd'] < 0
+                    or row['fd'] in seen or any(not identity(row[key]) for key in fields - {'fd'})):
+                raise PolicyError('d2-linux-case-fd-delta-row-invalid')
+            seen.add(row['fd'])
+    if type(heap) is not dict or set(heap) != {'before', 'after'}:
+        raise PolicyError('d2-linux-case-heap-observation-fields-invalid')
+    for phase in ('before', 'after'):
+        snapshot = heap[phase]
+        fields = {'heap_object', 'source_sha256', 'discard_threshold_bytes', 'arenas',
+                  'allocated_block_count', 'pending_free_block_count'}
+        if (type(snapshot) is not dict or set(snapshot) != fields
+                or type(snapshot['heap_object']) is not int or snapshot['heap_object'] <= 0
+                or type(snapshot['source_sha256']) is not str or not HEX.fullmatch(snapshot['source_sha256'])
+                or type(snapshot['arenas']) is not list
+                or any(type(snapshot[key]) is not int or snapshot[key] < 0 for key in (
+                    'discard_threshold_bytes', 'allocated_block_count', 'pending_free_block_count'))):
+            raise PolicyError('d2-linux-case-heap-snapshot-invalid')
+        objects = set()
+        for arena in snapshot['arenas']:
+            fields = {'arena_object', 'fd', 'size', 'fd_identity', 'allocated_blocks', 'pending_free_blocks'}
+            if (type(arena) is not dict or set(arena) != fields
+                    or any(type(arena[key]) is not int or arena[key] < 0 for key in fields - {'fd_identity'})
+                    or arena['arena_object'] == 0 or arena['arena_object'] in objects
+                    or arena['fd_identity'] is not None and not identity(arena['fd_identity'])):
+                raise PolicyError('d2-linux-case-heap-arena-invalid')
+            objects.add(arena['arena_object'])
+
+
+def d2_validate_cache_provenance(value):
+    fields = {'status', 'observer_installed', 'observer_healthy', 'connection_default_attested', 'source_pins',
+        'event_counts', 'protected_touches', 'arenas', 'owned_history', 'owned_current',
+        'owned_physically_closed', 'protected_disjoint_from_owned'}
+    flags = {'observer_installed', 'observer_healthy', 'connection_default_attested',
+             'owned_physically_closed', 'protected_disjoint_from_owned'}
+    pins = {'heap', 'connection', 'resource_tracker', 'util', 'mmap', 'upload', 'run_logging'}
+    events = {'arena_init', 'close', 'dup', 'dup2', 'connection_close', 'integer_open'}
+    operations = {'close', 'dup_source', 'dup2_source', 'dup2_target', 'integer_open', 'connection_close'}
+    if (type(value) is not dict or set(value) != fields or type(value['status']) is not str
+            or value['status'] not in {'OBSERVED', 'UNKNOWN'}
+            or any(type(value[key]) is not bool for key in flags)
+            or type(value['source_pins']) is not dict or set(value['source_pins']) != pins
+            or any(type(digest) is not str or not HEX.fullmatch(digest) for digest in value['source_pins'].values())
+            or type(value['event_counts']) is not dict or set(value['event_counts']) != events
+            or any(type(count) is not int or count < 0 for count in value['event_counts'].values())
+            or any(type(value[key]) is not list for key in ('protected_touches', 'arenas', 'owned_history', 'owned_current'))):
+        raise PolicyError('d2-linux-cache-provenance-fields-invalid')
+    def fd_row(row, owned=False):
+        keys = {'fd', 'identity', 'physically_closed'} if owned else {'fd', 'identity'}
+        return (type(row) is dict and set(row) == keys and type(row['fd']) is int and row['fd'] >= 0
+            and type(row['identity']) is list and len(row['identity']) == 4
+            and all(type(item) is int and item >= 0 for item in row['identity'])
+            and (not owned or type(row['physically_closed']) is bool))
+    for touch in value['protected_touches']:
+        if (type(touch) is not dict or set(touch) != {'operation', 'fd'}
+                or type(touch['operation']) is not str or touch['operation'] not in operations
+                or type(touch['fd']) is not int or touch['fd'] < 0):
+            raise PolicyError('d2-linux-cache-touch-invalid')
+    for key in ('owned_history', 'owned_current'):
+        if any(not fd_row(row, key == 'owned_history') for row in value[key]):
+            raise PolicyError('d2-linux-cache-owned-fd-invalid')
+        identities = [(row['fd'], tuple(row['identity'])) for row in value[key]]
+        if len(identities) != len(set(identities)):
+            raise PolicyError('d2-linux-cache-owned-fd-duplicate')
+    arena_flags = {'birth_baseline_unchanged', 'finalizer_attested', 'in_actual_heap', 'same_arena_fd',
+        'same_buffer', 'buffer_closed', 'birth_pair_still_same', 'free_indexes_consistent'}
+    arena_fields = arena_flags | {'arena_object', 'buffer_object', 'buffer_type', 'size', 'arena_fd',
+        'birth_pair', 'buffer_size', 'allocated_blocks', 'pending_free_blocks'}
+    observed_arena_flags = arena_flags - {'buffer_closed'}
+    objects, protected = set(), set()
+    for arena in value['arenas']:
+        if (type(arena) is not dict or set(arena) != arena_fields
+                or any(type(arena[key]) is not bool for key in arena_flags)
+                or any(type(arena[key]) is not int or arena[key] < 0 for key in (
+                    'arena_object', 'buffer_object', 'size', 'arena_fd', 'allocated_blocks', 'pending_free_blocks'))
+                or arena['arena_object'] == 0 or arena['buffer_object'] == 0
+                or arena['arena_object'] in objects or type(arena['buffer_type']) is not str
+                or arena['buffer_size'] is not None and (type(arena['buffer_size']) is not int or arena['buffer_size'] < 0)
+                or type(arena['birth_pair']) is not list or any(not fd_row(row) for row in arena['birth_pair'])):
+            raise PolicyError('d2-linux-cache-arena-fields-invalid')
+        objects.add(arena['arena_object'])
+        if len({row['fd'] for row in arena['birth_pair']}) != len(arena['birth_pair']):
+            raise PolicyError('d2-linux-cache-arena-fd-duplicate')
+        protected.update((row['fd'], tuple(row['identity'])) for row in arena['birth_pair'])
+        if value['status'] == 'OBSERVED' and (arena['buffer_type'] != 'mmap.mmap'
+                or any(arena[key] is not True for key in observed_arena_flags)
+                or arena['buffer_closed'] is not False or arena['buffer_size'] != arena['size']
+                or arena['allocated_blocks'] != 0 or arena['pending_free_blocks'] != 0
+                or len(arena['birth_pair']) != 2):
+            raise PolicyError('d2-linux-cache-observed-arena-incomplete')
+    history = {(row['fd'], tuple(row['identity'])) for row in value['owned_history']}
+    if (value['owned_physically_closed'] is not all(row['physically_closed'] for row in value['owned_history'])
+            or value['protected_disjoint_from_owned'] is not protected.isdisjoint(history)):
+        raise PolicyError('d2-linux-cache-owned-summary-disagrees')
+    if value['status'] == 'OBSERVED' and (not value['arenas'] or value['protected_touches']
+            or any(value[key] is not True for key in ('observer_installed', 'observer_healthy', 'connection_default_attested'))
+            or value['event_counts']['arena_init'] != len(value['arenas'])):
+        raise PolicyError('d2-linux-cache-observed-proof-incomplete')
+
+
+def d2_validate_fd_attribution(observation, complete=False, case=None):
+    proof, delta, heap = observation['cache_provenance'], observation['fd_inventory_delta'], observation['heap_observations']
+    d2_validate_cache_provenance(proof)
+    if (any(type(observation[key]) is not bool for key in (
+            'fd_inventory_unchanged', 'raw_fd_inventory_clean', 'owned_fd_inventory_clean'))
+            or type(observation['fd_attribution']) is not str
+            or observation['fd_attribution'] not in {'UNCHANGED', 'PROVEN_CPYTHON_CACHE', 'ATTRIBUTION_UNKNOWN'}):
+        raise PolicyError('d2-linux-fd-attribution-fields-invalid')
+    raw = not any(delta.values())
+    if observation['fd_inventory_unchanged'] is not raw or observation['raw_fd_inventory_clean'] is not raw:
+        raise PolicyError('d2-linux-fd-raw-observation-disagrees')
+    repo = Path(__file__).absolute().parents[2]
+    expected = read_json(repo / 'tests/fixtures/d2/expected.json').get('cache_source_sha256')
+    if (type(expected) is not dict or set(expected) != {'heap', 'connection', 'resource_tracker', 'util', 'run_logging'}
+            or any(type(digest) is not str or not HEX.fullmatch(digest) for digest in expected.values())):
+        raise PolicyError('d2-linux-cache-source-pin-invalid')
+    expected = dict(expected, upload=digest(repo / 'upload.py'))
+    before, after = heap['before'], heap['after']
+    common = (proof['status'] == 'OBSERVED'
+        and all(proof[key] is True for key in ('observer_installed', 'observer_healthy', 'connection_default_attested',
+            'owned_physically_closed', 'protected_disjoint_from_owned'))
+        and not proof['protected_touches'] and bool(proof['owned_history']) and not proof['owned_current']
+        and all(row['physically_closed'] is True for row in proof['owned_history'])
+        and all(proof['source_pins'][name] == value for name, value in expected.items())
+        and before['heap_object'] == after['heap_object']
+        and before['source_sha256'] == after['source_sha256'] == expected['heap']
+        and before['allocated_block_count'] == before['pending_free_block_count'] == 0
+        and after['allocated_block_count'] == after['pending_free_block_count'] == 0)
+    attribution = 'ATTRIBUTION_UNKNOWN'
+    if common and raw and before['arenas'] == after['arenas']:
+        attribution = 'UNCHANGED'
+    elif (common and not delta['removed'] and not delta['changed'] and not before['arenas']
+            and len(after['arenas']) == len(proof['arenas']) == 1 and proof['event_counts']['arena_init'] == 1
+            and before['discard_threshold_bytes'] == after['discard_threshold_bytes'] == 4194304):
+        arena, custody = after['arenas'][0], proof['arenas'][0]
+        pair = custody['birth_pair']
+        if (arena['arena_object'] == custody['arena_object'] and arena['fd'] == custody['arena_fd']
+                and arena['size'] == custody['size'] == custody['buffer_size'] == 4096
+                and arena['allocated_blocks'] == arena['pending_free_blocks'] == 0
+                and len(pair) == 2 and arena['fd'] in {row['fd'] for row in pair}
+                and all(row['identity'] == arena['fd_identity'] for row in pair)
+                and {row['fd']: row['identity'] for row in delta['added']} == {row['fd']: row['identity'] for row in pair}):
+            attribution = 'PROVEN_CPYTHON_CACHE'
+    clean = attribution != 'ATTRIBUTION_UNKNOWN'
+    if observation['owned_fd_inventory_clean']:
+        if not clean or observation['fd_attribution'] != attribution:
+            raise PolicyError('d2-linux-fd-owned-proof-incomplete')
+    elif observation['fd_attribution'] != 'ATTRIBUTION_UNKNOWN':
+        raise PolicyError('d2-linux-fd-unknown-attribution-disagrees')
+    if complete and case not in {'constructor_error', 'cleanup_unsettled', 'parent_finalization_raises', 'postseal_cleanup_failure'}:
+        if observation['owned_fd_inventory_clean'] is not True:
+            raise PolicyError('d2-linux-fd-owned-settlement-incomplete')
+
+
+def d2_validate_worker_observations(observation, complete=True):
+    workers = observation['result'].get('workers')
+    if type(workers) is not dict or set(workers) != {'google', 'ftp'}:
+        raise PolicyError('d2-linux-worker-results-invalid')
+    phases = {'STARTED', 'READY', 'GO_RELEASED', 'RETURNED', 'FAILED', 'INTERRUPTED'}
+    for role, row in workers.items():
+        if type(row) is not dict:
+            raise PolicyError('d2-linux-worker-result-fields-invalid')
+        started, phase, timeout = row.get('started'), row.get('execution_state'), row.get('timed_out')
+        if (started is not None and type(started) is not bool
+                or timeout is not None and type(timeout) is not bool
+                or started is False and (phase != 'NOT_STARTED' or row.get('pid') is not None)
+                or started is None and (phase != 'UNKNOWN' or row.get('pid') is not None)
+                or started is True and (phase not in phases or type(row.get('pid')) is not int)
+                or phase not in {'RETURNED', 'FAILED', 'INTERRUPTED'} and row.get('normal_return_observed') is not False):
+            raise PolicyError('d2-linux-worker-phase-invalid')
+        outcomes = [item for item in observation['logging_outcomes'] if item['worker_id'] == role]
+        if any(item['timed_out'] is not timeout or item['started'] is not started
+               or item['exit_status'] != row.get('exitcode') for item in outcomes):
+            raise PolicyError('d2-linux-worker-logging-outcome-disagrees')
+    events = observation['deadline_observations']
+    if type(events) is not list or len(events) > 4:
+        raise PolicyError('d2-linux-worker-deadline-observations-invalid')
+    seen = set()
+    for event in events:
+        keys = {'worker_id', 'pid', 'state', 'exitcode', 'before_ns', 'after_ns', 'deadline_ns'}
+        if (type(event) is not dict or set(event) != keys or event['worker_id'] not in workers
+                or event['state'] not in {'EXIT_OBSERVED', 'LIVE_AFTER_DEADLINE'}
+                or (event['worker_id'], event['state']) in seen
+                or event['pid'] != workers[event['worker_id']]['pid']
+                or any(type(event[key]) is not int or event[key] <= 0
+                       for key in ('pid', 'before_ns', 'after_ns', 'deadline_ns'))
+                or event['before_ns'] > event['after_ns']
+                or event['state'] == 'EXIT_OBSERVED' and type(event['exitcode']) is not int
+                or event['state'] == 'LIVE_AFTER_DEADLINE' and (
+                    event['exitcode'] is not None or event['before_ns'] < event['deadline_ns'])):
+            raise PolicyError('d2-linux-worker-deadline-observation-invalid')
+        seen.add((event['worker_id'], event['state']))
+    case = observation['case']
+    baseline = observation['timeout_baseline']
+    if case in {'hang_google', 'hang_ftp'} and complete:
+        hanging = 'google' if case == 'hang_google' else 'ftp'
+        healthy = 'ftp' if hanging == 'google' else 'google'
+        timely = [row for row in events if row['worker_id'] == healthy and row['state'] == 'EXIT_OBSERVED']
+        late = [row for row in events if row['worker_id'] == hanging and row['state'] == 'LIVE_AFTER_DEADLINE']
+        failed = observation['result']['failed_required_channels']
+        outcomes = {row['worker_id']: row for row in observation['logging_outcomes']}
+        if (len(timely) != 1 or timely[0]['exitcode'] != 0 or timely[0]['after_ns'] >= timely[0]['deadline_ns']
+                or len(late) != 1 or workers[healthy]['timed_out'] is not False
+                or workers[hanging]['timed_out'] is not True or healthy in failed or hanging not in failed
+                or outcomes.get(healthy, {}).get('timed_out') is not False
+                or outcomes.get(hanging, {}).get('timed_out') is not True):
+            raise PolicyError('d2-linux-worker-deadline-proof-incomplete')
+        keys = {'source_sha256', 'boundary', 'observed_ns', 'healthy_worker', 'healthy_pid',
+                'actual_exitcode', 'healthy_registered', 'global_deadline_detected', 'old_worker_timed_out',
+                'old_flog_timed_out', 'old_truth_assertion_red'}
+        if (type(baseline) is not dict or set(baseline) != keys
+                or baseline['source_sha256'] != 'bb34634018373ebdf89d386fd9d002ad767d161f90d9cec981532a9c671e154b'
+                or baseline['boundary'] != 'BEFORE_CLEANUP' or baseline['healthy_worker'] != healthy
+                or baseline['healthy_pid'] != workers[healthy]['pid'] or baseline['actual_exitcode'] != 0
+                or type(baseline['observed_ns']) is not int or baseline['observed_ns'] < late[0]['deadline_ns']
+                or any(baseline[key] is not True for key in ('healthy_registered', 'global_deadline_detected',
+                    'old_worker_timed_out', 'old_flog_timed_out', 'old_truth_assertion_red'))):
+            raise PolicyError('d2-linux-worker-deadline-baseline-incomplete')
+    elif case not in {'hang_google', 'hang_ftp'} and events:
+        raise PolicyError('d2-linux-worker-deadline-observation-unexpected')
+    if case not in {'hang_google', 'hang_ftp'} and baseline != {}:
+        raise PolicyError('d2-linux-worker-deadline-baseline-unexpected')
+
+
+def d2_validate_native_cases(cases, require_complete=True):
+    if type(cases) is not list or len(cases) > len(D2_LINUX_CASES):
+        raise PolicyError('d2-linux-case-list-invalid')
+    seen = set()
+    for case in cases:
+        if (type(case) is not dict or set(case) != {'schema_version', 'case', 'controller', 'observation'}
+                or case['schema_version'] != 'd2-native-case-v1' or type(case['case']) is not str
+                or case['case'] not in D2_LINUX_CASES
+                or case['case'] in seen):
+            raise PolicyError('d2-linux-case-identity-invalid')
+        seen.add(case['case'])
+        process = case['controller']
+        keys = {'started', 'pid', 'pidfd_bound', 'exitcode', 'settled', 'timed_out',
+                'birth_attempted', 'birth_unknown'}
+        if (type(process) is not dict or set(process) != keys
+                or any(type(process[key]) is not bool for key in keys - {'pid', 'exitcode', 'started'})
+                or process['started'] is not None and type(process['started']) is not bool
+                or process['started'] is None and process['birth_unknown'] is not True
+                or process['pid'] is not None and (type(process['pid']) is not int or process['pid'] <= 1)
+                or process['exitcode'] is not None and type(process['exitcode']) is not int):
+            raise PolicyError('d2-linux-case-process-invalid')
+        observation = case['observation']
+        if observation is not None:
+            baseline = {'case', 'application_exit', 'baseline_red', 'baseline_scope',
+                'legacy_parent_returned_none', 'legacy_false_completion_observed',
+                'legacy_operation_fault_observed', 'legacy_hang_observed', 'all_settled', 'observations'}
+            native = {'case', 'application_exit', 'result', 'logging', 'observed_reports', 'cleanup_report',
+                'cleanup_report_scope', 'logging_outcomes', 'observations', 'constructor_observations',
+                'fd_inventory_unchanged', 'foreign_fd_intact', 'fixture_cleanup_settled', 'phase_reads',
+                'go_releases', 'exception_type', 'parent_elapsed_seconds', 'persisted_result',
+                'persisted_bytes_unchanged', 'fault_witnesses', 'preseal_preconditions', 'deadline_detected',
+                'cleanup_requested', 'target_entered_before_deadline', 'console_canary_absent', 'console_redaction_valid', 'success_banner',
+                'inventory_observations', 'readers_closed_before_go', 'fixture_tracker_settled',
+                'platform_evidence', 'google_projection_observed', 'ftp_targets_observed', 'worker_witnesses',
+                'tracker_probes', 'preupload_witness', 'post_bind_witness', 'serialization_witness',
+                'fd_inventory_delta', 'heap_observations', 'cache_provenance',
+                'raw_fd_inventory_clean', 'owned_fd_inventory_clean', 'fd_attribution',
+                'deadline_observations', 'timeout_baseline'}
+            is_baseline = case['case'].startswith('baseline_')
+            allowed = baseline if is_baseline else native
+            if (type(observation) is not dict or set(observation) != allowed
+                    or observation.get('case') != case['case']
+                    or (observation.get('application_exit') is not None if is_baseline
+                        else type(observation.get('application_exit')) is not int)):
+                raise PolicyError('d2-linux-case-observation-fields-invalid')
+            if not is_baseline:
+                d2_validate_worker_observations(observation, require_complete)
+                d2_validate_fd_diagnostics(observation['fd_inventory_delta'], observation['heap_observations'])
+                d2_validate_fd_attribution(observation, require_complete, case['case'])
+                serialization = observation['serialization_witness']
+                serialization_flags = {'real_dump_reached', 'original_exception_preserved', 'exception_args_preserved',
+                    'pinned_dump_object_cleared', 'own_bootstrap_alias_cleared', 'foreign_frame_preserved',
+                    'late_gc_no_native_birth', 'late_gc_pending_cleared'}
+                if case['case'] == 'serialization_write_failure':
+                    if (type(serialization) is not dict
+                            or set(serialization) != serialization_flags | {'fault_calls', 'reduced_fd_count'}
+                            or any(type(serialization[key]) is not bool for key in serialization_flags)
+                            or any(type(serialization[key]) is not int or serialization[key] < 0
+                                   for key in ('fault_calls', 'reduced_fd_count'))):
+                        raise PolicyError('d2-linux-case-serialization-witness-invalid')
+                    if require_complete and (serialization['fault_calls'] != 1 or serialization['reduced_fd_count'] <= 0
+                            or any(serialization[key] is not True for key in serialization_flags)):
+                        raise PolicyError('d2-linux-case-serialization-boundary-incomplete')
+                elif type(serialization) is not dict or serialization:
+                    raise PolicyError('d2-linux-case-serialization-witness-unexpected')
+                post_bind = observation['post_bind_witness']
+                if case['case'] == 'post_context_bind_failure':
+                    if (type(post_bind) is not dict or set(post_bind) != {'context_created', 'fault_injected', 'fault_calls'}
+                            or type(post_bind['context_created']) is not bool
+                            or type(post_bind['fault_injected']) is not bool
+                            or type(post_bind['fault_calls']) is not int or post_bind['fault_calls'] < 0):
+                        raise PolicyError('d2-linux-case-post-bind-witness-invalid')
+                    if require_complete and (post_bind['context_created'] is not True
+                            or post_bind['fault_injected'] is not True or post_bind['fault_calls'] != 1):
+                        raise PolicyError('d2-linux-case-post-bind-boundary-incomplete')
+                elif type(post_bind) is not dict or post_bind:
+                    raise PolicyError('d2-linux-case-post-bind-witness-unexpected')
+                preupload = observation['preupload_witness']
+                preupload_flags = {'stage_entered', 'original_exception_preserved', 'source_profile_verified',
+                    'pending_cleared', 'runtime_closed', 'runtime_cleanup_complete',
+                    'runtime_transport_complete', 'tracker_wrappers_released'}
+                if case['case'] in {'preupload_stage_failure', 'post_context_bind_failure'}:
+                    if (type(preupload) is not dict or set(preupload) != preupload_flags | {'api_calls', 'upload_calls'}
+                            or any(type(preupload[key]) is not bool for key in preupload_flags)
+                            or any(type(preupload[key]) is not int or preupload[key] < 0
+                                   for key in ('api_calls', 'upload_calls'))):
+                        raise PolicyError('d2-linux-case-preupload-witness-invalid')
+                    if require_complete and (preupload['stage_entered'] is not (case['case'] == 'preupload_stage_failure')
+                            or any(preupload[key] is not True for key in preupload_flags - {'stage_entered'})
+                            or preupload['api_calls'] != 0 or preupload['upload_calls'] != 0):
+                        raise PolicyError('d2-linux-case-preupload-boundary-incomplete')
+                elif type(preupload) is not dict or preupload:
+                    raise PolicyError('d2-linux-case-preupload-witness-unexpected')
+                probes = observation['tracker_probes']
+                probe_flags = {'before_go', 'ensure_running_refused', 'register_refused',
+                    'launch_refused', 'teardown_refused'}
+                if case['case'] == 'tracker_death':
+                    if (type(probes) is not dict or set(probes) != probe_flags | {'actual_exit', 'failed_unregisters'}
+                            or type(probes['actual_exit']) is not int
+                            or type(probes['failed_unregisters']) is not int or probes['failed_unregisters'] < 0
+                            or any(type(probes[key]) is not bool for key in probe_flags)):
+                        raise PolicyError('d2-linux-case-tracker-probes-invalid')
+                elif type(probes) is not dict or probes:
+                    raise PolicyError('d2-linux-case-tracker-probes-unexpected')
+                platform = observation['platform_evidence']
+                platform_keys = {'platform', 'implementation', 'version', 'architecture', 'filesystem_encoding',
+                    'actual_path_unicode', 'actual_path_space', 'actual_cwd_foreign'}
+                if (type(platform) is not dict or set(platform) != platform_keys
+                        or platform['platform'] != 'linux' or platform['implementation'] != 'cpython'
+                        or platform['version'] != [3, 14, 8] or platform['architecture'] != 'x86_64'
+                        or type(platform['filesystem_encoding']) is not str
+                        or any(type(platform[key]) is not bool for key in (
+                            'actual_path_unicode', 'actual_path_space', 'actual_cwd_foreign'))
+                        or type(observation['inventory_observations']) is not list
+                        or type(observation['readers_closed_before_go']) is not bool
+                        or type(observation['fixture_tracker_settled']) is not bool
+                        or type(observation['console_redaction_valid']) is not bool
+                        or any(observation[key] is not None and type(observation[key]) is not bool
+                               for key in ('google_projection_observed', 'ftp_targets_observed'))):
+                    raise PolicyError('d2-linux-case-platform-or-inventory-invalid')
+                for item in observation['inventory_observations']:
+                    if (type(item) is not dict or set(item) != {'phase', 'worker_pids', 'worker_exits'}
+                            or type(item['phase']) is not str or type(item['worker_pids']) is not list
+                            or type(item['worker_exits']) is not list
+                            or len(item['worker_pids']) != len(item['worker_exits'])
+                            or any(type(pid) is not int or pid <= 1 for pid in item['worker_pids'])
+                            or any(code is not None and type(code) is not int for code in item['worker_exits'])):
+                        raise PolicyError('d2-linux-case-inventory-observation-invalid')
+                witnesses = observation['worker_witnesses']
+                events = {'NATIVE_ENTRY', 'CANARY_WRITES', 'BOOTSTRAP_IMPORT_BOUNDARY',
+                    'PREPARATION_BOUNDARY', 'UNPICKLE_BOUNDARY', 'GO_ENTERED', 'HANG_ENTERED',
+                    'TARGET_EXIT_BOUNDARY', 'CANARY_REJECTED', 'FINAL_THEN_EXIT23', 'WORKER_RETURNED'}
+                if type(witnesses) is not dict or set(witnesses) - {'google', 'ftp'}:
+                    raise PolicyError('d2-linux-case-worker-witness-fields-invalid')
+                for role, observed_events in witnesses.items():
+                    if type(observed_events) is not list or len(observed_events) > 32:
+                        raise PolicyError('d2-linux-case-worker-witness-bound')
+                    for event in observed_events:
+                        if (type(event) is not str or not (event in events
+                                or event == 'FAULT:' + case['case']
+                                or re.fullmatch('HANG_AT:[0-9]{1,24}', event))):
+                            raise PolicyError('d2-linux-case-worker-witness-invalid')
+            sanitized(observation)
+        if require_complete and (process['started'] is not True or process['pidfd_bound'] is not True
+                or process['settled'] is not True or process['timed_out'] is not False
+                or process['birth_attempted'] is not True or process['birth_unknown'] is not False
+                or process['exitcode'] != 0 or observation is None):
+            raise PolicyError('d2-linux-case-controller-incomplete')
+    if require_complete and seen != set(D2_LINUX_CASES):
+        raise PolicyError('d2-linux-case-inventory-incomplete')
+
+def d2_audit(args):
+    flags()
+    root = real_components(Path(args.output).absolute(), directory=True)
+    if {path.name for path in root.iterdir()} != {'result.json', 'manifest.json'}:
+        raise PolicyError('d2-linux-bundle-files-invalid')
+    report = read_json(root / 'result.json')
+    d2_validate_result(report)
+    if report['source']['sha'] != args.expected_sha or report['source']['base'] != args.expected_base:
+        raise PolicyError('d2-linux-bundle-source-mismatch')
+    if read_json(root / 'manifest.json') != {'result.json': digest(root / 'result.json')}:
+        raise PolicyError('d2-linux-bundle-manifest-invalid')
+    return {'status': 'PASS', 'scope': 'BUNDLE_VALIDATION', 'consumer_status': report['status']}
+
+
+def d2_clean_environment(root):
+    environment = {
+        'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
+        'HOME': str(root / 'home'), 'TMPDIR': str(root / 'tmp'),
+        'PIP_CONFIG_FILE': os.devnull, 'PYTHONDONTWRITEBYTECODE': '1',
+        'PYTHONNOUSERSITE': '1', 'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
+    }
+    for key in D2_LINUX_ENV_KEYS + GITHUB_NAMES + ('ImageOS', 'ImageVersion'):
+        if key in os.environ and not key.startswith('MDS_LNX02_'):
+            environment[key] = os.environ[key]
+    return environment
+
+
+def d2_owned(root, nonce):
+    root = owned(root, nonce)
+    if (read_json(root / OWNER) != {'nonce': nonce, 'purpose': 'D2-LINUX'}
+            or not root.name.startswith('d2-linux-')
+            or stat.S_IMODE(root.lstat().st_mode) != 0o700):
+        raise PolicyError('d2-linux-scratch-identity-invalid')
+    return root
+
+
+def d2_new_scratch(temp_root):
+    parent = real_components(Path(temp_root).absolute(), directory=True)
+    if not parent.is_dir():
+        raise PolicyError('d2-linux-temporary-parent-missing')
+    root = Path(tempfile.mkdtemp(prefix='d2-linux-', dir=parent))
+    os.chmod(root, 0o700)
+    nonce = uuid.uuid4().hex
+    write_new(root, root / OWNER, json_bytes({'nonce': nonce, 'purpose': 'D2-LINUX'}))
+    for name in ('jobs', 'logs', 'tmp', 'home', 'bootstrap', 'wheelhouse', 'locks', 'fixtures'):
+        (root / name).mkdir(mode=0o700)
+    (root / 'fixtures' / 'native').mkdir(mode=0o700)
+    (root / 'fixtures' / 'd2').mkdir(mode=0o700)
+    return root, nonce
+
+
+def d2_claim_root(temp_root, authority):
+    parent = real_components(Path(temp_root).absolute(), directory=True)
+    for name in ('d2-linux-claims', authority['run_id'], authority['job'], str(authority['attempt'])):
+        parent = contained(temp_root, parent / name)
+        try:
+            parent.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        real_components(parent, directory=True)
+        if (parent.lstat().st_uid != os.getuid()
+                or stat.S_IMODE(parent.lstat().st_mode) != 0o700):
+            raise PolicyError('d2-linux-claim-directory-invalid')
+    return parent
+
+
+def d2_launch(command, root, job_name, parent_namespaces, timeout=930):
+    outcome = {'launcher_started': False, 'child_result_available': False,
+               'exit_code': None, 'signal': None, 'timed_out': False,
+               'termination_confirmed': False, 'parent_namespace_unchanged': False,
+               'pidfd_bound': False}
+    child = descriptor = None
+    started = time.monotonic()
+    stdout_path, stderr_path = (root / 'logs' / (job_name + suffix)
+                               for suffix in ('.stdout', '.stderr'))
+    try:
+        if GUARD.process is not None:
+            raise PolicyError('d2-linux-nested-controller-launch')
+        GUARD.process = tuple(command)
+        with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
+            os.chmod(stdout_path, 0o600)
+            os.chmod(stderr_path, 0o600)
+            child = subprocess.Popen(command, executable=command[0], cwd=str(root),
+                                     env=d2_clean_environment(root), stdin=subprocess.DEVNULL,
+                                     stdout=stdout, stderr=stderr, close_fds=True,
+                                     start_new_session=True)
+            outcome.update(launcher_started=True, pid=child.pid)
+            descriptor = os.pidfd_open(child.pid, 0)
+            outcome['pidfd_bound'] = True
+            try:
+                child.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                outcome['timed_out'] = True
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                if not pidfd_exited(descriptor, 5):
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                if pidfd_exited(descriptor, 5):
+                    child.wait(timeout=1)
+            outcome['termination_confirmed'] = (child.poll() is not None
+                                                 and pidfd_exited(descriptor, 0))
+    except BaseException as error:
+        outcome['launch_failure_code'] = public_failure(error)['failure_code']
+        if child is not None and descriptor is not None:
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                if pidfd_exited(descriptor, 5):
+                    child.wait(timeout=1)
+                    outcome['termination_confirmed'] = True
+            except BaseException:
+                pass
+        elif child is not None:
+            try:
+                child.kill()
+                child.wait(timeout=5)
+                outcome['termination_confirmed'] = child.returncode is not None
+            except BaseException:
+                pass
+    finally:
+        GUARD.process = None
+        if descriptor is not None:
+            os.close(descriptor)
+    if child is not None:
+        outcome['exit_code'] = child.poll()
+        if outcome['exit_code'] is not None and outcome['exit_code'] < 0:
+            outcome['signal'] = -outcome['exit_code']
+    for name, path in (('stdout', stdout_path), ('stderr', stderr_path)):
+        try:
+            if path.exists() and regular(path).st_size > MAX_ARTIFACT:
+                raise PolicyError('d2-linux-stream-size-limit')
+            outcome[name] = stream_evidence(path.read_bytes() if path.exists() else b'',
+                                           command[0] == '/usr/bin/unshare', outcome['exit_code'])
+        except BaseException:
+            outcome[name] = unavailable_stream()
+            outcome.setdefault('launch_failure_code', 'd2-linux-stream-unavailable')
+    outcome['duration_seconds'] = round(time.monotonic() - started, 3)
+    outcome['parent_namespace_unchanged'] = network_ids() == parent_namespaces
+    return outcome
+
+
+def d2_choose_isolation(root, authority, helper_sha):
+    unshare_sha = trusted_system_binary('/usr/bin/unshare')
+    true_sha = trusted_system_binary('/bin/true')
+    primitive = d2_launch(['/usr/bin/unshare', '--user', '--map-current-user', '--net', '--', '/bin/true'],
+                             root, '0-primitive', network_ids(), timeout=15)
+    primitive.update(kind='rootless-primitive', helper_sha256=helper_sha, status='FAIL',
+                     argv_template=['unshare', '--user', '--map-current-user', '--net', '--', 'true'],
+                     system_binary_sha256=unshare_sha, payload_binary_sha256=true_sha)
+    if (primitive['launcher_started'] and primitive['exit_code'] == 0
+            and not primitive['timed_out'] and primitive['termination_confirmed']
+            and primitive['parent_namespace_unchanged'] is True
+            and not primitive.get('launch_failure_code')):
+        primitive['status'] = 'PASS'
+        return 'rootless_user_net', primitive
+    primitive['failure_code'] = 'd2-linux-rootless-primitive-failed'
+    if rootless_permission_denied(primitive):
+        d2_capability(os.environ, {key: authority[key] for key in D2_LINUX_GRANT_KEYS},
+                         'MDS_D2_LINUX_SUPERVISED_NETNS_GRANT', 'supervised-netns')
+        return 'supervised_net', primitive
+    raise StageError('d2-linux-rootless-primitive-failed', primitive)
+
+
+def d2_supervised_worker_ready(root, job):
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+    signal.alarm(930)
+    proof = supervised_privilege_proof(job["parent"]["ids"])
+    namespace = namespace_proof(job["parent"], "supervised_net")
+    ready = {"format": "d2-linux-ready-v1", "pid": os.getpid(), "start_ticks": process_start_ticks(os.getpid()),
+             "helper_sha256": job["helper_sha256"], "job_sha256": job["sealed_job_sha256"],
+             "privilege": proof, "namespace": namespace, "alarm_seconds": 930,
+             "parent_pid": os.getppid(),
+             "alarm": {"handler_default": signal.getsignal(signal.SIGALRM) == signal.SIG_DFL,
+                       "unblocked": signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, set()),
+                       "remaining_seconds": signal.getitimer(signal.ITIMER_REAL)[0], "configured_seconds": 930}}
+    atomic_handshake(root, Path(job["ready"]), ready)
+    deadline = time.monotonic() + 15
+    admission = Path(job["admission"])
+    while time.monotonic() < deadline:
+        if admission.exists():
+            value = read_json(contained(root, admission))
+            if value != {"format": "d2-linux-admission-v1", "job_sha256": job["sealed_job_sha256"],
+                         "pid": ready["pid"], "start_ticks": ready["start_ticks"]}:
+                raise PolicyError("supervised-admission-mismatch")
+            if os.getppid() != ready["parent_pid"]:
+                raise PolicyError("supervised-parent-changed-before-admission")
+            validate_privilege_snapshot(privilege_snapshot(), job["parent"]["ids"])
+            return ready
+        time.sleep(0.05)
+    raise PolicyError("supervised-admission-timeout")
+
+
+def d2_supervised_command(command, root, ids):
+    if len(ids) != 3 or ids[0] != ids[1] or any(type(value) is not int or value <= 0 for value in ids):
+        raise PolicyError("supervised-runner-must-be-nonzero-user")
+    records = {Path(name).name: trusted_system_binary(name) for name in ("/usr/bin/sudo", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/env")}
+    environment = d2_clean_environment(root)
+    argv = ["/usr/bin/sudo", "-n", "--", "/usr/bin/unshare", "--net", "--", "/usr/bin/setpriv",
+            "--reuid=" + str(ids[0]), "--regid=" + str(ids[2]), "--clear-groups", "--inh-caps=-all",
+            "--ambient-caps=-all", "--bounding-set=-all", "--no-new-privs", "--pdeathsig=KILL", "--",
+            "/usr/bin/env", "-i"] + [key + "=" + environment[key] for key in sorted(environment)] + command
+    return argv, records
+
+
+def d2_supervised_launch(command, root, job_name, job, job_sha, timeout=930):
+    outcome = {"launcher_started": False, "child_result_available": False, "exit_code": None, "signal": None,
+               "timed_out": False, "termination_confirmed": False, "parent_namespace_unchanged": "NOT ESTABLISHED",
+               "worker_started": False, "worker_pidfd_bound": False, "worker_termination_confirmed": False,
+               "isolation_mode": "supervised_net"}
+    argv, binaries = d2_supervised_command(command, root, job["parent"]["ids"])
+    outcome["supervisor_binary_sha256"] = binaries
+    started = time.monotonic()
+    child = pidfd = None
+    stdout_path, stderr_path = (root / "logs" / (job_name + suffix) for suffix in (".stdout", ".stderr"))
+    try:
+        if GUARD.process is not None:
+            raise PolicyError("nested-controller-process-admission")
+        GUARD.process = tuple(argv)
+        with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+            os.chmod(stdout_path, 0o600)
+            os.chmod(stderr_path, 0o600)
+            child = subprocess.Popen(argv, executable=argv[0], cwd=str(root), env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
+            outcome["launcher_started"] = True
+            ready_path = Path(job["ready"])
+            deadline = time.monotonic() + 20
+            while not ready_path.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not ready_path.exists():
+                # Even a finished sudo monitor cannot prove no unknown grandchild remains.
+                raise PolicyError("supervised-worker-ready-unavailable")
+            outcome["worker_started"] = True
+            ready = read_json(contained(root, ready_path))
+            d2_validate_ready(ready, job, job_sha)
+            pid = ready["pid"]
+            bind_worker_process(pid, ready, command, job["parent"]["ids"])
+            topology = worker_topology(pid, child.pid, os.getpid(), ready)
+            pidfd = os.pidfd_open(pid, 0)
+            bind_worker_process(pid, ready, command, job["parent"]["ids"])
+            if worker_topology(pid, child.pid, os.getpid(), ready) != topology:
+                raise PolicyError("supervised-worker-parent-identity-changed")
+            outcome["worker_pidfd_bound"] = True
+            outcome["worker_readiness"] = ready
+            outcome["worker_topology"] = topology
+            atomic_handshake(root, Path(job["admission"]), {"format": "d2-linux-admission-v1", "job_sha256": job_sha,
+                             "pid": pid, "start_ticks": ready["start_ticks"]})
+            try:
+                child.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                outcome["timed_out"] = True
+                raise PolicyError("supervised-worker-timeout") from None
+            outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 10)
+            if not outcome["worker_termination_confirmed"]:
+                raise PolicyError("supervised-worker-termination-not-confirmed")
+    except BaseException as error:
+        outcome["launch_failure_code"] = public_failure(error)["failure_code"]
+        if isinstance(error, OSError):
+            outcome["launch_errno"] = error.errno
+        if pidfd is not None and outcome["worker_pidfd_bound"]:
+            try:
+                signal.pidfd_send_signal(pidfd, 9)
+                outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 10)
+            except BaseException:
+                try:
+                    outcome["worker_termination_confirmed"] = pidfd_exited(pidfd, 0)
+                except BaseException:
+                    outcome["worker_termination_confirmed"] = False
+        if child is not None:
+            try:
+                child.wait(timeout=10)
+            except BaseException:
+                pass
+    finally:
+        GUARD.process = None
+        if pidfd is not None:
+            try:
+                os.close(pidfd)
+            except BaseException as error:
+                outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    if child is not None:
+        try:
+            outcome["exit_code"] = child.poll()
+        except BaseException as error:
+            outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+        outcome["termination_confirmed"] = outcome["exit_code"] is not None
+    if outcome["exit_code"] is not None and outcome["exit_code"] < 0:
+        outcome["signal"] = -outcome["exit_code"]
+    for name, path in (("stdout", stdout_path), ("stderr", stderr_path)):
+        try:
+            if path.exists() and regular(path).st_size > MAX_ARTIFACT:
+                raise PolicyError("supervised-stream-size-limit")
+            outcome[name] = stream_evidence(path.read_bytes() if path.exists() else b"")
+        except BaseException as error:
+            outcome[name] = unavailable_stream()
+            outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    outcome["duration_seconds"] = round(time.monotonic() - started, 3)
+    try:
+        outcome["parent_namespace_unchanged"] = network_ids() == job["parent"]["namespaces"]
+    except BaseException as error:
+        outcome.setdefault("launch_failure_code", public_failure(error)["failure_code"])
+    return outcome
+
+
+def d2_validate_ready(ready, job, job_sha):
+    if (not isinstance(ready, dict) or set(ready) != {"format", "pid", "start_ticks", "helper_sha256", "job_sha256", "privilege", "namespace", "alarm_seconds", "parent_pid", "alarm"}
+            or ready.get("format") != "d2-linux-ready-v1" or type(ready.get("pid")) is not int or ready["pid"] <= 0
+            or type(ready.get("start_ticks")) is not int or ready["start_ticks"] <= 0
+            or type(ready.get("parent_pid")) is not int or ready["parent_pid"] <= 1
+            or ready.get("helper_sha256") != job["helper_sha256"] or ready.get("job_sha256") != job_sha
+            or ready.get("alarm_seconds") != 930):
+        raise PolicyError("supervised-worker-ready-invalid")
+    alarm = ready["alarm"]
+    if (not isinstance(alarm, dict) or set(alarm) != {"handler_default", "unblocked", "remaining_seconds", "configured_seconds"}
+            or alarm.get("handler_default") is not True or alarm.get("unblocked") is not True
+            or alarm.get("configured_seconds") != 930 or type(alarm.get("remaining_seconds")) not in {int, float}
+            or not math.isfinite(alarm["remaining_seconds"]) or not 0 < alarm["remaining_seconds"] <= 930):
+        raise PolicyError("supervised-kernel-alarm-proof-invalid")
+    validate_privilege_proof(ready["privilege"], job["parent"]["ids"])
+    validate_namespace_evidence(ready["namespace"], "supervised_net")
+
+
+def d2_worker_launch(root, nonce, python, kind, fields, sequence, authority, repo,
+                        sources, isolation_mode, primitive):
+    d2_owned(root, nonce)
+    if kind not in {'preflight', 'bootstrap', 'install', 'check', 'application'}:
+        raise PolicyError('d2-linux-worker-kind-refused')
+    job_name = str(sequence) + '-' + kind
+    path = root / 'jobs' / (job_name + '.json')
+    result_path = root / 'jobs' / (job_name + '-result.json')
+    parent = {'ids': [os.getuid(), os.geteuid(), os.getgid()], 'namespaces': network_ids()}
+    job = {'format': 'd2-linux-worker-v1', 'root': str(root), 'nonce': nonce, 'kind': kind,
+           'result': str(result_path), 'helper_sha256': digest(Path(__file__).absolute()),
+           'parent': parent, 'isolation_mode': isolation_mode, 'rootless_primitive': primitive,
+           'authority': authority, 'repo': str(repo), 'source_files_sha256': sources}
+    if isolation_mode == 'supervised_net':
+        d2_capability(os.environ, {key: authority[key] for key in D2_LINUX_GRANT_KEYS},
+                         'MDS_D2_LINUX_SUPERVISED_NETNS_GRANT', 'supervised-netns')
+        if not rootless_permission_denied(primitive):
+            raise PolicyError('d2-linux-supervised-denial-proof-missing')
+        job['ready'] = str(root / 'jobs' / (job_name + '-ready.json'))
+        job['admission'] = str(root / 'jobs' / (job_name + '-admission.json'))
+    job.update(fields)
+    write_new(root, path, json_bytes(job))
+    command = [str(python), '-I', '-S', '-B', '-X', 'utf8', str(Path(__file__).absolute()),
+               'd2-linux-worker', '--job', str(path), '--job-sha256', digest(path)]
+    if isolation_mode == 'supervised_net':
+        launch = d2_supervised_launch(command, root, job_name, job, digest(path))
+    else:
+        trusted_system_binary('/usr/bin/unshare')
+        command = ['/usr/bin/unshare', '--user', '--map-current-user', '--net', '--'] + command
+        launch = d2_launch(command, root, job_name, parent['namespaces'])
+    launch.update(kind=kind, isolation_mode=isolation_mode, helper_sha256=job['helper_sha256'], status='FAIL')
+    launch['child_result_available'] = result_path.exists()
+    if (launch.get('parent_namespace_unchanged') is not True or launch.get('timed_out') is True
+            or not launch.get('launcher_started') or not launch.get('termination_confirmed')
+            or isolation_mode == 'supervised_net' and not launch.get('worker_termination_confirmed')
+            or launch.get('launch_failure_code')):
+        raise StageError('d2-linux-worker-launch-or-settlement-failed', launch)
+    if not result_path.exists():
+        raise StageError('d2-linux-worker-result-missing', launch)
+    outcome = read_json(result_path)
+    required = {'format', 'kind', 'helper_sha256', 'status', 'identity', 'namespace', 'guard',
+                'failure_code', 'negative_probes', 'observations'}
+    if (type(outcome) is not dict or set(outcome) != required
+            or outcome['format'] != 'd2-linux-worker-result-v1' or outcome['kind'] != kind
+            or outcome['helper_sha256'] != job['helper_sha256']):
+        raise StageError('d2-linux-worker-result-identity-invalid', launch)
+    outcome.update({name: value for name, value in launch.items()
+                    if name not in {'kind', 'helper_sha256', 'status'}})
+    if outcome['status'] != 'PASS' or launch['exit_code'] != 0:
+        raise StageError('d2-linux-worker-operation-failed', outcome)
+    validate_native_identity_evidence(outcome['identity'], job['helper_sha256'])
+    validate_namespace_evidence(outcome['namespace'], isolation_mode)
+    if (type(outcome['guard']) is not dict or outcome['guard'].get('unexpected_denials')
+            or outcome['guard'].get('registered_before_third_party') is not True
+            or outcome['negative_probes'].get('pid') != outcome['guard'].get('pid')):
+        raise StageError('d2-linux-worker-guard-evidence-invalid', launch)
+    return outcome
+
+
+def d2_runner(root, job):
+    repo = real_components(Path(job['repo']), directory=True)
+    if d2_source_manifest(repo) != job['source_files_sha256']:
+        raise PolicyError('d2-linux-runner-source-changed')
+    regular(Path(sys.executable))
+    command = [sys.executable, '-I', '-S', '-B', '-X', 'utf8', str(repo / 'tools' / 'offline_linux.py'),
+               '--lane', 'd2-linux']
+    ticket = {'schema_version': 'd2-linux-runner-ticket-v1', 'root': str(root), 'nonce': job['nonce'],
+              'repo': str(repo), 'parent_pid': os.getpid(), 'source_sha': job['authority']['sha'],
+              'source_files_sha256': job['source_files_sha256'], 'authority': job['authority'],
+              'result': job['tests_result'], 'native_root': job['native_root'], 'phase': job['test_phase']}
+    environment = d2_clean_environment(root)
+    ticket_path = root / 'jobs' / ('application-' + job['test_phase'] + '-ticket.json')
+    write_new(root, ticket_path, json_bytes(ticket))
+    environment['MDS_D2_LINUX_RUN_TICKET'] = str(ticket_path)
+    environment['MDS_D2_LINUX_RUN_TICKET_SHA256'] = digest(ticket_path)
+    child = descriptor = None
+    outcome = {'started': False, 'pid': None, 'pidfd_bound': False, 'exit_code': None,
+               'timed_out': False, 'termination_confirmed': False}
+    try:
+        if GUARD.process is not None:
+            raise PolicyError('d2-linux-nested-runner-launch')
+        GUARD.process = tuple(command)
+        child = subprocess.Popen(command, executable=command[0], cwd=str(repo), env=environment,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+        outcome.update(started=True, pid=child.pid)
+        descriptor = os.pidfd_open(child.pid, 0)
+        outcome['pidfd_bound'] = True
+        try:
+            child.wait(timeout=900)
+        except subprocess.TimeoutExpired:
+            outcome['timed_out'] = True
+            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            if not pidfd_exited(descriptor, 5):
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            if pidfd_exited(descriptor, 5):
+                child.wait(timeout=1)
+        outcome['exit_code'] = child.poll()
+        outcome['termination_confirmed'] = child.returncode is not None and pidfd_exited(descriptor, 0)
+    finally:
+        GUARD.process = None
+        if child is not None and child.poll() is None:
+            try:
+                if descriptor is not None:
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    if pidfd_exited(descriptor, 5):
+                        child.wait(timeout=1)
+                else:
+                    child.kill()
+                    child.wait(timeout=5)
+            except BaseException:
+                pass
+            outcome['exit_code'] = child.poll()
+            outcome['termination_confirmed'] = child.returncode is not None
+        if descriptor is not None:
+            os.close(descriptor)
+    tests_path = contained(root, Path(job['tests_result']))
+    if not outcome['termination_confirmed'] or not tests_path.exists():
+        raise PolicyError('d2-linux-runner-exit-or-result-incomplete')
+    tests = read_json(tests_path)
+    required = {'schema_version', 'status', 'source_sha', 'collected', 'passed', 'failed',
+                'deselected', 'exit_code', 'native_cases', 'failure_code', 'phase',
+                'skipped', 'native_collected', 'native_passed', 'node_ids_sha256',
+                'node_inventory_state', 'failed_node_ids'}
+    if (type(tests) is not dict or set(tests) != required
+            or tests['schema_version'] != 'd2-linux-runner-result-v1'
+            or tests['source_sha'] != job['authority']['sha']
+            or tests['exit_code'] != outcome['exit_code']):
+        raise PolicyError('d2-linux-runner-result-identity-invalid')
+    for name in ('collected', 'passed', 'failed', 'deselected'):
+        if type(tests[name]) is not int or tests[name] < 0:
+            raise PolicyError('d2-linux-runner-count-invalid')
+    if type(tests['status']) is not str or tests['status'] not in {'PASS', 'FAIL', 'INCOMPLETE'}:
+        raise PolicyError('d2-linux-runner-status-invalid')
+    if tests['status'] != 'PASS':
+        if type(tests['exit_code']) is not int or tests['exit_code'] == 0:
+            raise PolicyError('d2-linux-runner-failed-exit-invalid')
+        d2_validate_tests(tests, job['authority']['sha'], False)
+        return {'process': outcome, 'tests': tests}
+    if (tests['exit_code'] != 0 or tests['failed'] != 0
+            or tests['deselected'] != 0 or tests['collected'] <= 0
+            or tests['passed'] != tests['collected'] or not tests['native_cases']):
+        raise PolicyError('d2-linux-runner-tests-incomplete')
+    d2_validate_tests(tests, job['authority']['sha'], True)
+    return {'process': outcome, 'tests': tests}
+
+
+def d2_worker(args):
+    flags()
+    path = real_components(Path(args.job).absolute())
+    if digest(path) != args.job_sha256:
+        raise PolicyError('d2-linux-worker-job-digest-mismatch')
+    job = read_json(path)
+    if type(job) is not dict:
+        raise PolicyError('d2-linux-worker-job-object-required')
+    root = d2_owned(Path(job['root']), job['nonce'])
+    if path.parent != root / 'jobs':
+        raise PolicyError('d2-linux-worker-job-outside-slot')
+    base_keys = {'format', 'root', 'nonce', 'kind', 'result', 'helper_sha256', 'parent',
+                 'isolation_mode', 'rootless_primitive', 'authority', 'repo', 'source_files_sha256'}
+    kind_keys = {'preflight': set(), 'bootstrap': {'bootstrap_lock'},
+                 'install': {'lock', 'wheelhouse', 'report', 'versions'}, 'check': {'versions'},
+                 'application': {'versions', 'tests_result', 'native_root', 'test_phase'}}
+    kind = job.get('kind')
+    if kind not in kind_keys:
+        raise PolicyError('d2-linux-worker-kind-refused')
+    keys = base_keys | kind_keys[kind]
+    if job.get('isolation_mode') == 'supervised_net':
+        keys |= {'ready', 'admission'}
+    if (set(job) != keys or job['format'] != 'd2-linux-worker-v1'
+            or digest(Path(__file__).absolute()) != job['helper_sha256']):
+        raise PolicyError('d2-linux-worker-job-fields-invalid')
+    result_path = contained(root, Path(job['result']))
+    if result_path.parent != root / 'jobs':
+        raise PolicyError('d2-linux-worker-result-outside-slot')
+    outcome = {'format': 'd2-linux-worker-result-v1', 'kind': kind, 'helper_sha256': job['helper_sha256'],
+               'status': 'FAIL', 'identity': None, 'namespace': None, 'guard': None,
+               'failure_code': None, 'negative_probes': None, 'observations': {}}
+    code = 1
+    try:
+        authority = d2_validate_grant(os.environ, job['authority']['sha'], job['authority']['base'])
+        if authority != job['authority']:
+            raise PolicyError('d2-linux-worker-authority-mismatch')
+        repo = real_components(Path(job['repo']), directory=True)
+        if d2_source_manifest(repo) != job['source_files_sha256']:
+            raise PolicyError('d2-linux-worker-source-mismatch')
+        outcome['identity'] = identity()
+        mode = job['isolation_mode']
+        if mode == 'supervised_net':
+            d2_capability(os.environ, {key: authority[key] for key in D2_LINUX_GRANT_KEYS},
+                             'MDS_D2_LINUX_SUPERVISED_NETNS_GRANT', 'supervised-netns')
+            if (not rootless_permission_denied(job['rootless_primitive'])
+                    or job['rootless_primitive']['system_binary_sha256'] != trusted_system_binary('/usr/bin/unshare')):
+                raise PolicyError('d2-linux-supervised-denial-proof-missing')
+            job['sealed_job_sha256'] = args.job_sha256
+            ready = d2_supervised_worker_ready(root, job)
+            outcome['namespace'] = ready['namespace']
+        else:
+            outcome['namespace'] = namespace_proof(job['parent'], mode)
+        if kind == 'preflight':
+            outcome['negative_probes'] = negative_probes()
+        else:
+            pip_identity = pip_load(root, bootstrap=kind == 'bootstrap')
+            if kind != 'application':
+                outcome['observations']['pip'] = pip_identity
+            outcome['negative_probes'] = negative_probes(use_requests=True)
+            if kind == 'bootstrap':
+                outcome['observations']['pip_operation'] = pip_run([
+                    'install', '--ignore-installed', '--no-deps', '--no-index', '--require-hashes',
+                    '--only-binary=:all:', '--no-compile', '--find-links', str(root / 'bootstrap'),
+                    '-r', str(job_file(root, job, 'bootstrap_lock'))])
+            elif kind == 'install':
+                if installed_inventory() != {'pip': PIP_VERSION}:
+                    raise PolicyError('d2-linux-install-environment-not-fresh')
+                report_path = contained(root, Path(job['report']))
+                if report_path.exists():
+                    raise PolicyError('d2-linux-install-report-not-fresh')
+                outcome['observations']['pip_operation'] = pip_run([
+                    'install', '--only-binary=:all:', '--no-compile', '--require-hashes',
+                    '--no-index', '--find-links', str(job_file(root, job, 'wheelhouse', True)),
+                    '--report', str(report_path), '-r', str(job_file(root, job, 'lock'))])
+            elif kind == 'check':
+                outcome['observations']['pip_operation'] = pip_run(['check'])
+                inventory = installed_inventory()
+                if inventory != dict(job['versions'], pip=PIP_VERSION):
+                    raise PolicyError('d2-linux-installed-inventory-mismatch')
+                outcome['observations']['inventory'] = inventory
+                outcome['observations']['synthetic'] = native_smoke(root, 'dev', 'replay')
+            elif kind == 'application':
+                if installed_inventory() != dict(job['versions'], pip=PIP_VERSION):
+                    raise PolicyError('d2-linux-application-inventory-mismatch')
+                outcome['observations'] = d2_runner(root, job)
+                if outcome['observations']['tests']['status'] != 'PASS':
+                    raise PolicyError('d2-linux-application-tests-failed')
+        if GUARD.unexpected:
+            raise PolicyError('d2-linux-worker-unexpected-audit-denial')
+        outcome['status'] = 'PASS'
+        code = 0
+    except BaseException as error:
+        if isinstance(error, PipOperationError):
+            outcome['observations']['pip_operation'] = error.operation
+        outcome['failure_code'] = public_failure(error)['failure_code']
+    outcome['guard'] = GUARD.evidence()
+    write_new(root, result_path, json_bytes(outcome))
+    return code
+
+
+def d2_pipeline(args):
+    # A separate authority family is checked before claim, directories or traffic.
+    authority = d2_validate_grant(os.environ, args.expected_sha, args.expected_base)
+    flags()
+    repo = real_components(Path(args.repo_root).absolute(), directory=True)
+    native_identity = identity()
+    if sys.prefix != sys.base_prefix:
+        raise PolicyError('d2-linux-controller-requires-base-interpreter')
+    observed_main = git_read(repo, ['rev-parse', 'refs/remotes/origin/main']).stdout.decode('ascii').strip()
+    d2_source_identity(repo, args.expected_sha, args.expected_base, observed_main=observed_main)
+    sources = d2_source_manifest(repo)
+    legacy_sources = source_manifest(repo, 'verify')
+    if sources['.github/lnx02/verify_env.py'] != native_identity['helper_sha256']:
+        raise PolicyError('d2-linux-executing-helper-not-source')
+    temp_root = real_components(Path(os.environ['RUNNER_TEMP']).absolute(), directory=True)
+    d2_claim(d2_claim_root(temp_root, authority), authority)
+    output = prepare_output(args.output)
+    report = {
+        'schema_version': 'd2-linux-v1', 'consumer': 'd2-linux',
+        'scope': 'APPLICATION_ADMISSION', 'status': 'INCOMPLETE',
+        'failure_code': 'd2-linux-native-not-executed',
+        'source': {'sha': args.expected_sha, 'base': args.expected_base,
+                   'helper_sha256': native_identity['helper_sha256'], 'files_sha256': sources},
+        'authority': authority,
+        'environment': {'identity': native_identity, 'fingerprint_before': None,
+                        'fingerprint_after': None, 'inventory': None, 'pip_check_exit': None},
+        'setup': {'authorized': True, 'completed': False, 'wheel_count': 0, 'stages': []},
+        'isolation': {'mode': None, 'primitive': None, 'preflight': None},
+        'foundation': None, 'cases': [], 'cleanup': {'state': 'NOT_CREATED', 'owned_deleted': False},
+    }
+    root = nonce = None
+    sequence = 0
+    app_attempted = app_validated = False
+    try:
+        expected = expected_profiles(repo)['dev']
+        source_lock = repo / 'requirements' / LOCK_NAMES['dev']
+        lock_payload = source_lock.read_bytes()
+        records = parse_lock(lock_payload.decode('utf-8'))
+        validate_versions(records, expected)
+        if len(records) != 82 or 'pip' in records:
+            raise PolicyError('d2-linux-dev-lock-closure-invalid')
+        root, nonce = d2_new_scratch(temp_root)
+        try:
+            mode, primitive = d2_choose_isolation(root, authority, native_identity['helper_sha256'])
+        except StageError as error:
+            report['isolation']['primitive'] = error.outcome
+            raise
+        report['isolation'].update(mode=mode, primitive=primitive)
+
+        def stage(python, kind, fields=None):
+            nonlocal sequence
+            sequence += 1
+            try:
+                outcome = d2_worker_launch(root, nonce, python, kind, dict(fields or {}), sequence,
+                                              authority, repo, sources, mode, primitive)
+            except StageError as error:
+                report['setup']['stages'].append(error.outcome)
+                raise
+            report['setup']['stages'].append(outcome)
+            return outcome
+
+        report['isolation']['preflight'] = stage(sys.executable, 'preflight')
+        # First package network operation: exact new SETUP grant was already checked.
+        pip_record = public_wheel(release_metadata('pip', PIP_VERSION), 'pip', PIP_VERSION,
+                                  sha256=PIP_SHA256, filename=PIP_FILENAME)
+        fetch_wheel(root, root / 'bootstrap', pip_record)
+        bootstrap_lock = root / 'bootstrap' / 'pip.lock'
+        write_new(root, bootstrap_lock,
+                  ('pip==' + PIP_VERSION + ' --hash=sha256:' + PIP_SHA256 + '\n').encode('ascii'))
+        selected = {}
+        for name, (version, sha256) in records.items():
+            record = public_wheel(release_metadata(name, version), name, version, sha256=sha256)
+            fetch_wheel(root, root / 'wheelhouse', record)
+            selected[record['filename']] = record['sha256']
+        if {path.name: digest(path) for path in (root / 'wheelhouse').iterdir()} != selected:
+            raise PolicyError('d2-linux-wheelhouse-not-closed')
+        report['setup']['wheel_count'] = len(selected)
+        lock = root / 'locks' / LOCK_NAMES['dev']
+        write_new(root, lock, lock_payload)
+        environment = root / 'dev-replay'
+        if environment.exists():
+            raise PolicyError('d2-linux-replay-environment-not-fresh')
+        venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
+        alias = environment / 'lib64'
+        if alias.is_symlink():
+            if os.readlink(alias) != 'lib' or not (environment / 'lib').is_dir():
+                raise PolicyError('d2-linux-venv-directory-alias-invalid')
+            alias.unlink()
+        elif alias.exists():
+            raise PolicyError('d2-linux-venv-lib64-invalid')
+        python = environment / 'bin' / 'python3.14'
+        if digest(python) != native_identity['python_executable_sha256']:
+            raise PolicyError('d2-linux-replay-python-digest-mismatch')
+        stage(python, 'bootstrap', {'bootstrap_lock': str(bootstrap_lock)})
+        install_report = root / 'jobs' / 'dev-install.json'
+        stage(python, 'install', {'lock': str(lock), 'wheelhouse': str(root / 'wheelhouse'),
+                                 'report': str(install_report), 'versions': expected})
+        installed, installed_wheels = parse_report(read_json(install_report), expected, local=True)
+        if installed != records or {item['filename'] for item in installed_wheels.values()} != set(selected):
+            raise PolicyError('d2-linux-install-report-lock-mismatch')
+        check = stage(python, 'check', {'versions': expected})
+        report['environment']['inventory'] = check['observations']['inventory']
+        report['environment']['pip_check_exit'] = check['observations']['pip_operation']['exit_code']
+        report['setup']['completed'] = True
+        before = d2_fingerprint(environment)
+        wheel_fingerprint = d2_fingerprint(root / 'wheelhouse')
+        report['environment']['fingerprint_before'] = before
+        app_attempted = True
+        foundation = stage(python, 'application', {'versions': expected,
+            'tests_result': str(root / 'jobs' / 'application-foundation-tests.json'),
+            'native_root': str(root / 'fixtures' / 'native'), 'test_phase': 'foundation'})
+        d2_validate_tests(foundation['observations']['tests'], args.expected_sha, True)
+        report['foundation'] = foundation['observations']['tests']
+        application = stage(python, 'application', {'versions': expected,
+            'tests_result': str(root / 'jobs' / 'application-application-tests.json'),
+            'native_root': str(root / 'fixtures' / 'd2'), 'test_phase': 'application'})
+        tests = application['observations']['tests']
+        d2_validate_tests(tests, args.expected_sha, True)
+        report['cases'] = tests['native_cases']
+        app_validated = True
+        report['environment']['fingerprint_after'] = d2_fingerprint(environment)
+        if (report['environment']['fingerprint_after'] != before
+                or d2_fingerprint(root / 'wheelhouse') != wheel_fingerprint):
+            raise PolicyError('d2-linux-offline-environment-mutated')
+        d2_source_identity(repo, args.expected_sha, args.expected_base)
+        if d2_source_manifest(repo) != sources or source_manifest(repo, 'verify') != legacy_sources:
+            raise PolicyError('d2-linux-source-mutated')
+        if GUARD.unexpected:
+            raise PolicyError('d2-linux-controller-unexpected-audit-denial')
+        report.update(status='PASS', failure_code=None)
+    except BaseException as error:
+        # Only a source-known code crosses the evidence boundary, never an exception payload.
+        if isinstance(error, StageError):
+            observations = error.outcome.get('observations')
+            if type(observations) is dict and type(observations.get('tests')) is dict:
+                actual_cases = observations['tests'].get('native_cases')
+                try:
+                    d2_validate_native_cases(actual_cases, require_complete=False)
+                    report['cases'] = actual_cases
+                except PolicyError:
+                    pass
+        report['failure_code'] = public_failure(error)['failure_code'].lower()
+        report['status'] = 'INCOMPLETE' if not app_validated else 'FAIL'
+    finally:
+        if root is not None:
+            settled = all(stage.get('termination_confirmed') is True
+                          and (stage.get('isolation_mode') != 'supervised_net'
+                               or stage.get('worker_termination_confirmed') is True)
+                          for stage in report['setup']['stages'])
+            primitive_outcome = report['isolation']['primitive']
+            if (type(primitive_outcome) is dict and primitive_outcome.get('launcher_started')
+                    and primitive_outcome.get('termination_confirmed') is not True):
+                settled = False
+            if app_attempted and not app_validated:
+                # Emergency inventory can settle registered grandchildren, but cannot
+                # prove an unregistered birth never happened. Preserve scratch either way.
+                try:
+                    if d2_source_manifest(repo) != sources:
+                        raise PolicyError('d2-linux-cleanup-source-changed')
+                    module = runpy.run_path(str(repo / 'tools' / 'offline_guard_linux.py'),
+                                            run_name='d2_fixed_emergency_cleanup')
+                    emergency = module['settle_native_root'](root / 'fixtures' / 'native')
+                    if report['setup']['stages']:
+                        report['setup']['stages'][-1]['registered_fixture_cleanup'] = emergency
+                except BaseException:
+                    pass
+                settled = False
+            if settled:
+                try:
+                    d2_owned(root, nonce)
+                    cleanup(root, nonce)
+                    report['cleanup'] = {'state': 'SETTLED', 'owned_deleted': True}
+                except BaseException:
+                    report['cleanup'] = {'state': 'INCOMPLETE', 'owned_deleted': False}
+                    report.update(status='INCOMPLETE', failure_code='d2-linux-cleanup-incomplete')
+            else:
+                report['cleanup'] = {'state': 'UNSETTLED', 'owned_deleted': False}
+                report.update(status='INCOMPLETE', failure_code='d2-linux-settlement-not-proven')
+        report['setup']['stages'] = [d2_project_stage(stage) for stage in report['setup']['stages']]
+        if report['isolation']['primitive'] is not None:
+            report['isolation']['primitive'] = d2_project_stage(report['isolation']['primitive'], primitive=True)
+        if report['isolation']['preflight'] is not None:
+            report['isolation']['preflight'] = d2_project_stage(report['isolation']['preflight'])
+        d2_validate_result(report)
+        write_new(output, output / 'result.json', json_bytes(report))
+        write_new(output, output / 'manifest.json', json_bytes({'result.json': digest(output / 'result.json')}))
+    return report, 0 if report['status'] == 'PASS' else 1
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         raise PolicyError("invalid-cli")
@@ -4969,6 +6753,18 @@ def main():
     application_audit.add_argument('--output', required=True)
     application_audit.add_argument('--expected-sha', required=True)
     application_audit.add_argument('--expected-base', required=True)
+    d2_application = commands.add_parser('d2-linux')
+    d2_application.add_argument('--repo-root', required=True)
+    d2_application.add_argument('--output', required=True)
+    d2_application.add_argument('--expected-sha', required=True)
+    d2_application.add_argument('--expected-base', required=True)
+    d2_internal = commands.add_parser('d2-linux-worker', help=argparse.SUPPRESS)
+    d2_internal.add_argument('--job', required=True)
+    d2_internal.add_argument('--job-sha256', required=True)
+    d2_audit_parser = commands.add_parser('audit-d2-linux')
+    d2_audit_parser.add_argument('--output', required=True)
+    d2_audit_parser.add_argument('--expected-sha', required=True)
+    d2_audit_parser.add_argument('--expected-base', required=True)
     try:
         args = parser.parse_args()
         if args.command == "identity":
@@ -4996,6 +6792,14 @@ def main():
             return lnx03_worker(args)
         elif args.command == 'audit-linux-bootstrap':
             result, code = lnx03_audit(args), 0
+        elif args.command == 'd2-linux':
+            report, code = d2_pipeline(args)
+            result = {'status': report['status'], 'scope': report['scope'],
+                      'source_sha': report['source']['sha'], 'failure_code': report['failure_code']}
+        elif args.command == 'd2-linux-worker':
+            return d2_worker(args)
+        elif args.command == 'audit-d2-linux':
+            result, code = d2_audit(args), 0
         else:
             result, code = audit_output(args), 0
     except SystemExit as error:

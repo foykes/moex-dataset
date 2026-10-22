@@ -1,4 +1,4 @@
-"""The single admitted LNX-03 fixture consumer; no application launcher API.
+"""Separate closed LNX-03 and D2 Linux consumers; no general launcher API.
 
 Only the verified helper creates its short-lived runner ticket. Local portable
 tests exercise parsers/refusals; native acceptance requires the isolated Linux
@@ -285,6 +285,8 @@ def write_result(ticket, result):
 
 
 def main():
+    if sys.argv[1:] == ['--lane', 'd2-linux']:
+        return d2_main()
     ticket = None
     try:
         require(sys.argv[1:] == ['--lane', 'linux-bootstrap'], 'lnx03-runner-cli-refused')
@@ -319,6 +321,255 @@ def main():
             except BaseException:
                 pass
         print('LNX03_RUNNER_REFUSED')
+        return 1
+
+
+D2_PATHS = (
+    'upload.py', 'upload.ipynb', 'main.py', '.github/lnx02/verify_env.py',
+    '.github/workflows/d2-linux-offline.yml', 'tools/offline_linux.py',
+    'tools/offline_guard_linux.py', 'tests/d2/conftest.py', 'tests/d2/d2_worker.py',
+    'tests/d2/test_supervision.py', 'tests/d2/test_targets.py',
+    'tests/d2/test_logging_contract.py', 'tests/d2/test_guard_admission.py',
+    'tests/fixtures/d2/expected.json', 'docs/d2_supervision.md',
+    'docs/testing.md', 'docs/coordination.md',
+)
+D2_TESTS = ('tests/d2/test_supervision.py', 'tests/d2/test_targets.py',
+            'tests/d2/test_logging_contract.py', 'tests/d2/test_guard_admission.py')
+D2_SOURCE_PATHS = tuple(dict.fromkeys(SOURCE_PATHS + D2_PATHS))
+D2_DEVELOPMENT_BASE = '25dee502a68128aea752f24ff67dfcb16b615a36'
+D2_NODE_IDS_SHA256 = 'c3d08ac0cc6899d3da247bb3ad34bfcd003778192e8eaa421f18bf6d86f2d7ae'
+
+
+def d2_validate_authority(value, sha):
+    require(type(value) is dict and set(value) == GRANT_KEYS,
+            'd2-linux-runner-authority-fields')
+    require(value['approved'] is True and value['consumer'] == value['job'] == 'd2-linux'
+            and value['repository'] == 'foykes/moex-dataset'
+            and value['actor'] == value['triggering_actor'] == 'foykes'
+            and value['workflow'] == '.github/workflows/d2-linux-offline.yml'
+            and value['sha'] == sha, 'd2-linux-runner-authority-identity')
+    for key, width in (('sha', 40), ('base', 40), ('ticket_id', 64)):
+        require(type(value[key]) is str and re.fullmatch('[0-9a-f]{' + str(width) + '}', value[key]),
+                'd2-linux-runner-authority-identity')
+    require(type(value['attempt']) is int and value['attempt'] == 2
+            and type(value['run_number']) is int and value['run_number'] > 0
+            and type(value['run_id']) is str and re.fullmatch('[1-9][0-9]*', value['run_id']),
+            'd2-linux-runner-authority-identity')
+    require((value['event'] == 'push' and value['ref'] == 'refs/heads/codex/mds-d2-linux-stage-b'
+             and value['base'] == D2_DEVELOPMENT_BASE)
+            or (value['event'] == 'workflow_dispatch' and value['ref'] == 'refs/heads/main'
+                and value['base'] == value['sha']), 'd2-linux-runner-authority-ref')
+
+
+def d2_validate_ticket(env, repo):
+    repo = real_path(str(repo), directory=True)
+    digest = env.get('MDS_D2_LINUX_RUN_TICKET_SHA256')
+    require(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest), 'd2-linux-runner-ticket-missing')
+    path = real_path(env.get('MDS_D2_LINUX_RUN_TICKET'), private=True)
+    data, ticket = read_record(path)
+    require(hashlib.sha256(data).hexdigest() == digest, 'd2-linux-runner-ticket-digest')
+    keys = {'schema_version', 'root', 'nonce', 'repo', 'parent_pid', 'source_sha',
+            'source_files_sha256', 'authority', 'result', 'native_root', 'phase'}
+    require(type(ticket) is dict and set(ticket) == keys
+            and ticket['schema_version'] == 'd2-linux-runner-ticket-v1'
+            and ticket['phase'] in {'foundation', 'application'}, 'd2-linux-runner-ticket-fields')
+    require(type(ticket['parent_pid']) is int and ticket['parent_pid'] == os.getppid(),
+            'd2-linux-runner-parent')
+    root = real_path(ticket['root'], directory=True, private=True)
+    require(root.name.startswith('d2-linux-')
+            and path == root / 'jobs' / ('application-' + ticket['phase'] + '-ticket.json')
+            and type(ticket['nonce']) is str and re.fullmatch('[0-9a-f]{32}', ticket['nonce']),
+            'd2-linux-runner-owner')
+    _, marker = read_record(root / '.lnx02-owner.json')
+    require(marker == {'nonce': ticket['nonce'], 'purpose': 'D2-LINUX'}, 'd2-linux-runner-owner')
+    require(ticket['repo'] == str(repo), 'd2-linux-runner-source')
+    d2_validate_authority(ticket['authority'], ticket['source_sha'])
+    raw_authority = env.get('MDS_D2_LINUX_ADMISSION_GRANT', '')
+    require(type(raw_authority) is str and 0 < len(raw_authority) <= 16384
+            and json.loads(raw_authority, object_pairs_hook=no_duplicates) == ticket['authority'],
+            'd2-linux-runner-authority-binding')
+    native_names = {'repository': 'GITHUB_REPOSITORY', 'sha': 'GITHUB_SHA',
+        'event': 'GITHUB_EVENT_NAME', 'ref': 'GITHUB_REF', 'actor': 'GITHUB_ACTOR',
+        'triggering_actor': 'GITHUB_TRIGGERING_ACTOR', 'job': 'GITHUB_JOB',
+        'run_id': 'GITHUB_RUN_ID', 'run_number': 'GITHUB_RUN_NUMBER', 'attempt': 'GITHUB_RUN_ATTEMPT'}
+    require(all(env.get(name) == str(ticket['authority'][key]) for key, name in native_names.items())
+            and env.get('GITHUB_ACTIONS') == 'true'
+            and env.get('RUNNER_ENVIRONMENT') == env.get('TASK_RUNNER_ENVIRONMENT') == 'github-hosted'
+            and env.get('ImageOS') == 'ubuntu24', 'd2-linux-runner-authority-runtime')
+    require(type(ticket['source_files_sha256']) is dict
+            and set(ticket['source_files_sha256']) == set(D2_SOURCE_PATHS), 'd2-linux-runner-source')
+    for name, digest in ticket['source_files_sha256'].items():
+        require(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest)
+                and hashlib.sha256(real_path(str(repo / name)).read_bytes()).hexdigest() == digest,
+                'd2-linux-runner-source')
+    native = real_path(ticket['native_root'], directory=True, private=True)
+    require(native == root / 'fixtures' / ('native' if ticket['phase'] == 'foundation' else 'd2'),
+            'd2-linux-runner-native-root')
+    require(ticket['result'] == str(root / 'jobs' / ('application-' + ticket['phase'] + '-tests.json'))
+            and not Path(ticket['result']).exists(), 'd2-linux-runner-result')
+    descriptor = os.open(path.with_suffix('.claimed'), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    os.close(descriptor)
+    return ticket
+
+
+class D2Counts(Counts):
+    def __init__(self):
+        super().__init__()
+        self.native_ids = set()
+        self.collected_ids = []
+        self.skipped = 0
+        self.collection_finished = False
+
+    def pytest_collection_finish(self, session):
+        super().pytest_collection_finish(session)
+        self.collected_ids = sorted(item.nodeid for item in session.items)
+        self.native_ids = {item.nodeid for item in session.items if item.get_closest_marker('native')}
+        self.collection_finished = True
+
+    def pytest_runtest_logreport(self, report):
+        super().pytest_runtest_logreport(report)
+        if report.skipped:
+            self.skipped += 1
+
+
+def d2_run_tests(ticket, repo):
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(repo))
+    os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+    os.environ['MDS_D2_SOURCE_SHA'] = ticket['source_sha']
+    os.environ['MDS_D2_NATIVE_ROOT'] = ticket['native_root']
+    os.environ['LNX03_SOURCE_SHA'] = ticket['source_sha']
+    os.environ['LNX03_NATIVE_ROOT'] = ticket['native_root']
+    module = importlib.import_module('tools.offline_guard_linux')
+    guard = module.install_process_guard()
+    module.attest_runtime()
+    if ticket['phase'] == 'application':
+        module.d2_runner_admission(ticket)
+    import sysconfig
+    prefix = real_path(str(Path(sys.prefix).absolute()), directory=True)
+    require(prefix == Path(ticket['root']) / 'dev-replay', 'd2-linux-runner-environment')
+    for key in ('purelib', 'platlib'):
+        site = real_path(sysconfig.get_paths()[key], directory=True)
+        require(site.is_relative_to(prefix), 'd2-linux-runner-site')
+        if str(site) not in sys.path:
+            sys.path.append(str(site))
+    require(not os.environ.get('PYTEST_ADDOPTS') and not os.environ.get('PYTEST_PLUGINS'),
+            'd2-linux-runner-pytest-override')
+    import pytest
+    foundation = ticket['phase'] == 'foundation'
+    targets = TESTS if foundation else D2_TESTS
+    conftest = repo / ('tests/linux_bootstrap/conftest.py' if foundation else 'tests/d2/conftest.py')
+    counts = D2Counts()
+    base = Path(ticket['root']) / 'fixtures' / ('pytest-' + ticket['phase'])
+    require(not base.exists(), 'd2-linux-runner-fixture-exists')
+    arguments = [str(repo / name) for name in targets] + [
+        '-c', '/dev/null', '--rootdir', str(repo), '--confcutdir', str(conftest.parent),
+        '--import-mode=importlib', '--strict-markers', '-q', '--tb=no',
+        '-p', 'no:cacheprovider', '--basetemp', str(base),
+    ]
+    exit_code = int(pytest.main(arguments, plugins=[counts]))
+    cases = []
+    for loaded in tuple(sys.modules.values()):
+        filename = getattr(loaded, '__file__', None)
+        if filename and Path(filename).absolute() == conftest:
+            cases = getattr(loaded, 'NATIVE_RESULTS', [])
+            break
+    passed = len(counts.passed_ids - counts.failed_ids)
+    node_ids_digest = hashlib.sha256(('\n'.join(counts.collected_ids) + '\n').encode('utf-8')).hexdigest()
+    expected_cases = set(CASES if foundation else module.D2_CASES + module.D2_BASELINE_CASES)
+    complete = (exit_code == 0 and not counts.failed_ids and not counts.skipped
+        and passed == counts.collected and counts.collected > len(expected_cases)
+        and counts.deselected == 0 and type(cases) is list
+        and len(cases) == len(expected_cases) and {item.get('case') for item in cases} == expected_cases
+        and not guard.denials)
+    if foundation:
+        complete = (complete and counts.collected == 444 and len(counts.native_ids) == 22
+                    and all(item.get('status') == 'PASS' for item in cases))
+        inventory_known = complete
+        failed_node_ids = [] if complete else None
+    else:
+        expected = json.loads((repo / 'tests/fixtures/d2/expected.json').read_bytes())
+        inventory_known = (counts.collection_finished and counts.collected_ids == expected.get('expected_node_ids')
+            and node_ids_digest == expected.get('expected_node_ids_sha256') == D2_NODE_IDS_SHA256
+            and counts.failed_ids <= set(counts.collected_ids))
+        positions = {node: index + 1 for index, node in enumerate(counts.collected_ids)}
+        failed_node_ids = (sorted('d2-node-{:06d}'.format(positions[node]) for node in counts.failed_ids)
+                           if inventory_known else None)
+        complete = (complete and counts.collected == 315 and len(counts.native_ids) == 56
+            and len(set(counts.collected_ids)) == 315
+            and counts.collected_ids == expected.get('expected_node_ids')
+            and node_ids_digest == expected.get('expected_node_ids_sha256') == D2_NODE_IDS_SHA256)
+        complete = complete and all(item.get('controller', {}).get('settled') is True
+            and item['controller'].get('exitcode') == 0 and not item['controller'].get('timed_out')
+            for item in cases)
+    return dict(schema_version='d2-linux-runner-result-v1', phase=ticket['phase'],
+        status='PASS' if complete else 'FAIL', source_sha=ticket['source_sha'],
+        collected=counts.collected, passed=passed, failed=len(counts.failed_ids),
+        deselected=counts.deselected, skipped=counts.skipped,
+        native_collected=len(counts.native_ids), native_passed=len(counts.native_ids & counts.passed_ids),
+        node_ids_sha256=node_ids_digest,
+        node_inventory_state='COMPLETE' if inventory_known else 'NOT_AVAILABLE',
+        failed_node_ids=failed_node_ids,
+        exit_code=0 if complete else (exit_code or 1), native_cases=cases,
+        failure_code=None if complete else 'd2-linux-application-oracle-failed')
+
+
+def d2_write_result(ticket, result):
+    data = d2_admit_export_bytes(json_bytes(result))
+    descriptor = os.open(ticket['result'], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as handle:
+        handle.write(data)
+
+
+def d2_admit_export_bytes(data):
+    require(type(data) is bytes and len(data) <= 1024 * 1024, 'd2-linux-runner-result-bound')
+    require(b'D2_PRIVATE_CANARY_4c1e11' not in data
+            and b'LNX03_NATIVE_PRIVATE_CANARY_7fe94d31' not in data
+            and re.search(rb'(?i)(https?://|file://|Traceback [(]most recent|[A-Z]:[\\/])', data) is None
+            and re.search(rb'(?:"|[\s])/[-A-Za-z0-9_.]', data) is None,
+            'd2-linux-runner-export-refused')
+    return data
+
+
+def d2_main():
+    ticket = None
+    result = None
+    try:
+        require(sys.platform == 'linux' and sys.implementation.name == 'cpython'
+                and sys.version_info[:3] == (3, 14, 8) and sys.flags.isolated
+                and sys.flags.no_site and sys.flags.dont_write_bytecode, 'd2-linux-runner-platform')
+        repo = Path(__file__).absolute().parents[1]
+        ticket = d2_validate_ticket(os.environ, repo)
+        import ctypes
+        import signal
+        library = ctypes.CDLL(None, use_errno=True)
+        library.prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
+        library.prctl.restype = ctypes.c_int
+        require(library.prctl(1, signal.SIGKILL, 0, 0, 0) == 0
+                and os.getppid() == ticket['parent_pid'], 'd2-linux-runner-parent-death')
+        result = d2_run_tests(ticket, repo)
+        d2_write_result(ticket, result)
+        return result['exit_code']
+    except BaseException:
+        if ticket is not None:
+            try:
+                incomplete = dict(schema_version='d2-linux-runner-result-v1',
+                    phase=ticket['phase'], status='INCOMPLETE', source_sha=ticket['source_sha'],
+                    collected=0, passed=0, failed=0, deselected=0, skipped=0,
+                    native_collected=0, native_passed=0,
+                    node_ids_sha256=hashlib.sha256(b'\n').hexdigest(), exit_code=1,
+                    node_inventory_state='NOT_AVAILABLE', failed_node_ids=None,
+                    native_cases=[], failure_code='d2-linux-runner-incomplete')
+                if result is not None:
+                    for key in ('collected', 'passed', 'failed', 'deselected', 'skipped',
+                                'native_collected', 'native_passed', 'node_ids_sha256',
+                                'node_inventory_state', 'failed_node_ids'):
+                        incomplete[key] = result[key]
+                d2_write_result(ticket, incomplete)
+            except BaseException:
+                pass
+        print('D2_LINUX_RUNNER_REFUSED')
         return 1
 
 

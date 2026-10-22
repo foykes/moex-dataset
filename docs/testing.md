@@ -238,3 +238,76 @@ main drift disjoint from the closed 22 dependencies. Later independent main
 movement does not invalidate completed exact-SHA evidence. Native PASS still
 requires real F-LOG/FD/process/network observations; skips stay NOT VERIFIED.
 Stage B, merge, issue closure, staging and publication remain unauthorized.
+
+## D2 Linux Stage B — closed application consumer
+
+Stage B has its own `d2-linux` consumer, exact source/authority family and fixed
+four-target D2 lane. Its contract is [D2 supervision](d2_supervision.md). The
+owner's 2026-10-22 delivery grant permits bounded development and preliminary
+review before #117 merges; older Stage A limits above remain historical and are
+not reused as Stage B authority. Production/publication and merge are excluded.
+
+Canonical hosted entrypoints are:
+
+```text
+python -I -S -B -X utf8 .github/lnx02/verify_env.py d2-linux --repo-root <checkout> --output <owned-output> --expected-sha <exact-head> --expected-base <approved-base>
+python -I -S -B -X utf8 .github/lnx02/verify_env.py audit-d2-linux --output <owned-output> --expected-sha <exact-head> --expected-base <approved-base>
+python -I -S -B -X utf8 tools/offline_linux.py --lane d2-linux
+```
+
+These are closed commands, not permission to execute them with arbitrary source
+or environment. The runner requires an issued one-use D2 ticket. Arbitrary
+modules, scripts, callbacks, test selectors and timeout flags are refused, as is
+the unsupported `--lane d2`. No live application entrypoint is a smoke test.
+
+The workflow routes the existing LNX-03 branch to `linux-bootstrap`, the Stage B
+branch to `d2-linux`, and main dispatch to the explicitly selected consumer.
+The route job uses bash before checkout. Consumers are mutually exclusive;
+routed-out is NOT_APPLICABLE, never evidence of PASS. Selected skipped, cancelled,
+unavailable or failed work is not accepted. Attempt one discovers actual run
+identity and refuses before checkout/SETUP; only separately issued exact attempt
+two is admitted. Run numbers are read from GitHub and are not reserved in advance.
+
+The external authorized controller uses only its new D2 variables:
+`MDS_D2_LINUX_ADMISSION_GRANT`, `MDS_D2_LINUX_SETUP_GRANT` and
+`MDS_D2_LINUX_SUPERVISED_NETNS_GRANT`. Grants bind source/base/ref/actors/workflow/
+job/actual run ID/number/attempt and fresh ticket. Setup and supervised namespace
+capabilities are distinct; the latter is conditional on actual classified
+rootless denial and verified privilege drop. Legacy LNX-02/LNX-03 grants are not
+translated or broadened. Revoke all own grants in finally, with actual readback.
+
+The immutable Ubuntu 24.04 / ordinary GIL CPython 3.14.8 environment replays the
+unchanged Linux locks. No credentials, dependency refresh, global install,
+production network or published datasets are used. Native OS network isolation,
+F-LOG transport, process/FD ownership and real settlement are acceptance evidence;
+`--no-index` or mock APIs alone do not establish these properties.
+
+Run the unchanged LNX-03 foundation's three targets (444 tests / 22 native and
+the original thirteen-case projection) in a separate process lifetime before
+the fixed D2 targets. Constructor uncertainty is preserved rather than cleared
+to admit a later phase. Each D2 native case has a fresh admitted controller;
+fifteen-second parent deadlines, ten-second cleanup and the 75-second external
+watchdog have different oracles. Actual source, environment, counts, exits,
+settlement and evidence digests must be bound to the tested exact SHA.
+
+Existing Windows workflow push/PR side effects can produce a cancelled duplicate.
+Only actual completed mandatory jobs on the final HEAD count, including all ten
+notebook pairs. Stacked PRs do not trigger main-only Linux syntax automatically;
+the separate final exact-HEAD syntax dispatch needs its owner grant. A working
+tree static/portable run cannot be labelled Linux native acceptance. The frozen
+Windows 221-node ledger and 216 PASS / five FAIL are never overwritten.
+
+Changing the helper also requires source-bound legacy checks and, after any
+eventual owner-approved merge, separate real D2, LNX-03 and LNX-02 verification
+on the actual merge SHA. Neither a development branch PASS nor foundation within
+D2 replaces those post-merge checks or the outstanding Stage B integration gates.
+
+The PR #122 outcome correction retains the original 300 node IDs and 56 native
+cases, adding 15 narrow observation/validator controls (315 total). Real hang
+cases observe the existing Popen-owned waitpid call without an extra reaper.
+They distinguish a healthy sibling observed exited before the common deadline
+from its live peer at expiry. The old 9d76bc2 diagnostic assignments are pinned
+and evaluated only as a test-only baseline at that actual pre-cleanup boundary;
+they never drive production classification. This is not a full old-SHA CI run
+and supplies no missing historical CI5 timestamp. Missing or unreached witnesses
+fail the oracle rather than being replaced by a guessed timing outcome.
