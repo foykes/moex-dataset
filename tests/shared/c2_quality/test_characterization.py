@@ -28,6 +28,7 @@ import mds_offline_guard as guard
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / 'tests/fixtures/c2_quality'
 ARCHIVE = FIXTURES / 'baseline_v1'
+ARCHIVE_V2 = FIXTURES / 'baseline_v2'
 BASELINE = {
     'sha': 'b423a7817e9a508fc167cdd47704d0b788252a8c',
     'python_blob': '7e63237528dbf43d2fe9dd3fba7ac277f477dc35',
@@ -65,8 +66,9 @@ def _assert_pair(source_root, identities):
         assert _blob(source_root / filename) == identities[field], 'C2_03_SOURCE_DRIFT'
 
 
-def _current_cases():
-    manifest = _fixture_json('source_cases_v2.json')
+def _current_cases(version=2):
+    assert version in (2, 3), 'C2_03_UNKNOWN_CHARACTERIZATION_VERSION'
+    manifest = _fixture_json('source_cases_v{}.json'.format(version))
     historical = {case['case_id']: case for case in _source_cases()['cases']}
     assert {case['case_id'] for case in manifest['historical_cases']} == set(historical)
     cases = []
@@ -330,10 +332,12 @@ def _xlsx_readback(path, rows):
         workbook.close()
 
 
-def _fresh_dividends(*, current=False):
+def _fresh_dividends(*, current=False, run_local=False):
     # Explicit, disjoint roots. Never fall back from current failures to historical source.
-    source_root = ROOT if current else ARCHIVE
-    identities = _fixture_json('export_oracles_v2.json')['source'] if current else BASELINE
+    assert not run_local or current, 'C2_03_UNKNOWN_CHARACTERIZATION_VERSION'
+    source_root = ROOT if run_local else ARCHIVE_V2 if current else ARCHIVE
+    version = 3 if run_local else 2
+    identities = _fixture_json('export_oracles_v{}.json'.format(version))['source'] if current else BASELINE
     _assert_pair(source_root, identities)
     specification = importlib.util.spec_from_file_location('c2_03_fresh_dividends', source_root / 'dividends.py')
     module = importlib.util.module_from_spec(specification)
@@ -342,11 +346,12 @@ def _fresh_dividends(*, current=False):
     return module
 
 
-def characterize(case, monkeypatch, tmp_path, *, current=False):
+def characterize(case, monkeypatch, tmp_path, *, current=False, run_local=False):
     """Return JSON-safe observations; callers must supply an issued fixture root."""
     _assert_profile()
     _validate_source_literals(case)
-    module = _fresh_dividends(current=current)
+    module = _fresh_dividends(current=current, run_local=run_local)
+    accumulator = module.divs_all
     directory = tmp_path / 'datasets/dividends'
     directory.mkdir(parents=True)
     module.current_path = str(tmp_path)
@@ -429,6 +434,10 @@ def characterize(case, monkeypatch, tmp_path, *, current=False):
         return result
 
     def loader(*args, **kwargs):
+        nonlocal accumulator
+        if run_local:
+            accumulator = kwargs['rows_target']
+            assert accumulator is not module.divs_all, 'C2_03_MAIN_GLOBAL_ACCUMULATOR'
         try:
             result = original_loader(*args, **kwargs)
         except Exception as error:
@@ -500,7 +509,7 @@ def characterize(case, monkeypatch, tmp_path, *, current=False):
               'stages': stages, 'requests': requests, 'reads': reads, 'writer_calls': writer_calls,
               'decoded_rows': _rows(captured['decoded_rows']) if captured['decoded_rows'] is not None else None,
               'prepared_rows': _rows(captured['prepared_rows']) if captured['prepared_rows'] is not None else None,
-              'accumulator_rows': _rows(module.divs_all), 'frame': captured.get('frame'),
+              'accumulator_rows': _rows(accumulator), 'frame': captured.get('frame'),
               'artifact_presence': {suffix: path.exists() for suffix, path in paths.items()},
               'csv': None, 'xlsx_xml': None, 'xlsx_readback': None}
     csv_fields = None
@@ -511,7 +520,7 @@ def characterize(case, monkeypatch, tmp_path, *, current=False):
         result['csv'] = {'literal_utf8': literal_csv, 'fields': csv_fields}
     if stages['xlsx']['status'] == 'RETURNED':
         result['xlsx_xml'] = _xlsx_xml(paths['xlsx'])
-        result['xlsx_readback'], readback_values = _xlsx_readback(paths['xlsx'], len(module.divs_all))
+        result['xlsx_readback'], readback_values = _xlsx_readback(paths['xlsx'], len(accumulator))
     result['deltas'] = []
     xml_cells = {cell['coordinate']: cell for cell in result['xlsx_xml'] or []}
     for item in case['value_inputs']:
@@ -520,7 +529,7 @@ def characterize(case, monkeypatch, tmp_path, *, current=False):
         delta = {'row_ordinal': ordinal, 'source_fraction': _fraction(reference) if reference is not None else None,
                  'comparisons': {}}
         for name, rows, column in [('decoded', captured['decoded_rows'], 1),
-                                    ('accumulator', module.divs_all, 3),
+                                    ('accumulator', accumulator, 3),
                                     ('frame', captured['frame_values'], 3)]:
             reason = item['comparison_reason'] if reference is None else None
             if reason is None and (rows is None or ordinal >= len(rows)):
@@ -550,6 +559,9 @@ def characterize(case, monkeypatch, tmp_path, *, current=False):
             for stage in ('accumulator', 'frame', 'csv', 'xlsx_xml', 'xlsx_readback'):
                 delta['comparisons'][stage] = _comparison(reference, reason='STAGE_NOT_REACHED')
         result['deltas'].append(delta)
+    if run_local:
+        result['accumulator_scope'] = 'RUN_LOCAL'
+        result['legacy_accumulator_rows'] = _rows(module.divs_all)
     # Reject nonstandard NaN/Infinity in the evidence itself.
     json.dumps(result, allow_nan=False)
     return result
@@ -651,7 +663,10 @@ def test_current_fixture_and_source_identity():
     assert sum(case['semantic_failure'] is not None for case in cases) == 32
     # This is the integration parent; candidate SHA is external evidence, not a self-reference.
     assert oracles['source']['base_sha'] == 'c98664b7da20375cf0bfed8125a94d64008d0d63'
-    _assert_pair(ROOT, oracles['source'])
+    # These existing nodeids now retain V2 history on its immutable archived pair.
+    _assert_pair(ARCHIVE_V2, oracles['source'])
+    assert _blob(FIXTURES / 'source_cases_v2.json') == 'f1b4cd8bff65ceecb4dd848a89d8e6383deab888'
+    assert _blob(FIXTURES / 'export_oracles_v2.json') == '0a817cf03fdbb63993ffc76c48804847df87e742'
     assert oracles['source']['python_blob'] != BASELINE['python_blob']
     assert oracles['source']['notebook_blob'] != BASELINE['notebook_blob']
 
@@ -695,6 +710,71 @@ def test_current_guard_retains_finite_precision_findings(case_id, stage, referen
     actual = characterize(case, monkeypatch, tmp_path, current=True)
     assert actual['stages']['semantic'] == {'status': 'RETURNED'}
     assert actual['stages']['main'] == {'status': 'RETURNED'}
+    comparison = actual['deltas'][0]['comparisons'][stage]
+    assert comparison['reason'] is None
+    assert comparison['delta'] == _fraction(observed - reference)
+    assert comparison['delta']['numerator'] != '0'
+
+
+def test_v3_fixture_and_current_source_identity():
+    _assert_profile()
+    manifest = _fixture_json('source_cases_v3.json')
+    oracles = _fixture_json('export_oracles_v3.json')
+    assert manifest['fixture_version'] == oracles['fixture_version'] == 3
+    assert manifest['policy'] == 'C1_R0_RUN_LOCAL_V1'
+    assert manifest['runtime_profile'] == oracles['runtime_profile'] == PROFILE
+    assert manifest['previous_fixture_blob'] == _blob(FIXTURES / 'source_cases_v2.json')
+    assert manifest['previous_oracle_blob'] == _blob(FIXTURES / 'export_oracles_v2.json')
+    assert manifest['historical_cases'] == _fixture_json('source_cases_v2.json')['historical_cases']
+    assert manifest['additional_cases'] == _fixture_json('source_cases_v2.json')['additional_cases']
+    cases = _current_cases(3)
+    assert len(cases) == len({case['case_id'] for case in cases}) == 49
+    assert set(oracles['cases']) == {case['case_id'] for case in cases}
+    assert oracles['source']['base_sha'] == 'e3d4d2af23d217af54683ca7a1141ce77276ea12'
+    _assert_pair(ROOT, oracles['source'])
+    for case_id, expected in oracles['cases'].items():
+        # State ownership changes; independent single-response precision oracles do not.
+        previous = _fixture_json('export_oracles_v2.json')['cases'][case_id]
+        assert expected == dict(previous, accumulator_scope='RUN_LOCAL', legacy_accumulator_rows=[])
+
+
+@pytest.mark.parametrize('case', _current_cases(3), ids=lambda case: case['case_id'])
+def test_v3_run_local_export_characterization(case, monkeypatch, tmp_path):
+    actual = characterize(case, monkeypatch, tmp_path, current=True, run_local=True)
+    expected = _fixture_json('export_oracles_v3.json')['cases'][case['case_id']]
+    assert actual == expected
+    assert actual['accumulator_scope'] == 'RUN_LOCAL'
+    assert actual['legacy_accumulator_rows'] == []
+    failure_stage = case['expected_failure_stage']
+    assert actual['stages']['main']['status'] == ('RAISED' if failure_stage else 'RETURNED')
+    if case['semantic_failure'] is not None:
+        assert actual['stages']['semantic']['exception']['semantic'] == case['semantic_failure']
+        assert actual['prepared_rows'] is not None and actual['accumulator_rows'] == []
+        assert actual['writer_calls'] == []
+        assert actual['artifact_presence'] == {'xlsx': False, 'csv': False}
+        for stage in ('accumulator', 'frame', 'xlsx', 'csv'):
+            assert actual['stages'][stage]['status'] == 'NOT_REACHED'
+        for delta in actual['deltas']:
+            for stage in ('accumulator', 'frame', 'csv', 'xlsx_xml', 'xlsx_readback'):
+                assert delta['comparisons'][stage]['delta'] is None
+                assert delta['comparisons'][stage]['reason'] == 'STAGE_NOT_REACHED'
+    elif actual['stages']['parse']['status'] == 'RETURNED':
+        prepared = [[_typed(case['isin']), _typed(case['ticker']), *row]
+                    for row in actual['decoded_rows']]
+        assert actual['prepared_rows'] == actual['accumulator_rows'] == prepared
+
+
+@pytest.mark.parametrize('case_id,stage,reference,observed', [
+    ('long_decimal', 'csv', Fraction(10000000000000001, 10**17), Fraction(1, 10)),
+    ('underflow_positive', 'decoded', Fraction(1, 10**400), Fraction(0)),
+    ('large_integer', 'xlsx_readback', Fraction(9007199254740993), Fraction(9007199254740992)),
+])
+def test_v3_run_local_keeps_precision_findings(case_id, stage, reference, observed,
+                                             monkeypatch, tmp_path):
+    case = next(case for case in _current_cases(3) if case['case_id'] == case_id)
+    actual = characterize(case, monkeypatch, tmp_path, current=True, run_local=True)
+    assert actual['stages']['main'] == {'status': 'RETURNED'}
+    assert actual['legacy_accumulator_rows'] == []
     comparison = actual['deltas'][0]['comparisons'][stage]
     assert comparison['reason'] is None
     assert comparison['delta'] == _fraction(observed - reference)

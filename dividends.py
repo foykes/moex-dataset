@@ -403,12 +403,13 @@ def _dividend_failure(logging_context, error, ticker, endpoint, code,
 
 
 def div_loader(isin, ticker, *, logging_context=None):
-    return _div_loader(isin, ticker, _network_clock() + 600, logging_context=logging_context)
+    # Самостоятельный loader сохраняет прежний публичный накопитель и None.
+    # main передаёт свой отдельный список и не меняет этот legacy state.
+    return _div_loader(isin, ticker, _network_clock() + 600,
+                       rows_target=divs_all, logging_context=logging_context)
 
 
-def _div_loader(isin, ticker, source_deadline, *, logging_context=None):
-    global divs_all
-
+def _div_loader(isin, ticker, source_deadline, *, rows_target, logging_context=None):
     query = None
     instrument = ticker
     failure_code = 'DIVIDEND_ISIN_INVALID'
@@ -468,9 +469,9 @@ def _div_loader(isin, ticker, source_deadline, *, logging_context=None):
                 raise RuntimeError('LOGGING_INCOMPLETE')
         _check_budget(operation_deadline)
         # Один повреждённый ответ или отказ barrier не оставляет его первые
-        # строки в накопителе. Успешные предыдущие ответы не откатываются:
-        # независимость всего повторного main остаётся отдельной задачей C1-02.
-        divs_all.extend(rows)
+        # строки в переданном накопителе. Успешные предыдущие ответы сохраняются
+        # в нём; каждый main владеет отдельным списком только своего вызова.
+        rows_target.extend(rows)
     except Exception as error:
         if error.args and type(error.args[0]) is str:
             code = error.args[0].split(':', 1)[0]
@@ -496,6 +497,7 @@ def _source_checkpoint(deadline, logging_context):
 
 def main(*, logging_context=None):
     source_deadline = _network_clock() + 600
+    run_rows = []
     _dividend_event(logging_context, 'INFO', 'dividend_collection_started',
         'Подготовка списка инструментов для дивидендов', outcome='STARTED')
     _source_checkpoint(source_deadline, logging_context)
@@ -514,28 +516,27 @@ def main(*, logging_context=None):
             event='dividend_collection_failed', outcome='BLOCKED')
         raise error
 
-    initial_rows = len(divs_all)
     for i in range(0, len(df_isin)):
         _source_checkpoint(source_deadline, logging_context)
         isin = df_isin['ISIN'][i]
         ticker = df_isin['TRADE_CODE'][i]
-        _div_loader(isin, ticker, source_deadline, logging_context=logging_context)
+        _div_loader(isin, ticker, source_deadline, rows_target=run_rows,
+                    logging_context=logging_context)
     _source_checkpoint(source_deadline, logging_context)
-    # Владелец выбрал BLOCKED + previous для пустого выпуска. Старые строки
-    # глобального накопителя не доказывают непустоту текущего обхода. Это узкий
-    # gate: при новых nonempty rows прежнее накопление остаётся C1-02 residual.
-    if len(divs_all) == initial_rows:
+    # Владелец выбрал BLOCKED + previous для пустого выпуска. Здесь проверяются
+    # только строки текущего вызова; standalone div_loader не влияет на gate.
+    if len(run_rows) == 0:
         error = ValueError('DIVIDEND_EMPTY_RELEASE_BLOCKED: текущий обход не получил событий')
         _dividend_failure(logging_context, error, None, None,
             'DIVIDEND_EMPTY_RELEASE_BLOCKED',
             event='dividend_collection_failed', outcome='BLOCKED')
         raise error
 
-    print('Выгружено записей о дивидендах: {}'.format(len(divs_all)))
+    print('Выгружено записей о дивидендах: {}'.format(len(run_rows)))
 
-    df_divs_all = pd.DataFrame(divs_all, columns=['ISIN','TRADE_CODE','dt','value','currency'])
-    # Это размер прежнего экспортного входа, а не доказательство независимости
-    # main/уникальности выплат: глобальный накопитель исправляется в C1-02.
+    df_divs_all = pd.DataFrame(run_rows, columns=['ISIN','TRADE_CODE','dt','value','currency'])
+    # Размер экспортного входа этого вызова не доказывает уникальность событий,
+    # полноту источника или готовность публикации.
     counts = {'rows_received': None, 'rows_accepted': len(df_divs_all),
               'rows_quarantined': None, 'pages': None, 'instruments': len(df_isin),
               'null_reasons': {'rows_received': 'NOT_MEASURED_FOR_EXPORT_INPUT',

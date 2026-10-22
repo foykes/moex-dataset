@@ -459,6 +459,12 @@ def test_healthy_diagnostic_preserves_events_counts_and_uncertainty(monkeypatch,
 def test_success_then_semantic_failure_keeps_c1_rows_and_previous_disposable_files(
         monkeypatch, context, tmp_path):
     module, waits = load_dividends(monkeypatch)
+    original_loader = module._div_loader
+    targets = []
+    def loader(*args, **kwargs):
+        targets.append(kwargs['rows_target'])
+        return original_loader(*args, **kwargs)
+    monkeypatch.setattr(module, '_div_loader', loader)
     module.current_path = str(tmp_path)
     directory = tmp_path / 'datasets' / 'dividends'
     directory.mkdir(parents=True)
@@ -481,7 +487,9 @@ def test_success_then_semantic_failure_keeps_c1_rows_and_previous_disposable_fil
     with pytest.raises(ValueError) as caught:
         module.main(logging_context=context)
     assert str(caught.value) == semantic_message('DATE_CALENDAR', 'dt', 1)
-    assert module.divs_all == [[ISIN, 'SBER', '2024-07-11', 33.3, 'RUB']]
+    assert module.divs_all == []
+    assert len(targets) == 2 and targets[0] is targets[1]
+    assert targets[0] == [[ISIN, 'SBER', '2024-07-11', 33.3, 'RUB']]
     assert [url for url, _ in calls] == [SEARCH_URL, DETAIL_URL, OTHER_SEARCH_URL, OTHER_DETAIL_URL]
     assert writes == [] and waits == []
     for name, value in previous.items():
@@ -517,4 +525,4 @@ def test_healthy_main_keeps_five_columns_writer_order_kwargs_and_none(monkeypatc
     path = str(tmp_path) + '/datasets/dividends/all'
     assert writes == [('xlsx', path + '.xlsx', OUTPUT_COLUMNS, expected, {'index': False}),
                       ('csv', path + '.csv', OUTPUT_COLUMNS, expected, {'index': False})]
-    assert module.divs_all == expected
+    assert module.divs_all == []

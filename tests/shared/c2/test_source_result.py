@@ -332,9 +332,9 @@ def test_mixed_scope_preserves_literal_export_and_c1_residual(
     assert module.main(logging_context=context) is None
     assert calls == ([MOEX_SEARCH_URL, MOEX_DETAIL_URL, SEARCH_URL, DETAIL_URL] if empty_first else
                      [SEARCH_URL, DETAIL_URL, MOEX_SEARCH_URL, MOEX_DETAIL_URL])
-    expected = OLD + EXPECTED if seeded else EXPECTED
-    # Old+new при nonempty остаётся явным C1-02 residual, не заявкой на исправление.
-    assert module.divs_all == expected
+    expected = EXPECTED
+    # Только этот run попадает в экспорт; standalone accumulator не меняется.
+    assert module.divs_all == (OLD if seeded else [])
     path = str(tmp_path) + '/datasets/dividends/all'
     assert reads == [str(tmp_path) + '/datasets/ticker_lists/moex_full.xlsx']
     assert writes == [('xlsx', path + '.xlsx', OUTPUT_COLUMNS, expected, {'index': False}),
@@ -354,6 +354,12 @@ def test_mixed_scope_preserves_literal_export_and_c1_residual(
 
 def test_success_then_invalid_response_stops_writers_without_whole_run_rollback(monkeypatch, context):
     module = load_dividends()
+    original_loader = module._div_loader
+    targets = []
+    def loader(*args, **kwargs):
+        targets.append(kwargs['rows_target'])
+        return original_loader(*args, **kwargs)
+    monkeypatch.setattr(module, '_div_loader', loader)
     responses = {SEARCH_URL: SEARCH, DETAIL_URL: PAYOUTS, MOEX_SEARCH_URL: MOEX_SEARCH,
         MOEX_DETAIL_URL: {'dividends': {'columns': COLUMNS,
             'data': [['MOEX', MOEX_ISIN, '2024-07-11', 17.35, 'RUB'], ['MOEX']]}}}
@@ -362,7 +368,9 @@ def test_success_then_invalid_response_stops_writers_without_whole_run_rollback(
     with pytest.raises(ValueError, match='^DIVIDEND_SOURCE_SCHEMA_INVALID:'):
         module.main(logging_context=context)
     assert calls == [SEARCH_URL, DETAIL_URL, MOEX_SEARCH_URL, MOEX_DETAIL_URL]
-    assert writes == [] and module.divs_all == EXPECTED
+    assert writes == [] and module.divs_all == []
+    assert len(targets) == 2 and targets[0] is targets[1]
+    assert targets[0] == EXPECTED
     events = records(context)
     assert not any(event['event'] in ('dividend_export_input', 'dividend_collection_returned')
                    for event in events)
