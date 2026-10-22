@@ -2231,7 +2231,7 @@ def _f07_compare(case, before, frame, after):
     for key, source in expected.items():
         parsed = actual[key]
         for position in range(6):
-            token = source[position]
+            token = source[position].strip(' \t')
             literal = int(token) if token.lstrip('+-').isdigit() else float(token)
             if _f07_number(parsed[position]) != _f07_number(literal):
                 raise _F07Refusal('F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED')
