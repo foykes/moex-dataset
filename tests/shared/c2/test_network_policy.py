@@ -438,6 +438,12 @@ def test_logging_time_cannot_start_next_action_after_budget(monkeypatch, model, 
 
 def test_one_source_deadline_covers_all_instruments(monkeypatch, model, context):
     module, clock, waits = model
+    original_loader = module._div_loader
+    targets = []
+    def loader(*args, **kwargs):
+        targets.append(kwargs['rows_target'])
+        return original_loader(*args, **kwargs)
+    monkeypatch.setattr(module, '_div_loader', loader)
     scope = [['T' + str(i), 'RU' + str(i).zfill(10)] for i in range(11)]
     monkeypatch.setattr(module.pd, 'read_excel', lambda path:
         pd.DataFrame(scope, columns=['TRADE_CODE', 'ISIN']))
@@ -461,7 +467,9 @@ def test_one_source_deadline_covers_all_instruments(monkeypatch, model, context)
     with pytest.raises(TimeoutError, match='^DIVIDEND_BUDGET_EXHAUSTED:'):
         module.main(logging_context=context)
     assert len(calls) == 21 and calls[-1][1] == 10
-    assert module.divs_all == [[isin, ticker, '2024-07-11', 1.5, 'RUB'] for ticker, isin in scope[:10]]
+    assert module.divs_all == []
+    assert len(targets) == 11 and all(target is targets[0] for target in targets)
+    assert targets[0] == [[isin, ticker, '2024-07-11', 1.5, 'RUB'] for ticker, isin in scope[:10]]
     assert waits == [] and exports == []
     failed(context)
 

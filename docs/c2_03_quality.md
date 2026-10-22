@@ -367,3 +367,96 @@ integration. There is no automatic rebase, force push or reset of another
 worktree. Rollback is a separately authorized thematic revert of the entire
 C2-03B change, restoring the pair and harness together while preserving prior
 evidence. Dataset rollback is not needed for this offline-tested source change.
+## C1-02 R0: independent main invocations and V3
+
+R0 fixes the repeat-run accumulator defect in #27. Each `dividends.main()` call
+owns a new row list. Only that call's accepted responses enter its export frame;
+an earlier successful run, a failed run, or a standalone loader cannot seed it.
+The private loader receives the destination explicitly. Response validation,
+logging confirmation and the final budget check still precede its single append.
+An exception stops the current invocation before its remaining writers; it does
+not introduce a multi-file transaction or prove production preservation.
+
+The public signatures and successful `None` returns are retained. Standalone
+`div_loader(isin, ticker, *, logging_context=None)` keeps appending to the same
+legacy `divs_all` object. `main(*, logging_context=None)` neither reads nor resets,
+rebinds or updates that object. Reading `divs_all` after `main()` therefore no
+longer exposes main's export rows. This observable state correction is intentional;
+the standalone accumulator is not a release result API.
+
+The five columns, source values, row order, identical payouts, filenames,
+XLSX-before-CSV order and `index=False` remain unchanged. Only contamination from
+other invocations disappears. Empty-current-run refusal, retries, cooperative
+budgets, semantic rules, logging envelope/barrier and original exceptions remain.
+SECID request reuse and natural-event deduplication are excluded. O6's approved
+association policy belongs to the later reuse slice; no guessed key is introduced.
+
+The historical C1-01 report in `docs/dividends_identity.md` remains unchanged in
+its owner's custody. This R0 section supersedes its historical main/global-state
+description only. Its identity, source-evidence and dedup residuals are not closed.
+R0 is the separately authorized run-state subset, not completion of the full R,
+P6, C1 or C2 release campaign.
+
+### Frozen V2 before the first pair edit
+
+Before either active pair member changed, exact Git bytes were retained at:
+
+```text
+tests/fixtures/c2_quality/baseline_v2/dividends.py
+tests/fixtures/c2_quality/baseline_v2/dividends.ipynb
+```
+
+Their blobs are `e66e1effa4d113518d1ef99180176562f42e65d8` and
+`affcc5efb1aad3b3b18fad3ba1c4c3c223781579`. The V2 JSON blobs remain
+`f1b4cd8bff65ceecb4dd848a89d8e6383deab888` (`source_cases_v2.json`) and
+`0a817cf03fdbb63993ffc76c48804847df87e742` (`export_oracles_v2.json`).
+
+All existing V1/V2 test nodeids are retained: V1 41 cases / 44 nodes / 172 finite
+comparisons, V2 49 cases / 53 nodes / 162 finite comparisons. The existing
+`test_current_*` names now identify archived V2 for nodeid continuity; they do not
+claim to exercise the active pair. Both historical source fingerprints are checked
+before every historical import. The archived notebook is identity evidence, never
+an additional active notebook pair; its Python member belongs to syntax inventory.
+
+V3 uses only the active root pair and its separately pinned fingerprints in
+`export_oracles_v3.json`. No current-to-archive fallback exists. Its 49 inputs and
+all numeric/serialization expectations are preserved from independently reviewed
+V2 before the first V3 measurement. The only added expectations are
+`accumulator_scope=RUN_LOCAL` and `legacy_accumulator_rows=[]`. The harness observes
+the actual list passed to the private loader, including accepted rows before an
+exception, rather than substituting DataFrame output for accumulator evidence.
+V3 retains 162 finite comparisons and the frozen Windows runtime profile.
+
+This preserves the known binary/CSV/XLSX precision findings, underflow and
+noncomparable outcomes. R0 changes no decoder, rounding, serializer or source
+semantics. GREEN characterization still does not mean quality PASS or losslessness.
+No historical oracle is updated automatically. A later source-adapter change must
+archive V3 and introduce independently reviewed V4 in its own granted scope.
+
+### Regression and verification boundaries
+
+`tests/shared/c1/test_run_state.py` imports the module once per test, then calls
+main twice. Literal independent expectations cover identical runs, changed second
+inputs, schema/semantic failure followed by recovery, empty second collection,
+standalone accumulator ownership and writer failure with primary-error identity.
+The identical-run serializer case writes only to a fresh guard-issued disposable
+root: CSV literal bytes and SHA-256 match; XLSX cell coordinates/types/values match
+after actual openpyxl readback. ZIP timestamps are not a checksum oracle.
+
+Existing named C2 tests continue to prove accepted responses before a later
+failure, deadline/request accounting, no writers on source failure, preserved
+disposable previous files, logging/counts, schema and writer arguments. Those
+accepted rows now live in the observed run-owned sink, while the standalone list
+stays unchanged. Their nodeids and parameter axes are retained. The held P6 test,
+shared helpers/imports, other test zones and C1 identity document are untouched.
+
+Development RED/GREEN, final clean-HEAD checks, hosted jobs and independent review
+are distinct receipts. Required F3 collection/execution must include all 97
+historical nodes, the V3 nodes and repeat-run regressions. Existing F1/F2/F-LOG,
+all ten active pairs, source/environment integrity and exact-checkout hosted gates
+remain required; this document does not declare pending checks passed.
+
+Rollback requires a separately authorized revert of the complete R0 pair/harness/
+test/doc changes while preserving evidence. The prior repeat-run defect would
+return. Dataset restoration, issue closure, production activation, publication
+integrity, live-source evidence and full C2 acceptance are not authorized here.
