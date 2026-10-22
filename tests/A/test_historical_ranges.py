@@ -2498,3 +2498,75 @@ def test_f07_independent_comparison_refuses_literal_corruption(fault):
                 else 'F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED')
     with pytest.raises(ValueError, match='^' + expected + '$'):
         _f07_compare(case, source, frame, after)
+
+
+@pytest.mark.parametrize('position', range(6))
+@pytest.mark.parametrize('token,exact,rounded', [
+    (' 9007199254740993 ', 9007199254740993, 9007199254740992.0),
+    ('\t9007199254740993\t', 9007199254740993, 9007199254740992.0),
+    (' \t+9007199254740993\t ', 9007199254740993, 9007199254740992.0),
+    ('\t -9007199254740993 \t', -9007199254740993, -9007199254740992.0),
+])
+@pytest.mark.parametrize('candidate_kind', ['exact_integer', 'rounded_float'])
+def test_f07_padded_integer_reference_keeps_literal_precision(
+        position, token, exact, rounded, candidate_kind):
+    case = _F07_CASES[0]
+    cells = ['100', '101', '102', '99', '202000', '2000',
+             '2024-03-01 00:00:00', '2024-03-01 00:00:59']
+    cells[position] = token
+    raw_row = tuple(cells)
+    body = _f07_body([raw_row])
+    before = _f07_reference_records(body)
+    after = _f07_reference_records(body)
+    values = [100, 101, 102, 99, 202000, 2000, cells[6], cells[7], 'SBER']
+    values[position] = exact if candidate_kind == 'exact_integer' else rounded
+    frame = pd.DataFrame({
+        name: pd.Series([value], dtype=(
+            'object' if index >= 6 else
+            'float64' if index == position and candidate_kind == 'rounded_float' else 'int64'))
+        for index, (name, value) in enumerate(zip(_F07_PUBLIC, values))
+    })
+    dtypes = tuple(frame.dtypes)
+    if candidate_kind == 'exact_integer':
+        report = _f07_compare(case, before, frame, after)
+        assert report == dict(case=dict(case), status='OBSERVED_RANGE_MATCH_SOURCE_ACCEPTANCE_OPEN',
+                              rows=1, source_acceptance='NOT_VERIFIED')
+    else:
+        with pytest.raises(ValueError, match='^F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED$'):
+            _f07_compare(case, before, frame, after)
+    assert before == after == [raw_row]
+    assert before[0][position] == token and _f07_body(before) == body
+    assert tuple(frame.dtypes) == dtypes
+
+
+@pytest.mark.parametrize('position', range(6))
+@pytest.mark.parametrize('token,matching,opposite', [
+    (' -0.0 ', -0.0, 0.0),
+    ('\t+0.0\t', 0.0, -0.0),
+])
+@pytest.mark.parametrize('candidate_kind', ['same_sign', 'opposite_sign'])
+def test_f07_padded_reference_preserves_signed_zero(
+        position, token, matching, opposite, candidate_kind):
+    case = _F07_CASES[0]
+    cells = ['100', '101', '102', '99', '202000', '2000',
+             '2024-03-01 00:00:00', '2024-03-01 00:00:59']
+    cells[position] = token
+    raw_row = tuple(cells)
+    body = _f07_body([raw_row])
+    before = _f07_reference_records(body)
+    after = _f07_reference_records(body)
+    values = [100, 101, 102, 99, 202000, 2000, cells[6], cells[7], 'SBER']
+    values[position] = matching if candidate_kind == 'same_sign' else opposite
+    frame = pd.DataFrame({
+        name: pd.Series([value], dtype=(
+            'object' if index >= 6 else 'float64' if index == position else 'int64'))
+        for index, (name, value) in enumerate(zip(_F07_PUBLIC, values))
+    })
+    if candidate_kind == 'same_sign':
+        assert _f07_compare(case, before, frame, after)['rows'] == 1
+    else:
+        with pytest.raises(ValueError, match='^F07_MEMBERSHIP_OR_NUMERIC_MISMATCH_NOT_VERIFIED$'):
+            _f07_compare(case, before, frame, after)
+    assert before == after == [raw_row]
+    assert before[0][position] == token and _f07_body(before) == body
+    assert math.copysign(1, frame.iloc[0, position]) == math.copysign(1, values[position])
