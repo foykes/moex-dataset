@@ -1,0 +1,11 @@
+{
+  "profile_id": "C2_E_OFFLINE_JSON_V1",
+  "profile_version": 1,
+  "u_schema_sha256": "a0daced78e661713d75a5f768df5a354f5caf3c82a9f0a76a7ca53f10ad19619",
+  "mapping": "MOEX_DIVIDENDS_JSON_V1",
+  "raw_format": "STANDARD_JSON_UTF8",
+  "source_fact_status": "NOT_VERIFIED",
+  "columns": ["ISIN", "TRADE_CODE", "dt", "value", "currency"],
+  "source_fields": ["registryclosedate", "value", "currencyid"],
+  "required_evidence": ["ORIGIN", "SOURCE_SEMANTICS", "DATE_SEMANTICS", "AMOUNT_UNITS", "AMOUNT_GROSS_NET", "AMOUNT_SIGN", "CURRENCY_SEMANTICS", "COVERAGE"]
+}
