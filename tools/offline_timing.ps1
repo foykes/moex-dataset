@@ -363,7 +363,9 @@ function Copy-TimingReportSnapshot([string]$Run,[string]$Control,
         $destination=Join-Path $Control 'retained-reports'
         if (-not $VerifyOnly -and (Test-Path -LiteralPath $destination)) {throw 'RAW_DUPLICATE'}
         $inventory=New-Object 'Collections.Generic.List[object]'
-        foreach ($file in Get-ChildItem -LiteralPath $Run -Recurse -File -Force) {
+        foreach ($file in Get-ChildItem -LiteralPath $Run -Recurse -Force) {
+            Assert-PlainPath $file.FullName $Run|Out-Null
+            if ($file.PSIsContainer) {continue}
             $name=[IO.Path]::GetRelativePath($Run,$file.FullName).Replace('\','/')
             if ($name.StartsWith('timing/',[StringComparison]::Ordinal)) {continue}
             Assert-PlainPath $file.FullName $Run|Out-Null
@@ -1352,8 +1354,9 @@ public static IntPtr RawDirectory(string expected) {
     $trace.Flush($true)
     $seal = New-Object Collections.Generic.List[object]
     foreach ($store in @(@{alias='control';root=$control}, @{alias='run';root=$run})) {
-        foreach ($file in Get-ChildItem -LiteralPath $store.root -Recurse -File -Force) {
+        foreach ($file in Get-ChildItem -LiteralPath $store.root -Recurse -Force) {
             Assert-PlainPath $file.FullName $store.root | Out-Null
+            if ($file.PSIsContainer) {continue}
             if ($file.FullName -eq (Join-Path $control 'observer.jsonl')) { continue }
             $relative = [IO.Path]::GetRelativePath($store.root,$file.FullName).Replace('\','/')
             $seal.Add(@{ store=$store.alias; name=$relative; bytes=$file.Length;
@@ -1404,7 +1407,9 @@ public static IntPtr RawDirectory(string expected) {
     }
     $manifestResult = Write-TimingGzipManifest -Rows @($seal.ToArray()) -Binding $streamBinding -Control $control -Run $run
     $abortBytes = 0L; $abortCount = 0
-    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $run 'timing') -Recurse -File -Force) {
+    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $run 'timing') -Recurse -Force) {
+        Assert-PlainPath $file.FullName $run | Out-Null
+        if ($file.PSIsContainer) {continue}
         $relative = [IO.Path]::GetRelativePath((Join-Path $run 'timing'),$file.FullName).Replace('\','/')
         if ($relative -ceq 'raw-custody.bin') {
             if ($file.Length -ne 256) {throw 'RAW_CUSTODY_LENGTH'}
@@ -1431,9 +1436,12 @@ public static IntPtr RawDirectory(string expected) {
     $sealPath = Join-Path $control 'SEALED.sha256'
     $payload=[Text.Encoding]::ASCII.GetBytes((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()+"`n")
     $actualMetadataBytes = 0L
-    foreach ($file in Get-ChildItem -LiteralPath $control -Recurse -File -Force) {
-        if ($file.Name -cin @('native.stdout','native.stderr','observer.jsonl') -or
-            [IO.Path]::GetRelativePath($control,$file.FullName).Replace('\','/').StartsWith('retained-reports/',[StringComparison]::Ordinal)) {continue}
+    foreach ($file in Get-ChildItem -LiteralPath $control -Recurse -Force) {
+        Assert-PlainPath $file.FullName $control | Out-Null
+        if ($file.PSIsContainer) {continue}
+        $relative=[IO.Path]::GetRelativePath($control,$file.FullName).Replace('\','/')
+        if ($relative -cin @('native.stdout','native.stderr','observer.jsonl') -or
+            $relative.StartsWith('retained-reports/',[StringComparison]::Ordinal)) {continue}
         $actualMetadataBytes += $file.Length
     }
     if ($actualMetadataBytes -ne $metadataBytes -or $metadataBytes+65+$rawLedgerReserve+$finalReceiptReserve -gt $metadataLimit -or
