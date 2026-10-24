@@ -192,11 +192,11 @@ function Test-TimingAggregateCost([object[]]$Tickets, [object[]]$Writers, [objec
                     if ($null -eq $target) { $outside+=$cost } else { $commands[$target]+=$cost }
                     break
                 }
-                $matches=@($Tickets | Where-Object { $_.ticket_id -ceq $cursor })
-                if ($matches.Count -ne 1 -or $matches[0].parent_id -cnotmatch '^[0-9a-f]{32}$') {
+                $ticketMatches=@($Tickets | Where-Object { $_.ticket_id -ceq $cursor })
+                if ($ticketMatches.Count -ne 1 -or $ticketMatches[0].parent_id -cnotmatch '^[0-9a-f]{32}$') {
                     [void]$errors.Add('UNKNOWN_COST_ANCESTRY'); break
                 }
-                $cursor=$matches[0].parent_id
+                $cursor=$ticketMatches[0].parent_id
             }
         }
         foreach ($cost in $commands.Values) { if ($cost -gt 1000000000) { $exceeded=$true } }
