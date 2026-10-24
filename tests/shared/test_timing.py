@@ -1,7 +1,7 @@
-"""Six bounded synthetic telemetry oracles; no native/default-command launch.
+"""Bounded synthetic telemetry oracles; no native/default-command launch.
 
-These nodes also run inside default-command probes. No recursion exemption or
-skip is needed: each uses at most 32 in-memory records, each below 4 KiB.
+These nodes also run inside default-command probes. Raw decoder and identity fixtures add no process launch. No recursion exemption or
+skip is needed: original fixtures use32records; raw capacity fixture uses384records/24640B.
 """
 
 import io
@@ -255,3 +255,105 @@ def test_timing_public_report_excludes_synthetic_private_values():
     assert projected['event'] == 'native_buffers'
     assert all(value not in str(projected) for value in (
         'F3_SYNTHETIC_SECRET', 'C:/synthetic/private', 'TOKEN', 'RAW_SYNTHETIC_OUTPUT'))
+
+
+def _raw_reservation_decoder():
+    # Extract the actual pure nested decoder; never call the native writer here.
+    import ast
+    import hashlib
+    import inspect
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(guard._timing_raw_reserve)))
+    nodes = [node for node in ast.walk(tree)
+             if isinstance(node, ast.FunctionDef) and node.name == 'decode']
+    assert len(nodes) == 1
+    namespace = {'hashlib': hashlib}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), 'timing-raw-pure', 'exec'), namespace)
+    return namespace['decode']
+
+
+def _raw_capacity_fixture():
+    import hashlib
+    header = b'H' * 64
+    snapshot = (b'\0' * 16 + (16777216).to_bytes(8, 'little') + b'\0' * 8
+                + hashlib.sha256(b'MDSRAW-SNAPSHOT-2\0' + header).digest())
+    return header, snapshot
+
+
+def test_timing_raw_ledger_preserves_budget_and_snapshot_capacity():
+    decode = _raw_reservation_decoder()
+    header, snapshot = _raw_capacity_fixture()
+    row = bytes.fromhex('2' * 32) + (50331648).to_bytes(8, 'little') + b'\0' * 8 + b'P' * 32
+    seen, used = decode(header + snapshot + row, header, {'2' * 32})
+    assert seen == {'0' * 32, '2' * 32}
+    assert used == 67108864
+    overflow = row[:16] + (50331649).to_bytes(8, 'little') + row[24:]
+    with pytest.raises(ValueError, match='^RAW_BUDGET$'):
+        decode(header + snapshot + overflow, header, {'2' * 32})
+
+
+def test_timing_raw_ledger_rejects_foreign_duplicate_and_partial_records():
+    decode = _raw_reservation_decoder()
+    header, snapshot = _raw_capacity_fixture()
+    row = bytes.fromhex('2' * 32) + (3).to_bytes(8, 'little') + b'\0' * 8 + b'P' * 32
+    cases = [(header + snapshot + row + row, header, {'2' * 32}, 'RAW_DUPLICATE'),
+             (header + snapshot + row, header, set(), 'RAW_FOREIGN'),
+             (header + snapshot + b'x', header, set(), 'RAW_LEDGER'),
+             (header, header, set(), 'RAW_SNAPSHOT_RESERVATION'),
+             (b'X' + header[1:] + snapshot, header, set(), 'RAW_LEDGER')]
+    for raw, binding, allowed, error in cases:
+        with pytest.raises(ValueError, match='^' + error + '$'):
+            decode(raw, binding, allowed)
+
+
+def test_timing_raw_snapshot_reservation_is_immutable():
+    decode = _raw_reservation_decoder()
+    header, snapshot = _raw_capacity_fixture()
+    for changed in (snapshot[:16] + (16777215).to_bytes(8, 'little') + snapshot[24:],
+                    snapshot[:-1] + bytes([snapshot[-1] ^ 1])):
+        with pytest.raises(ValueError, match='^RAW_FOREIGN$'):
+            decode(header + changed, header, set())
+
+
+def test_timing_raw_ledger_has_finite_record_capacity():
+    decode = _raw_reservation_decoder()
+    header, snapshot = _raw_capacity_fixture()
+    ids = {n.to_bytes(16, 'big').hex() for n in range(1, 384)}
+    rows = b''.join(bytes.fromhex(identifier) + b'\0' * 16 + b'P' * 32
+                    for identifier in sorted(ids))
+    seen, used = decode(header + snapshot + rows, header, ids)
+    assert len(seen) == 384 and used == 16777216
+    with pytest.raises(ValueError, match='^RAW_LEDGER$'):
+        decode(header + snapshot + rows + b'\0' * 64, header, ids)
+
+
+def _raw_identity_validator():
+    # Same actual pure decision used before any Win32 ledger write.
+    import ast
+    import inspect
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(guard._timing_raw_reserve)))
+    nodes = [node for node in ast.walk(tree)
+             if isinstance(node, ast.FunctionDef) and node.name == 'validate_identity']
+    assert len(nodes) == 1
+    namespace = {}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), 'timing-file-identity-pure', 'exec'), namespace)
+    return namespace['validate_identity']
+
+
+def test_timing_raw_file_requires_exact_expected_os_identity():
+    validate = _raw_identity_validator()
+    identity = b'I' * 20
+    assert validate((identity, 128), identity) == 128
+    assert validate((identity, 24640), identity) == 24640
+    for actual, expected in ((None, identity), ((b'F' * 20, 128), identity),
+                             ((identity, 128), None), ((identity, 128), b'')):
+        with pytest.raises(ValueError, match='^RAW_REPLACED$'):
+            validate(actual, expected)
+
+
+def test_timing_raw_file_identity_does_not_waive_ledger_length():
+    validate = _raw_identity_validator()
+    for length in (127, 24641, True, 128.0):
+        with pytest.raises(ValueError, match='^RAW_LEDGER$'):
+            validate((b'I' * 20, length), b'I' * 20)

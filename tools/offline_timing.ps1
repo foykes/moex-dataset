@@ -25,6 +25,9 @@ $resourceGap = $false
 $metadataBytes = 0L
 $finalReceiptBytes = 0L
 $metadataLimit = 262144L
+$rawLedgerReserve = 24896L
+$rawLedgerBytes = 0L
+$rawSnapshotBytes = 0L
 $finalReceiptReserve = 4096L
 $control = $null
 $controlTrusted = $false
@@ -84,9 +87,10 @@ function Write-TimingMetadata([string]$Path, [byte[]]$Payload, [switch]$Final) {
         if ($script:finalReceiptBytes + $Payload.Length -gt $finalReceiptReserve-1024) { throw 'METADATA_BUDGET' }
         $script:finalReceiptBytes += $Payload.Length
     } else {
-        if ($script:metadataBytes + $Payload.Length -gt $metadataLimit-$finalReceiptReserve) { throw 'METADATA_BUDGET' }
+        if ($script:metadataBytes + $Payload.Length -gt $metadataLimit-$finalReceiptReserve-24896) { throw 'METADATA_BUDGET' }
         $script:metadataBytes += $Payload.Length
     }
+    if (Test-Path -LiteralPath $Path) {throw 'METADATA_DUPLICATE'}
     $stream = [IO.File]::Open($Path,'CreateNew','Write','None')
     try { $stream.Write($Payload); $stream.Flush($true) } finally { $stream.Dispose() }
 }
@@ -226,6 +230,436 @@ function Test-TimingBufferBinding([object]$Record, [hashtable]$Actual) {
     } catch { [void]$errors.Add('CORRUPT_BUFFER_BINDING') }
     return @{ valid=($errors.Count -eq 0); errors=@($errors | Sort-Object) }
 }
+
+function Read-TimingRawCustody([string]$Ledger,[byte[]]$ContextBytes,[hashtable]$Binding,
+        [hashtable]$External) {
+    $anchorPath=Join-Path ([IO.Path]::GetDirectoryName($Ledger)) 'raw-custody.bin'
+    $anchorStream=[IO.File]::Open($anchorPath,'Open','Read','Read')
+    try {
+        $anchorFacts=[F3TimingNative]::RawFacts($anchorStream.SafeFileHandle.DangerousGetHandle(),$anchorPath)
+        if ($anchorStream.Length -ne 256) {throw 'RAW_CUSTODY_LENGTH'}
+        $anchor=[byte[]]::new(256);$offset=0
+        while ($offset -lt 256) {
+            $count=$anchorStream.Read($anchor,$offset,256-$offset)
+            if ($count -eq 0) {throw 'RAW_CUSTODY_LENGTH'}
+            $offset+=$count
+        }
+        $contextHash=[Security.Cryptography.SHA256]::HashData($ContextBytes)
+        if ([Text.Encoding]::ASCII.GetString($anchor,0,8) -cne ('MDSOWN2'+[char]0) -or
+            [Convert]::ToHexString($anchor,8,16).ToLowerInvariant() -cne $Binding.run_id -or
+            [Convert]::ToHexString($anchor,24,32) -cne [Convert]::ToHexString($contextHash) -or
+            @($anchor[168..255]|Where-Object {$_ -ne 0}).Count) {throw 'RAW_FOREIGN'}
+        $ownerPid=[BitConverter]::ToUInt32($anchor,108)
+        $ownerCreation=[BitConverter]::ToUInt64($anchor,112)
+        $key='{0}:{1}' -f $ownerPid,$ownerCreation
+        # Compare retained OS process identity; do not trust self-declared origin.
+        if (-not $External.ContainsKey($key) -or
+            $External[$key].image_kind -cnotin @('venv','base_runtime') -or
+            -not $External[$key].ended) {throw 'RAW_CUSTODIAN'}
+        $ownerId=[Convert]::ToHexString($anchor,120,16).ToLowerInvariant()
+        $runRoot=[IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($Ledger))
+        $startPath=Assert-PlainPath (Join-Path $runRoot "processes/$ownerId.start.json") $runRoot
+        $start=Get-Content -LiteralPath $startPath -Raw|ConvertFrom-Json
+        if ($start.role -cne 'supervisor' -or $start.pid -ne $ownerPid -or $start.ticket_id -cne $ownerId -or
+            $start.run_id -cne $Binding.run_id -or $start.tested_sha -cne $Binding.tested_sha -or
+            $start.source_digest -cne $Binding.source_digest -or $start.source_mode -cne 'commit') {throw 'RAW_CUSTODIAN'}
+        $pathHash=[Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($Ledger).ToLowerInvariant()))
+        if ([Convert]::ToHexString($anchor,76,32) -cne [Convert]::ToHexString($pathHash)) {throw 'RAW_PATH'}
+        $reader=[IO.File]::Open($Ledger,'Open','Read','Read')
+        try {
+            $facts=[F3TimingNative]::RawFacts($reader.SafeFileHandle.DangerousGetHandle(),$Ledger)
+            if ([Convert]::ToHexString($facts,0,20) -cne [Convert]::ToHexString($anchor,56,20) -or
+                $reader.Length -lt 128 -or $reader.Length -gt 24640) {throw 'RAW_REPLACED'}
+            $raw=[byte[]]::new([int]$reader.Length);$offset=0
+            while ($offset -lt $raw.Length) {
+                $count=$reader.Read($raw,$offset,$raw.Length-$offset)
+                if ($count -eq 0) {throw 'RAW_LEDGER'}
+                $offset+=$count
+            }
+            if ($reader.ReadByte() -ne -1) {throw 'RAW_LEDGER'}
+            if ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]($raw[0..127]))) -cne
+                [Convert]::ToHexString($anchor,136,32)) {throw 'RAW_INITIAL_READBACK'}
+            return ,$raw
+        } finally {$reader.Dispose()}
+    } finally {$anchorStream.Dispose()}
+}
+
+function Read-TimingRawLedger([string]$Path,[byte[]]$ContextBytes,[hashtable]$Binding,[string[]]$TicketIds,[hashtable]$External) {
+    $raw=Read-TimingRawCustody -Ledger $Path -ContextBytes $ContextBytes -Binding $Binding -External $External
+    $head=[byte[]]::new(64)
+    [Buffer]::BlockCopy([Text.Encoding]::ASCII.GetBytes("MDSRAW2`0"),0,$head,0,8)
+    [Buffer]::BlockCopy([Convert]::FromHexString($Binding.run_id),0,$head,8,16)
+    [Buffer]::BlockCopy([Security.Cryptography.SHA256]::HashData($ContextBytes),0,$head,24,32)
+    [Buffer]::BlockCopy([BitConverter]::GetBytes([uint32]67108864),0,$head,56,4)
+    [Buffer]::BlockCopy([BitConverter]::GetBytes([uint32]384),0,$head,60,4)
+    if ($raw.Length -lt 128 -or ($raw.Length-64)%64 -or $raw.Length -gt 24640 -or
+        [Convert]::ToHexString($raw[0..63]) -cne [Convert]::ToHexString($head)) {throw 'RAW_LEDGER'}
+    $seen=@{};$used=0L;$snapshot=$false
+    $domain=[Text.Encoding]::ASCII.GetBytes("MDSRAW-SNAPSHOT-2`0")
+    $snapshotHash=[Security.Cryptography.SHA256]::HashData([byte[]]($domain+$head))
+    for ($offset=64;$offset -lt $raw.Length;$offset+=64) {
+        $id=[Convert]::ToHexString($raw[$offset..($offset+15)]).ToLowerInvariant()
+        $out=[BitConverter]::ToInt64($raw,$offset+16);$err=[BitConverter]::ToInt64($raw,$offset+24)
+        if ($seen.ContainsKey($id)) {throw 'RAW_DUPLICATE'}
+        if ($out -lt 0 -or $err -lt 0 -or $out -gt 67108864-$used -or $err -gt 67108864-$used-$out) {throw 'RAW_BUDGET'}
+        if ($id -ceq ('0'*32)) {
+            if ($out -ne 16777216 -or $err -ne 0 -or [Convert]::ToHexString($raw[($offset+32)..($offset+63)]) -cne [Convert]::ToHexString($snapshotHash)) {throw 'RAW_FOREIGN'}
+            $snapshot=$true
+        } elseif ($id -cnotin $TicketIds) {throw 'RAW_FOREIGN'}
+        $seen[$id]=@{stdout_bytes=$out;stderr_bytes=$err;pair_sha256=[Convert]::ToHexString($raw[($offset+32)..($offset+63)]).ToLowerInvariant()}
+        $used+=$out+$err
+    }
+    if (-not $snapshot -or $seen.Count -ne $TicketIds.Count+1) {throw 'RAW_MISSING'}
+    foreach ($id in $TicketIds) {if (-not $seen.ContainsKey($id)) {throw 'RAW_MISSING'}}
+    return @{records=$seen;bytes=$raw.Length;reserved=$used}
+}
+
+function Copy-TimingReportSnapshot([string]$Run,[string]$Control,
+        [object[]]$ExpectedSources=@(),[switch]$Freeze,[switch]$VerifyOnly) {
+    if ($Freeze -and $VerifyOnly) {throw 'RAW_SNAPSHOT_MODE'}
+    $Run=[IO.Path]::GetFullPath($Run).TrimEnd('\')
+    $Control=[IO.Path]::GetFullPath($Control).TrimEnd('\')
+    if ($Run.Equals($Control,[StringComparison]::OrdinalIgnoreCase) -or
+        $Run.StartsWith($Control+'\',[StringComparison]::OrdinalIgnoreCase) -or
+        $Control.StartsWith($Run+'\',[StringComparison]::OrdinalIgnoreCase)) {throw 'RAW_SNAPSHOT_ALIAS'}
+    $pins=New-Object 'Collections.Generic.List[IntPtr]'
+    $pinned=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $pinChain={
+        param([string]$Directory,[bool]$Create)
+        $full=[IO.Path]::GetFullPath($Directory);$anchor=[IO.Path]::GetPathRoot($full)
+        if ($anchor -cnotmatch '^[A-Za-z]:\\$') {throw 'RAW_SNAPSHOT_PATH'}
+        $cursor=$anchor
+        $pieces=$full.Substring($anchor.Length).Split([char]'\',[StringSplitOptions]::RemoveEmptyEntries)
+        foreach ($part in @('')+$pieces) {
+            if ($part.Length) {$cursor=Join-Path $cursor $part}
+            if (-not (Test-Path -LiteralPath $cursor)) {
+                if (-not $Create) {throw 'RAW_SNAPSHOT_PATH'}
+                [void][IO.Directory]::CreateDirectory($cursor)
+            }
+            if ($pinned.Add($cursor)) {
+                if ($pins.Count -ge 256) {throw 'RAW_DIRECTORY_BUDGET'}
+                $pins.Add([F3TimingNative]::RawDirectory($cursor))
+            }
+        }
+    }
+    $hashStream={
+        param([IO.Stream]$Stream,[long]$Length)
+        $Stream.Position=0
+        $hash=[Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+        try {
+            $left=$Length;$buffer=[byte[]]::new(65536)
+            while ($left -gt 0) {
+                $n=$Stream.Read($buffer,0,[int][Math]::Min($left,$buffer.Length))
+                if ($n -eq 0) {throw 'RAW_SNAPSHOT_CHANGED'}
+                $hash.AppendData($buffer,0,$n);$left-=$n
+            }
+            if ($Stream.ReadByte() -ne -1 -or $Stream.Length -ne $Length) {throw 'RAW_SNAPSHOT_CHANGED'}
+            return [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant()
+        } finally {$hash.Dispose()}
+    }
+    try {
+        & $pinChain $Run $false
+        & $pinChain $Control $false
+        $destination=Join-Path $Control 'retained-reports'
+        if (-not $VerifyOnly -and (Test-Path -LiteralPath $destination)) {throw 'RAW_DUPLICATE'}
+        $inventory=New-Object 'Collections.Generic.List[object]'
+        foreach ($file in Get-ChildItem -LiteralPath $Run -Recurse -File -Force) {
+            $name=[IO.Path]::GetRelativePath($Run,$file.FullName).Replace('\','/')
+            if ($name.StartsWith('timing/',[StringComparison]::Ordinal)) {continue}
+            Assert-PlainPath $file.FullName $Run|Out-Null
+            $inventory.Add(@{source=$file.FullName;name='run/'+$name;bytes=[long]$file.Length})
+        }
+        foreach ($name in @('native.stdout','native.stderr')) {
+            $path=Assert-PlainPath (Join-Path $Control $name) $Control
+            $inventory.Add(@{source=$path;name='control/'+$name;bytes=[long](Get-Item -LiteralPath $path).Length})
+        }
+        if ($inventory.Count -gt 16384) {throw 'RAW_SNAPSHOT_RECORD_BUDGET'}
+        $total=0L
+        foreach ($item in $inventory) {
+            if ($item.bytes -lt 0 -or $item.bytes -gt 16777216-$total) {throw 'RAW_SNAPSHOT_BUDGET'}
+            $total+=$item.bytes
+        }
+        $sourceIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        $copyIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        $frozen=New-Object 'Collections.Generic.List[object]'
+        $byName=@{}
+        if (-not $Freeze) {
+            if ($ExpectedSources.Count -ne $inventory.Count) {throw 'RAW_SNAPSHOT_BINDING'}
+            foreach ($item in $ExpectedSources) {
+                if ($item.name -isnot [string] -or $byName.ContainsKey($item.name) -or
+                    $item.identity -isnot [string] -or $item.identity -cnotmatch '^[0-9a-f]{40}$' -or
+                    $item.sha256 -isnot [string] -or $item.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                    $item.bytes -isnot [long] -or $item.bytes -lt 0 -or $item.bytes -gt 16777216) {throw 'RAW_SNAPSHOT_BINDING'}
+                $byName.Add($item.name,$item)
+            }
+        }
+        # Entire source inventory is frozen/validated before the first target.
+        foreach ($item in $inventory) {
+            & $pinChain ([IO.Path]::GetDirectoryName($item.source)) $false
+            $source=[IO.File]::Open($item.source,'Open','Read','Read')
+            try {
+                $facts=[F3TimingNative]::RawFacts($source.SafeFileHandle.DangerousGetHandle(),$item.source)
+                $id=[Convert]::ToHexString($facts,0,20).ToLowerInvariant()
+                if (-not $sourceIds.Add([Convert]::ToHexString($facts,0,12).ToLowerInvariant())) {throw 'RAW_SNAPSHOT_ALIAS'}
+                if ($source.Length -ne $item.bytes -or [BitConverter]::ToUInt64($facts,20) -ne $item.bytes) {throw 'RAW_SNAPSHOT_CHANGED'}
+                $digest=& $hashStream $source $item.bytes
+                if ($Freeze) {
+                    $frozen.Add(@{source=$item.source;name=$item.name;bytes=$item.bytes;
+                        identity=$id;sha256=$digest;retained_identity=$null})
+                } else {
+                    if (-not $byName.ContainsKey($item.name)) {throw 'RAW_SNAPSHOT_BINDING'}
+                    $expected=$byName[$item.name]
+                    if ($expected.source -cne $item.source -or $expected.bytes -ne $item.bytes -or
+                        $expected.identity -cne $id -or $expected.sha256 -cne $digest) {throw 'RAW_SNAPSHOT_CHANGED'}
+                }
+                $after=[F3TimingNative]::RawFacts($source.SafeFileHandle.DangerousGetHandle(),$item.source)
+                if ([Convert]::ToHexString($after) -cne [Convert]::ToHexString($facts)) {throw 'RAW_SNAPSHOT_CHANGED'}
+            } finally {$source.Dispose()}
+        }
+        if ($Freeze) {return $frozen.ToArray()}
+        foreach ($item in $inventory) {
+            $expected=$byName[$item.name]
+            $target=Assert-PlainPath (Join-Path $destination $item.name) $destination
+            & $pinChain ([IO.Path]::GetDirectoryName($target)) (-not $VerifyOnly)
+            $source=[IO.File]::Open($item.source,'Open','Read','Read')
+            try {
+                $facts=[F3TimingNative]::RawFacts($source.SafeFileHandle.DangerousGetHandle(),$item.source)
+                if ([Convert]::ToHexString($facts,0,20).ToLowerInvariant() -cne $expected.identity -or
+                    $source.Length -ne $expected.bytes) {throw 'RAW_SNAPSHOT_CHANGED'}
+                $output=if ($VerifyOnly) {[IO.File]::Open($target,'Open','Read','Read')} else {[IO.File]::Open($target,'CreateNew','ReadWrite','None')}
+                try {
+                    $copyFacts=[F3TimingNative]::RawFacts($output.SafeFileHandle.DangerousGetHandle(),$target)
+                    $physical=[Convert]::ToHexString($copyFacts,0,12).ToLowerInvariant()
+                    $copyId=[Convert]::ToHexString($copyFacts,0,20).ToLowerInvariant()
+                    if ($sourceIds.Contains($physical) -or -not $copyIds.Add($physical)) {throw 'RAW_SNAPSHOT_ALIAS'}
+                    if ($VerifyOnly) {
+                        if ($expected.retained_identity -isnot [string] -or
+                            $copyId -cne $expected.retained_identity) {throw 'RAW_SNAPSHOT_CHANGED'}
+                    } else {
+                        $left=$expected.bytes;$buffer=[byte[]]::new(65536)
+                        while ($left -gt 0) {
+                            $n=$source.Read($buffer,0,[int][Math]::Min($left,$buffer.Length))
+                            if ($n -eq 0) {throw 'RAW_SNAPSHOT_CHANGED'}
+                            $output.Write($buffer,0,$n);$left-=$n
+                        }
+                        if ($source.ReadByte() -ne -1) {throw 'RAW_SNAPSHOT_CHANGED'}
+                        $output.Flush($true)
+                    }
+                    if ($output.Length -ne $expected.bytes -or
+                        (& $hashStream $output $expected.bytes) -cne $expected.sha256 -or
+                        (& $hashStream $source $expected.bytes) -cne $expected.sha256) {throw 'RAW_SNAPSHOT_CHANGED'}
+                    $sourceAfter=[F3TimingNative]::RawFacts($source.SafeFileHandle.DangerousGetHandle(),$item.source)
+                    $copyAfter=[F3TimingNative]::RawFacts($output.SafeFileHandle.DangerousGetHandle(),$target)
+                    if ([Convert]::ToHexString($sourceAfter,0,20).ToLowerInvariant() -cne $expected.identity -or
+                        [Convert]::ToHexString($copyAfter,0,20).ToLowerInvariant() -cne $copyId -or
+                        [BitConverter]::ToUInt64($copyAfter,20) -ne $expected.bytes) {throw 'RAW_SNAPSHOT_CHANGED'}
+                    if (-not $VerifyOnly) {$expected.retained_identity=$copyId}
+                } finally {$output.Dispose()}
+            } finally {$source.Dispose()}
+        }
+        return $total
+    } finally {
+        $failed=$false
+        for ($i=$pins.Count-1;$i -ge 0;$i--) {if (-not [F3TimingNative]::CloseHandle($pins[$i])) {$failed=$true}}
+        if ($failed) {throw 'RAW_DIRECTORY_CLOSE'}
+    }
+}
+
+
+function Test-TimingManifestRows([object[]]$Rows) {
+    if ($Rows.Count -gt 16384) {throw 'MANIFEST_RECORD_BUDGET'}
+    $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($row in $Rows) {
+        $keys=if ($row -is [Collections.IDictionary]) {@($row.Keys)} else {@($row.PSObject.Properties.Name)}
+        if ((($keys|Sort-Object) -join '|') -cne 'bytes|name|sha256|store' -or
+            $row.store -isnot [string] -or $row.store -cnotin @('control','run') -or
+            $row.name -isnot [string] -or $row.name.Length -gt 2048 -or
+            [IO.Path]::IsPathRooted($row.name) -or $row.name.Contains(':') -or $row.name.Contains('\') -or
+            @($row.name.Split('/')|Where-Object {$_ -cin @('','..','.')}).Count -ne 0 -or
+            ($row.bytes -isnot [long] -and $row.bytes -isnot [int]) -or $row.bytes -lt 0 -or
+            $row.sha256 -isnot [string] -or $row.sha256 -cnotmatch '^[0-9a-f]{64}$') {throw 'MANIFEST_FOREIGN_RECORD'}
+        if (-not $seen.Add($row.store+'/'+$row.name)) {throw 'MANIFEST_DUPLICATE_RECORD'}
+    }
+}
+
+function Write-TimingGzipManifest([object[]]$Rows,[hashtable]$Binding,[string]$Control,
+        [string]$Run,[switch]$VerifyOnly,[object]$ExpectedEnvelope,
+        [string]$ExpectedCommitmentSha256) {
+    Test-TimingManifestRows $Rows
+    if ([string]::IsNullOrEmpty($Run)) {throw 'MANIFEST_RUN_REQUIRED'}
+    $utf8=[Text.UTF8Encoding]::new($false,$true)
+    # Local actual encoder/decoder scriptblocks can be extracted by the bounded
+    # qualification harness without inventing a second validator implementation.
+    $encodeManifest = {
+    $plain=[IO.MemoryStream]::new()
+    try {
+        $plain.Write([Text.Encoding]::ASCII.GetBytes(('MDSMNF2'+[char]0)))
+        $plain.Write([BitConverter]::GetBytes([uint32]$Rows.Count))
+        $previous=[byte[]]@()
+        foreach ($row in $Rows) {
+            $name=$utf8.GetBytes($row.name)
+            if ($name.Length -gt 2048) {throw 'MANIFEST_NAME_BUDGET'}
+            $common=0
+            while ($common -lt $previous.Length -and $common -lt $name.Length -and $previous[$common] -eq $name[$common]) {$common++}
+            $suffix=$name.Length-$common
+            if ($plain.Length+45+$suffix -gt 4194304) {throw 'MANIFEST_EXPANDED_BUDGET'}
+            $plain.WriteByte($(if ($row.store -ceq 'control') {0} else {1}))
+            $plain.Write([BitConverter]::GetBytes([uint16]$common))
+            $plain.Write([BitConverter]::GetBytes([uint16]$suffix))
+            $plain.Write($name,$common,$suffix)
+            $plain.Write([BitConverter]::GetBytes([uint64]$row.bytes))
+            $plain.Write([Convert]::FromHexString($row.sha256))
+            $previous=$name
+        }
+        $expanded=$plain.ToArray()
+    } finally {$plain.Dispose()}
+    $packed=[IO.MemoryStream]::new()
+    $zip=[IO.Compression.GZipStream]::new($packed,[IO.Compression.CompressionLevel]::Optimal,$true)
+    try {$zip.Write($expanded)} finally {$zip.Dispose()}
+    $compressed=$packed.ToArray();$packed.Dispose()
+    if ($compressed.Length -gt 223871) {throw 'MANIFEST_COMPRESSED_BUDGET'}
+        return @{expanded=$expanded;compressed=$compressed}
+    }
+    $validateEnvelope = {
+        param([object]$Value)
+        $keys=[string[]]$(if ($Value -is [Collections.IDictionary]) {@($Value.Keys)} else {@($Value.PSObject.Properties.Name)})
+        [Array]::Sort($keys,[StringComparer]::Ordinal)
+        if (($keys -join '|') -cne 'compressed_bytes|compressed_sha256|expanded_bytes|expanded_sha256|format|record_count|run_id|source_digest|tested_sha|version') {throw 'MANIFEST_ENVELOPE_FIELDS'}
+        if ($Value.version -ne 2 -or $Value.format -cne 'gzip-prefix-records-v2-le' -or
+            $Value.run_id -cne $Binding.run_id -or $Value.tested_sha -cne $Binding.tested_sha -or
+            $Value.source_digest -cne $Binding.source_digest) {throw 'MANIFEST_FOREIGN_CONTEXT'}
+        foreach ($key in @('version','compressed_bytes','expanded_bytes','record_count')) {
+            if ($Value.$key -isnot [int] -and $Value.$key -isnot [long]) {throw 'MANIFEST_ENVELOPE_TYPES'}
+        }
+        if ($Value.compressed_bytes -lt 1 -or $Value.compressed_bytes -gt 223871 -or
+            $Value.expanded_bytes -lt 12 -or $Value.expanded_bytes -gt 4194304 -or
+            $Value.record_count -ne $Rows.Count -or $Value.record_count -gt 16384 -or
+            $Value.compressed_sha256 -isnot [string] -or $Value.compressed_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $Value.expanded_sha256 -isnot [string] -or $Value.expanded_sha256 -cnotmatch '^[0-9a-f]{64}$') {throw 'MANIFEST_ENVELOPE_BUDGET'}
+    }
+    $readBounded = {
+        param([string]$Path,[long]$Maximum)
+        Assert-PlainPath $Path $Control|Out-Null
+        $stream=[IO.File]::Open($Path,'Open','Read','Read')
+        try {
+            [void][F3TimingNative]::RawFacts($stream.SafeFileHandle.DangerousGetHandle(),$Path)
+            if ($stream.Length -gt $Maximum) {throw 'MANIFEST_COMPRESSED_IDENTITY'}
+            $value=[byte[]]::new([int]$stream.Length);$offset=0
+            while ($offset -lt $value.Length) {
+                $count=$stream.Read($value,$offset,$value.Length-$offset)
+                if ($count -eq 0) {throw 'MANIFEST_COMPRESSED_IDENTITY'}
+                $offset+=$count
+            }
+            if ($stream.ReadByte() -ne -1) {throw 'MANIFEST_COMPRESSED_IDENTITY'}
+            return ,$value
+        } finally {$stream.Dispose()}
+    }
+    $decodeManifest = {
+        param([byte[]]$actual,[object]$envelope)
+        & $validateEnvelope $envelope
+        if ($actual.Length -ne $envelope.compressed_bytes -or
+            [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($actual)).ToLowerInvariant() -cne $envelope.compressed_sha256) {throw 'MANIFEST_COMPRESSED_IDENTITY'}
+        if ($actual.Length -lt 18 -or $actual[0] -ne 31 -or $actual[1] -ne 139 -or $actual[2] -ne 8 -or $actual[3] -ne 0 -or
+            [BitConverter]::ToUInt32($actual,$actual.Length-4) -ne $envelope.expanded_bytes) {throw 'MANIFEST_GZIP_FRAMING'}
+    $inputStream=[IO.MemoryStream]::new($actual,$false)
+    $unzip=[IO.Compression.GZipStream]::new($inputStream,[IO.Compression.CompressionMode]::Decompress)
+    $result=[IO.MemoryStream]::new();$buffer=[byte[]]::new(8192)
+    try {
+        while (($count=$unzip.Read($buffer,0,$buffer.Length)) -gt 0) {
+            if ($result.Length+$count -gt 4194304 -or $result.Length+$count -gt $envelope.expanded_bytes) {throw 'MANIFEST_EXPANSION_BUDGET'}
+            $result.Write($buffer,0,$count)
+        }
+        $roundtrip=$result.ToArray()
+    } finally {$unzip.Dispose();$inputStream.Dispose();$result.Dispose()}
+    if ($roundtrip.Length -ne $envelope.expanded_bytes -or
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($roundtrip)).ToLowerInvariant() -cne $envelope.expanded_sha256) {throw 'MANIFEST_EXPANDED_IDENTITY'}
+    # Prefix/suffix bytes reconstruct every original name, including UTF-8.
+    $decoded=New-Object 'Collections.Generic.List[object]'
+    $cursor=12;$previous=[byte[]]@()
+    if ($roundtrip.Length -lt 12 -or
+        [Text.Encoding]::ASCII.GetString($roundtrip,0,8) -cne ('MDSMNF2'+[char]0) -or
+        [BitConverter]::ToUInt32($roundtrip,8) -ne $Rows.Count) {throw 'MANIFEST_RECORD_COUNT'}
+    for ($index=0;$index -lt $Rows.Count;$index++) {
+        if ($cursor+5 -gt $roundtrip.Length) {throw 'MANIFEST_RECORD_IDENTITY'}
+        $store=$roundtrip[$cursor]
+        $common=[BitConverter]::ToUInt16($roundtrip,$cursor+1)
+        $suffix=[BitConverter]::ToUInt16($roundtrip,$cursor+3);$cursor+=5
+        if ($store -gt 1 -or $common -gt $previous.Length -or $common+$suffix -gt 2048 -or
+            $cursor+$suffix+40 -gt $roundtrip.Length) {throw 'MANIFEST_RECORD_IDENTITY'}
+        $name=[byte[]]::new($common+$suffix)
+        [Buffer]::BlockCopy($previous,0,$name,0,$common)
+        [Buffer]::BlockCopy($roundtrip,$cursor,$name,$common,$suffix);$cursor+=$suffix
+        $size=[BitConverter]::ToUInt64($roundtrip,$cursor);$cursor+=8
+        if ($size -gt [long]::MaxValue) {throw 'MANIFEST_RECORD_IDENTITY'}
+        $digest=[Convert]::ToHexString($roundtrip,$cursor,32).ToLowerInvariant();$cursor+=32
+        $decoded.Add(@{store=$(if ($store -eq 0) {'control'} else {'run'});
+            name=$utf8.GetString($name);bytes=[long]$size;sha256=$digest})
+        $previous=$name
+    }
+    if ($cursor -ne $roundtrip.Length) {throw 'MANIFEST_TRAILING_BYTES'}
+    Test-TimingManifestRows @($decoded.ToArray())
+    for ($index=0;$index -lt $Rows.Count;$index++) {
+        foreach ($key in @('store','name','bytes','sha256')) {
+            if ($decoded[$index].$key -cne $Rows[$index].$key) {throw 'MANIFEST_RECORD_IDENTITY'}
+        }
+    }
+        return @{rows=@($decoded.ToArray());expanded_bytes=$roundtrip.Length}
+    }
+    $verifyFiles = {
+        $physical=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        foreach ($row in $Rows) {
+            $root=$(if ($row.store -ceq 'control') {$Control} else {$Run})
+            $path=Assert-PlainPath (Join-Path $root $row.name) $root
+            $stream=[IO.File]::Open($path,'Open','Read','Read')
+            try {
+                $facts=[F3TimingNative]::RawFacts($stream.SafeFileHandle.DangerousGetHandle(),$path)
+                $id=[Convert]::ToHexString($facts,0,20)
+                if (-not $physical.Add($id)) {throw 'MANIFEST_DUPLICATE_PHYSICAL'}
+                if ($stream.Length -ne $row.bytes) {throw 'MANIFEST_FILE_LENGTH'}
+                $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
+                $after=[F3TimingNative]::RawFacts($stream.SafeFileHandle.DangerousGetHandle(),$path)
+                if ([Convert]::ToHexString($after) -cne [Convert]::ToHexString($facts) -or $digest -cne $row.sha256) {throw 'MANIFEST_FILE_IDENTITY'}
+            } finally {$stream.Dispose()}
+        }
+    }
+    $manifestPath=Join-Path $Control 'bundle-manifest.json'
+    $packedPath=Join-Path $Control 'bundle-manifest.json.gz'
+    if (-not $VerifyOnly) {
+        $encoded=& $encodeManifest
+        $expanded=$encoded.expanded;$compressed=$encoded.compressed
+        $envelope=[ordered]@{version=2;format='gzip-prefix-records-v2-le';run_id=$Binding.run_id;
+            tested_sha=$Binding.tested_sha;source_digest=$Binding.source_digest;
+            compressed_bytes=$compressed.Length;expanded_bytes=$expanded.Length;record_count=$Rows.Count;
+            compressed_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($compressed)).ToLowerInvariant();
+            expanded_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($expanded)).ToLowerInvariant()}
+        $header=$utf8.GetBytes(($envelope|ConvertTo-Json -Compress)+[char]10)
+        if ($header.Length -gt 1024 -or $script:metadataBytes+$compressed.Length+$header.Length+65+24896+4096 -gt 262144) {throw 'METADATA_BUDGET'}
+        $ExpectedEnvelope=$envelope
+        $ExpectedCommitmentSha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($header)).ToLowerInvariant()
+        Write-TimingMetadata $packedPath $compressed
+        Write-TimingMetadata $manifestPath $header
+    } elseif ($null -eq $ExpectedEnvelope -or $ExpectedCommitmentSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'MANIFEST_TRUSTED_EXPECTATION_REQUIRED'
+    }
+    & $validateEnvelope $ExpectedEnvelope
+    $retainedHeader=& $readBounded $manifestPath 1024
+    $headerHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($retainedHeader)).ToLowerInvariant()
+    if ($headerHash -cne $ExpectedCommitmentSha256) {throw 'MANIFEST_COMMITMENT_IDENTITY'}
+    $envelope=$utf8.GetString($retainedHeader)|ConvertFrom-Json -AsHashtable
+    & $validateEnvelope $envelope
+    foreach ($key in $envelope.Keys) {
+        if ($envelope[$key] -cne $ExpectedEnvelope.$key) {throw 'MANIFEST_COMMITMENT_IDENTITY'}
+    }
+    $actual=& $readBounded $packedPath 223871
+    $verified=& $decodeManifest $actual $envelope
+    & $verifyFiles
+    if ($VerifyOnly) {
+        $seal=& $readBounded (Join-Path $Control 'SEALED.sha256') 65
+        if ($seal.Length -ne 65 -or [Text.Encoding]::ASCII.GetString($seal) -cne ($headerHash+[char]10)) {throw 'MANIFEST_SEAL_IDENTITY'}
+    }
+    return @{envelope=$envelope;commitment_sha256=$headerHash;verified_records=$verified.rows.Count}
+}
+
 
 function Test-TimingCoverage([object[]]$Tickets, [object[]]$Writers,
         [object[]]$Records, [hashtable]$External, [hashtable]$Starts, [hashtable]$Binding,
@@ -428,6 +862,54 @@ using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class F3TimingNative {
+    [StructLayout(LayoutKind.Sequential)] struct RAWINFO {
+        public uint attributes,createdLo,createdHi,accessLo,accessHi,writeLo,writeHi;
+        public uint volume,sizeHi,sizeLo,links,indexHi,indexLo;
+    }
+    [DllImport("kernel32",SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr h,out RAWINFO info);
+    [DllImport("kernel32",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(IntPtr h,StringBuilder value,uint capacity,uint flags);
+    [DllImport("kernel32",EntryPoint="GetFileType",SetLastError=true)] static extern uint RawFileType(IntPtr h);
+    public static byte[] RawFacts(IntPtr h,string expected) {
+        RAWINFO info; var value=new StringBuilder(32768);
+        var count=GetFinalPathNameByHandleW(h,value,(uint)value.Capacity,0);
+        if(!GetFileInformationByHandle(h,out info)||count==0||count>=value.Capacity||
+           RawFileType(h)!=1||(info.attributes&0x410)!=0||info.links!=1||
+           !value.ToString().StartsWith(@"\\?\",StringComparison.Ordinal)||
+           !String.Equals(value.ToString().Substring(4),System.IO.Path.GetFullPath(expected),StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("RAW_ALIAS_OR_IDENTITY");
+        var result=new byte[28];
+        Buffer.BlockCopy(BitConverter.GetBytes(info.volume),0,result,0,4);
+        Buffer.BlockCopy(BitConverter.GetBytes(((ulong)info.indexHi<<32)|info.indexLo),0,result,4,8);
+        Buffer.BlockCopy(BitConverter.GetBytes(((ulong)info.createdHi<<32)|info.createdLo),0,result,12,8);
+        Buffer.BlockCopy(BitConverter.GetBytes(((ulong)info.sizeHi<<32)|info.sizeLo),0,result,20,8);
+        if(BitConverter.ToUInt64(result,4)==0)throw new InvalidOperationException("RAW_IDENTITY");
+        return result;
+    }
+
+// Additive READ-ONLY directory custody. Include this exact new name in amended H.
+// Existing CreateFileW, CloseHandle, RAWINFO, GetFileInformationByHandle and
+// GetFinalPathNameByHandleW declarations are reused; no native writer is added.
+public static IntPtr RawDirectory(string expected) {
+    var sa=new SA {size=Marshal.SizeOf<SA>(),sd=IntPtr.Zero,inherit=0};
+    var h=CreateFileW(expected,0xA0,3,ref sa,3,0x02200000,IntPtr.Zero);
+    if(h==IntPtr.Zero||h==new IntPtr(-1))
+        throw new InvalidOperationException("RAW_DIRECTORY_OPEN");
+    try {
+        RAWINFO info;var value=new StringBuilder(32768);
+        var n=GetFinalPathNameByHandleW(h,value,(uint)value.Capacity,0);
+        if(!GetFileInformationByHandle(h,out info)||n==0||n>=value.Capacity||
+           RawFileType(h)!=1||(info.attributes&0x10)==0||(info.attributes&0x400)!=0||
+           !value.ToString().StartsWith(@"\\?\",StringComparison.Ordinal)||
+           !String.Equals(value.ToString().Substring(4),System.IO.Path.GetFullPath(expected),
+                          StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("RAW_DIRECTORY_IDENTITY");
+        return h; // Attribute/traverse only; share read/write, NOT delete.
+    } catch {
+        if(!CloseHandle(h))throw new InvalidOperationException("RAW_DIRECTORY_CLOSE");
+        throw;
+    }
+}
+
     [StructLayout(LayoutKind.Sequential)] public struct SA { public int size; public IntPtr sd; public int inherit; }
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct SI {
         public int cb; public string reserved, desktop, title;
@@ -553,7 +1035,7 @@ public static class F3TimingNative {
     Assert-Private ([IO.Path]::GetDirectoryName($contextPath))
     if ((Get-Item -LiteralPath $contextPath).Length -gt 16384) { throw 'CONTEXT_BUDGET' }
     $spec = Get-Content -LiteralPath $contextPath -Raw | ConvertFrom-Json
-    if ($spec.version -ne 1 -or $spec.root -cne $source -or $spec.source_digest -cnotmatch '^[0-9a-f]{64}$' -or
+    if ($spec.version -ne 2 -or $spec.root -cne $source -or $spec.source_digest -cnotmatch '^[0-9a-f]{64}$' -or
         $spec.tested_sha -cnotmatch '^[0-9a-f]{40}$' -or $spec.run_id -cnotmatch '^[0-9a-f]{32}$') { throw 'CONTEXT_IDENTITY' }
     Assert-Hash $self.MainModule.FileName $expectedPowerShell
     if ($self.MainModule.FileName -ine 'C:\Program Files\PowerShell\7\pwsh.exe') { throw 'OBSERVER_EXECUTABLE' }
@@ -598,15 +1080,19 @@ public static class F3TimingNative {
     $git = (Get-Command git -CommandType Application).Source
     if ($git -ine $spec.git_executable) { throw 'GIT_EXECUTABLE' }
     Assert-Hash $git $spec.git_sha256
+    if (($spec.raw_policy.bytes -isnot [long] -and $spec.raw_policy.bytes -isnot [int]) -or
+        ($spec.raw_policy.snapshot -isnot [long] -and $spec.raw_policy.snapshot -isnot [int]) -or
+        ($spec.raw_policy.records -isnot [long] -and $spec.raw_policy.records -isnot [int]) -or
+        $spec.raw_policy.bytes -ne 67108864 -or $spec.raw_policy.snapshot -ne 16777216 -or $spec.raw_policy.records -ne 384) {throw 'CONTEXT_RAW_POLICY'}
     $control = [IO.Path]::GetDirectoryName($contextPath)
     $controlTrusted = $true
     foreach ($file in Get-ChildItem -LiteralPath $control -Recurse -File -Force) {
         Assert-PlainPath $file.FullName $control | Out-Null
-        if ($file.Name -cin @('observer.jsonl','native.stdout','native.stderr','bundle-manifest.json',
+        if ($file.Name -cin @('observer.jsonl','native.stdout','native.stderr','bundle-manifest.json','bundle-manifest.json.gz',
                 'SEALED.sha256','diagnostic.json','ABORTED.json')) { throw 'RUN_ALREADY_EXISTS' }
         $metadataBytes += $file.Length
     }
-    if ($metadataBytes -gt $metadataLimit-$finalReceiptReserve) { throw 'METADATA_BUDGET' }
+    if ($metadataBytes -gt 8192) { throw 'METADATA_BUDGET' }
     # Three closed, pinned read-only Git metadata helpers. Their CPU and OS peak
     # RSS enter the observer budget; output goes to files, never workload pipes.
     $metadata = @{}
@@ -638,7 +1124,7 @@ public static class F3TimingNative {
             # Native helper writes are not an OS quota/sandbox. Retain every
             # byte, measure immediately and refuse workload launch on overflow.
             $metadataBytes += (Get-Item -LiteralPath $outputPath).Length + (Get-Item -LiteralPath $errorPath).Length
-            if ($metadataBytes -gt $metadataLimit-$finalReceiptReserve) { throw 'METADATA_BUDGET' }
+            if ($metadataBytes -gt 8192) { throw 'METADATA_BUDGET' }
             $measurement=[F3TimingNative]::Read($helper.process)
             if ($measurement.exit -ne 0 -or $measurement.peakRss -lt 0) { throw 'METADATA_OR_RESOURCE_GAP' }
             $helperCpu+=($measurement.user+$measurement.kernel)/10000000.0
@@ -685,6 +1171,9 @@ public static class F3TimingNative {
         # Closed argv, quoted file identities only; no user-supplied command text.
         if ($runtime.Contains('"') -or $source.Contains('"')) { throw 'ARGV_QUOTING' }
         $command = '"' + $runtime + '" -I -B -X utf8 "' + (Join-Path $source 'tools/offline_tests.py') + '" --lane f3'
+        # Copy quotas do not bound original native sinks. No receipt/flag can waive
+        # this closed gate; a separate reviewed storage-admission slice is required.
+        throw 'ORIGINAL_STORAGE_HEADROOM_NOT_QUALIFIED'
         $launchTime = $clock.Elapsed.TotalSeconds
         $custody = [F3TimingNative]::Launch($runtime, $command, $source,
             (Join-Path $control 'native.stdout'), (Join-Path $control 'native.stderr'))
@@ -851,6 +1340,14 @@ public static class F3TimingNative {
         uninstrumented_commands_and_tail='UNKNOWN_NOT_MEASURED' }
     Write-Observation @{ event='native_coverage'; missing_start=$missingStart; missing_final=$missingFinal;
         missing_exit=$missingExit; missing_buffers=$missingBuffers; pipe_eof_timestamp='UNKNOWN'; unittest_return_timestamp='UNKNOWN' }
+    if (@([F3TimingNative]::Pids($custody)).Count -ne 0) {throw 'RAW_NOT_QUIESCENT'}
+    $ledgerPath=Join-Path $run 'timing/raw-quota.bin'
+    if (Test-Path -LiteralPath (Join-Path $run 'timing/raw-quota.lock')) {throw 'RAW_LOCK_LEAK'}
+    Assert-PlainPath $ledgerPath $run|Out-Null
+    $rawLedger=Read-TimingRawLedger -Path $ledgerPath -ContextBytes ([IO.File]::ReadAllBytes($contextPath)) -Binding $streamBinding -TicketIds @($authoritativeTickets|ForEach-Object {$_.ticket_id}) -External $owned
+    $rawLedgerBytes=$rawLedger.bytes+256
+    $snapshotPlan=@(Copy-TimingReportSnapshot -Run $run -Control $control -Freeze)
+    $rawSnapshotBytes=Copy-TimingReportSnapshot -Run $run -Control $control -ExpectedSources $snapshotPlan
     # All bytes are retained locally. Only aliases/hashes can enter a public projection.
     $trace.Flush($true)
     $seal = New-Object Collections.Generic.List[object]
@@ -875,6 +1372,11 @@ public static class F3TimingNative {
             child_id=$id; stdout_bytes=$stdoutFacts[0].bytes; stderr_bytes=$stderrFacts[0].bytes;
             stdout_sha256=$stdoutFacts[0].sha256; stderr_sha256=$stderrFacts[0].sha256 }
         if (-not $binding.valid) { $invalid=$true }
+        $reservation=$rawLedger.records[$id]
+        $pairDomain=[Text.Encoding]::ASCII.GetBytes("MDSRAW-PAIR-2`0")
+        $pairBytes=[byte[]]($pairDomain+[BitConverter]::GetBytes([uint64]$stdoutFacts[0].bytes)+[Convert]::FromHexString($stdoutFacts[0].sha256)+[BitConverter]::GetBytes([uint64]$stderrFacts[0].bytes)+[Convert]::FromHexString($stderrFacts[0].sha256))
+        if ($reservation.stdout_bytes -ne $stdoutFacts[0].bytes -or $reservation.stderr_bytes -ne $stderrFacts[0].bytes -or
+            $reservation.pair_sha256 -cne [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($pairBytes)).ToLowerInvariant()) {throw 'RAW_FOREIGN_BUFFER'}
     }
     $self.Refresh()
     $finalCpu=$self.TotalProcessorTime.TotalSeconds+$helperCpu
@@ -890,11 +1392,33 @@ public static class F3TimingNative {
     $observerPath = Join-Path $control 'observer.jsonl'
     $seal.Add(@{ store='control'; name='observer.jsonl'; bytes=(Get-Item -LiteralPath $observerPath).Length;
         sha256=(Get-FileHash -LiteralPath $observerPath -Algorithm SHA256).Hash.ToLowerInvariant() })
-    $manifestBytes = [Text.Encoding]::UTF8.GetBytes(($seal | ConvertTo-Json -Depth 4 -Compress) + "`n")
+    foreach ($expected in $snapshotPlan) {
+        $separator=$expected.name.IndexOf('/')
+        $originalStore=$expected.name.Substring(0,$separator)
+        $originalName=$expected.name.Substring($separator+1)
+        $originalFacts=@($seal | Where-Object { $_.store -ceq $originalStore -and $_.name -ceq $originalName })
+        $copyFacts=@($seal | Where-Object { $_.store -ceq 'control' -and $_.name -ceq ('retained-reports/'+$expected.name) })
+        if ($originalFacts.Count -ne 1 -or $copyFacts.Count -ne 1 -or
+            $originalFacts[0].bytes -ne $expected.bytes -or $copyFacts[0].bytes -ne $expected.bytes -or
+            $originalFacts[0].sha256 -cne $expected.sha256 -or $copyFacts[0].sha256 -cne $expected.sha256) {throw 'RAW_SNAPSHOT_BINDING'}
+    }
+    $manifestResult = Write-TimingGzipManifest -Rows @($seal.ToArray()) -Binding $streamBinding -Control $control -Run $run
     $abortBytes = 0L; $abortCount = 0
     foreach ($file in Get-ChildItem -LiteralPath (Join-Path $run 'timing') -Recurse -File -Force) {
         $relative = [IO.Path]::GetRelativePath((Join-Path $run 'timing'),$file.FullName).Replace('\','/')
-        if ($relative -cmatch '^native/[0-9a-f]{32}\.(stdout|stderr)$') { continue } # Original raw native bytes, not telemetry.
+        if ($relative -ceq 'raw-custody.bin') {
+            if ($file.Length -ne 256) {throw 'RAW_CUSTODY_LENGTH'}
+            continue #256B fixed anchor already reserved inside metadata.
+        }
+        if ($relative -ceq 'raw-quota.bin') {
+            if ($file.Length+256 -ne $rawLedgerBytes -or $file.Length -gt 24640) {throw 'RAW_LEDGER'}
+            continue # Charged below to unchanged metadata/telemetry partition.
+        }
+        if ($relative -ceq 'raw-quota.lock') {throw 'RAW_LOCK_LEAK'}
+        if ($relative -cmatch '^native/([0-9a-f]{32})\.(stdout|stderr)$') {
+            if (-not $rawLedger.records.ContainsKey($Matches[1]) -or $Matches[1] -ceq ('0'*32)) {throw 'RAW_FOREIGN'}
+            continue #64MiB raw copy policy; original readers unchanged.
+        }
         if ($relative -cmatch '^(slot-0[0-4]|aux-(0[0-9]|[12][0-9]|3[01]))\.jsonl$') { continue }
         if ($relative -cnotmatch '^(slot-0[0-4]|aux-(0[0-9]|[12][0-9]|3[01]))\.aborted$' -or $file.Length -gt 8) {
             throw 'UNCLASSIFIED_TELEMETRY'
@@ -903,21 +1427,26 @@ public static class F3TimingNative {
     }
     if ($abortCount -gt 37 -or $abortBytes -gt 296 -or $abortCount -ne 0) { throw 'WRITER_ABORTED' }
     $manifestPath = Join-Path $control 'bundle-manifest.json'
-    Write-TimingMetadata $manifestPath $manifestBytes
+    # Versioned header+gzip already written/read back by Write-TimingGzipManifest.
     $sealPath = Join-Path $control 'SEALED.sha256'
     $payload=[Text.Encoding]::ASCII.GetBytes((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()+"`n")
-    Write-TimingMetadata $sealPath $payload
     $actualMetadataBytes = 0L
     foreach ($file in Get-ChildItem -LiteralPath $control -Recurse -File -Force) {
-        if ($file.Name -cin @('native.stdout','native.stderr','observer.jsonl')) { continue }
+        if ($file.Name -cin @('native.stdout','native.stderr','observer.jsonl') -or
+            [IO.Path]::GetRelativePath($control,$file.FullName).Replace('\','/').StartsWith('retained-reports/',[StringComparison]::Ordinal)) {continue}
         $actualMetadataBytes += $file.Length
     }
-    if ($actualMetadataBytes -ne $metadataBytes -or $metadataBytes+$finalReceiptReserve -gt $metadataLimit -or
+    if ($actualMetadataBytes -ne $metadataBytes -or $metadataBytes+65+$rawLedgerReserve+$finalReceiptReserve -gt $metadataLimit -or
         $writerBytes -gt 2621400 -or $auxiliaryBytes -gt 261888 -or $bytes -gt 1048576 -or
-        $writerBytes+$auxiliaryBytes+$bytes+$abortBytes+$metadataBytes+$finalReceiptReserve -gt 4194304) { throw 'SEAL_BUDGET' }
+        $writerBytes+$auxiliaryBytes+$bytes+$abortBytes+$metadataBytes+65+$rawLedgerBytes+$finalReceiptReserve -gt 4194304) { throw 'SEAL_BUDGET' }
+    [void](Copy-TimingReportSnapshot -Run $run -Control $control -ExpectedSources $snapshotPlan -VerifyOnly)
     foreach ($store in @($control,$run)) {
         foreach ($file in Get-ChildItem -LiteralPath $store -Recurse -File -Force) { $file.IsReadOnly=$true }
     }
+    Write-TimingMetadata $sealPath $payload
+    (Get-Item -LiteralPath $sealPath).IsReadOnly=$true
+    $sealedResult=Write-TimingGzipManifest -Rows @($seal.ToArray()) -Binding $streamBinding -Control $control -Run $run -VerifyOnly -ExpectedEnvelope $manifestResult.envelope -ExpectedCommitmentSha256 $manifestResult.commitment_sha256
+    [void](Copy-TimingReportSnapshot -Run $run -Control $control -ExpectedSources $snapshotPlan -VerifyOnly)
 } catch {
     $diagnostic = 'ABORTED'
     $reason = 'OBSERVATION_STORAGE_CUSTODY_OR_BUDGET'
@@ -927,7 +1456,14 @@ public static class F3TimingNative {
         'GIT_EXECUTABLE','ARGV_QUOTING','PREFLIGHT_BUDGET','METADATA_OR_RESOURCE_GAP','SOURCE_HEAD_OR_DIRTY',
         'RUN_ALREADY_EXISTS','PROCESS_IDENTITY','RESOURCE_BUDGET','WRITER_ABORTED','OBSERVER_WATCHDOG',
         'WRITER_BUDGET','AUXILIARY_BUDGET','METADATA_BUDGET','UNCLASSIFIED_TELEMETRY',
-        'TRACE_RECORD_BUDGET','SYNC_BUDGET','SEAL_BUDGET')
+        'TRACE_RECORD_BUDGET','SYNC_BUDGET','SEAL_BUDGET','ORIGINAL_STORAGE_HEADROOM_NOT_QUALIFIED',
+        'METADATA_DUPLICATE','MANIFEST_COMMITMENT_IDENTITY','MANIFEST_COMPRESSED_BUDGET','MANIFEST_EXPANDED_BUDGET',
+        'MANIFEST_EXPANSION_BUDGET','MANIFEST_COMPRESSED_IDENTITY','MANIFEST_EXPANDED_IDENTITY',
+        'MANIFEST_RECORD_COUNT','MANIFEST_RECORD_IDENTITY','MANIFEST_TRAILING_BYTES',
+        'RAW_CUSTODY_LENGTH','RAW_FOREIGN','RAW_REPLACED','RAW_CUSTODIAN','RAW_PATH',
+        'RAW_SNAPSHOT_CHANGED','RAW_SNAPSHOT_BINDING','RAW_SNAPSHOT_ALIAS','RAW_SNAPSHOT_MODE',
+        'RAW_DIRECTORY_BUDGET','RAW_DIRECTORY_OPEN','RAW_DIRECTORY_IDENTITY','RAW_DIRECTORY_CLOSE',
+        'RAW_ALIAS_OR_IDENTITY','RAW_NOT_QUIESCENT','RAW_SNAPSHOT_BUDGET','RAW_INITIAL_READBACK')
     if ($_.Exception.Message -cin $known) { $reason=$_.Exception.Message }
     # Exception payloads, private paths and raw native output stay out of summaries.
 } finally {
@@ -951,11 +1487,16 @@ public static class F3TimingNative {
 # This terminal receipt binds the immutable manifest rather than hashing itself.
 # A reserved ABORTED receipt wins over a partial/failed diagnostic.json write.
 if ($controlTrusted) {
+    if ($diagnostic -ceq 'COMPLETE') {
+        $diagnostic='INCOMPLETE'; $reason='EXTERNAL_FINALIZATION_UNQUALIFIED'
+    }
     try {
         $record = [ordered]@{ NATIVE_VERDICT=$(if ($null -eq $nativeExit) {'NOT_AVAILABLE'} else {$nativeExit});
             DIAGNOSTIC_VERDICT=$diagnostic; REASON=$reason; run_id=$spec.run_id; tested_sha=$spec.tested_sha;
             metadata_bytes_before_final=$metadataBytes;
-            raw_native_and_original_reports='SEPARATE_BUDGET_CLASS_NOT_RETENTION_VERDICT' }
+            raw_native_and_original_reports='RAW_QUOTA_V2_SNAPSHOT_AND_ORIGINAL_PAIR_BINDINGS'; raw_quota_bytes=67108864;
+            raw_snapshot_bytes=$rawSnapshotBytes; raw_ledger_bytes=$rawLedgerBytes;
+            close_tail='EXTERNAL_PROCESS_EXIT_QUALIFICATION_REQUIRED'; full_overhead='NOT_QUALIFIED_BY_INTERNAL_SUBTOTAL' }
         if ($diagnostic -ne 'ABORTED') { $record.manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $control 'bundle-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant() }
         $payload = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress)+"`n")
         $terminal = Join-Path $control $(if ($diagnostic -eq 'ABORTED') {'ABORTED.json'} else {'diagnostic.json'})

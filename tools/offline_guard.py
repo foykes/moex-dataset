@@ -294,9 +294,19 @@ def _timing_prepare(c, reference):
             raise ValueError('TIMING_CONTEXT')
         if path.stat().st_size > 16384:
             raise ValueError('TIMING_CONTEXT_SIZE')
-        with _ORIGINAL_OPEN(path, encoding='utf-8') as stream:
-            spec = json.load(stream)
-        if (spec['version'] != 1 or spec['root'] != str(c.root)
+        with _ORIGINAL_OPEN(path, 'rb') as stream:
+            context_bytes = stream.read(16385)
+        if len(context_bytes) > 16384:
+            raise ValueError('TIMING_CONTEXT_SIZE')
+        spec = json.loads(context_bytes)
+        policy = spec.get('raw_policy')
+        if (type(policy) is not dict or any(type(value) is not int for value in policy.values())
+                or policy != dict(bytes=67108864, snapshot=16777216, records=384)):
+            raise ValueError('TIMING_RAW_POLICY')
+        raw_header = (b'MDSRAW2\0' + bytes.fromhex(c.run_id)
+                      + hashlib.sha256(context_bytes).digest()
+                      + (67108864).to_bytes(4, 'little') + (384).to_bytes(4, 'little'))
+        if (spec['version'] != 2 or spec['root'] != str(c.root)
                 or spec['tested_sha'] != c.tested_sha or c.source_mode != 'commit'
                 or spec['source_digest'] != c.source_digest
                 or spec['run_id'] != c.run_id or spec['runtime'] != sys.executable
@@ -308,7 +318,7 @@ def _timing_prepare(c, reference):
         if creation is None:
             raise ValueError('TIMING_PROCESS_IDENTITY')
         directory = checked_path(c.report_dir / 'timing', c.report_dir)
-        state = dict(stream=None, directory=directory, slot=None, seq=0, size=0,
+        state = dict(raw_header=raw_header, stream=None, directory=directory, slot=None, seq=0, size=0,
             identity=dict(run_id=c.run_id, lane=c.lane, role=c.role, ticket_id=c.process_id,
                           tested_sha=c.tested_sha, source_digest=c.source_digest,
                           pid=os.getpid(), creation_100ns=creation),
@@ -327,6 +337,7 @@ def _timing_prepare(c, reference):
             ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
         native.NtQueryInformationProcess.restype = ctypes.c_long
         state['process_basic'] = native.NtQueryInformationProcess
+        state['raw_custody'] = _timing_raw_custody(c, context_bytes)
         state['sync_ns'] = time.perf_counter_ns() - opening + 2 * clock_error
         return state
     except BaseException:
@@ -718,6 +729,314 @@ def _timing_buffers_close():
         _TIMING['sync_ns'] += time.perf_counter_ns() - began + 2 * _TIMING['clock_error_ns']
 
 
+def _timing_raw_custody(c, context_bytes):
+    """Two fixed diagnostic files only; held OS identities, not pathname trust."""
+    if os.name != 'nt' or c.lane != 'f3':
+        raise ValueError('RAW_PLATFORM')
+    kernel = _ORIGINAL_WINDLL('kernel32', use_last_error=True)
+    void, word = ctypes.c_void_p, ctypes.c_uint32
+    signatures = {
+        'CreateFileW': ([ctypes.c_wchar_p, word, word, void, word, word, void], void),
+        'CloseHandle': ([void], ctypes.c_int),
+        'GetFileInformationByHandle': ([void, void], ctypes.c_int),
+        'GetFinalPathNameByHandleW': ([void, ctypes.c_wchar_p, word, word], word),
+        'GetFileType': ([void], word),
+        'GetVolumeInformationW': ([ctypes.c_wchar_p, void, word, void, void, void,
+                                  ctypes.c_wchar_p, word], ctypes.c_int),
+        'ReadFile': ([void, void, word, void, void], ctypes.c_int),
+        'WriteFile': ([void, void, word, void, void], ctypes.c_int),
+        'FlushFileBuffers': ([void], ctypes.c_int),
+        'SetFilePointerEx': ([void, ctypes.c_int64, void, word], ctypes.c_int),
+        'OpenProcess': ([word, ctypes.c_int, word], void),
+        'GetProcessTimes': ([void, void, void, void, void], ctypes.c_int),
+        'WaitForSingleObject': ([void, word], word),
+    }
+    for name, (arguments, result) in signatures.items():
+        getattr(kernel, name).argtypes = arguments
+        getattr(kernel, name).restype = result
+    filesystem = ctypes.create_unicode_buffer(32)
+    if (not kernel.GetVolumeInformationW(c.root.anchor, None, 0, None, None, None,
+                                        filesystem, len(filesystem))
+            or filesystem.value != 'NTFS'):
+        raise ValueError('RAW_PLATFORM')
+    class Information(ctypes.Structure):
+        _fields_ = [(name, word) for name in (
+            'attributes', 'created_low', 'created_high', 'access_low', 'access_high',
+            'write_low', 'write_high', 'volume', 'size_high', 'size_low',
+            'links', 'index_high', 'index_low')]
+
+    handles = []
+    def close(handle):
+        if not kernel.CloseHandle(handle):
+            raise ValueError('RAW_CLOSE')
+    native = _ORIGINAL_WINDLL('ntdll', use_last_error=True)
+    native.NtCreateFile.argtypes = [void, word, void, void, void, word, word, word, word, void, word]
+    native.NtCreateFile.restype = ctypes.c_int32
+    class UnicodeName(ctypes.Structure):
+        _fields_ = [('length', ctypes.c_ushort), ('maximum', ctypes.c_ushort), ('buffer', void)]
+    class ObjectName(ctypes.Structure):
+        _fields_ = [('length', word), ('root', void), ('name', void), ('attributes', word),
+                    ('security', void), ('quality', void)]
+    raw_parent = [None]
+    def open_file(path, access, sharing, disposition=3, directory=False):
+        if directory:
+            handle = kernel.CreateFileW(str(path), access, sharing, None, 3,
+                                        0x00200000 | 0x02000000, None)
+            if handle in (None, ctypes.c_void_p(-1).value):
+                raise ValueError('RAW_BUSY' if ctypes.get_last_error() == 32 else 'RAW_OPEN')
+            return handle
+        # Two fixed basenames, RELATIVE to an already pinned actual directory.
+        # A checked_path/open race cannot redirect append to a foreign parent.
+        if (path.parent != c.report_dir / 'timing' or raw_parent[0] is None
+                or path.name not in {'raw-quota.bin', 'raw-custody.bin'} or disposition not in {1, 3}):
+            raise ValueError('RAW_PATH')
+        name_buffer = ctypes.create_unicode_buffer(path.name)
+        name = UnicodeName(len(path.name) * 2, (len(path.name) + 1) * 2,
+                           ctypes.cast(name_buffer, void))
+        attributes = ObjectName(ctypes.sizeof(ObjectName), raw_parent[0],
+            ctypes.cast(ctypes.pointer(name), void), 0x1040, None, None)
+        handle = void()
+        status_block = (ctypes.c_size_t * 2)()
+        status = native.NtCreateFile(ctypes.byref(handle), access | 0x100000,
+            ctypes.byref(attributes), ctypes.byref(status_block), None, 0,
+            sharing, 2 if disposition == 1 else 1, 0x00200062, None, 0)
+        if status != 0:
+            if handle.value not in (None, ctypes.c_void_p(-1).value):
+                close(handle.value)
+            failure = status & 0xffffffff
+            raise ValueError('RAW_BUSY' if failure == 0xc0000043 else
+                             'RAW_FOREIGN' if failure == 0xc0000035 else 'RAW_OPEN')
+        return handle.value
+    def facts(handle, path, directory=False):
+        info = Information()
+        final = ctypes.create_unicode_buffer(32768)
+        count = kernel.GetFinalPathNameByHandleW(handle, final, len(final), 0)
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)) or not 0 < count < len(final):
+            raise ValueError('RAW_IDENTITY')
+        observed = final.value
+        if not observed.startswith('\\\\?\\'):
+            raise ValueError('RAW_PATH')
+        observed = observed[4:]
+        if (os.path.normcase(observed) != os.path.normcase(str(path))
+                or kernel.GetFileType(handle) != 1 or info.attributes & 0x400
+                or bool(info.attributes & 0x10) != directory
+                or not directory and info.links != 1):
+            raise ValueError('RAW_ALIAS')
+        identity = (info.volume.to_bytes(4, 'little')
+                    + ((info.index_high << 32) | info.index_low).to_bytes(8, 'little')
+                    + ((info.created_high << 32) | info.created_low).to_bytes(8, 'little'))
+        if identity[4:12] == b'\0' * 8:
+            raise ValueError('RAW_IDENTITY')
+        return identity, (info.size_high << 32) | info.size_low
+    def read(handle, maximum):
+        if not kernel.SetFilePointerEx(handle, 0, None, 0):
+            raise ValueError('RAW_SEEK')
+        buffer = ctypes.create_string_buffer(maximum + 1)
+        actual = word()
+        if not kernel.ReadFile(handle, buffer, len(buffer), ctypes.byref(actual), None):
+            raise ValueError('RAW_READ')
+        if actual.value > maximum:
+            raise ValueError('RAW_LENGTH')
+        return buffer.raw[:actual.value]
+    def write(handle, payload):
+        actual = word()
+        buffer = ctypes.create_string_buffer(payload)
+        if (not kernel.WriteFile(handle, buffer, len(payload), ctypes.byref(actual), None)
+                or actual.value != len(payload)):
+            raise ValueError('RAW_SHORT_WRITE')
+        if not kernel.FlushFileBuffers(handle):
+            raise ValueError('RAW_FLUSH')
+    def pin_directories(directory):
+        parts = directory.relative_to(c.root).parts
+        if len(parts) > 16:
+            raise ValueError('RAW_PATH')
+        cursor = c.root
+        for part in ('', *parts):
+            cursor = cursor / part
+            checked_path(cursor, c.root)
+            handle = open_file(cursor, 0xa0, 3, directory=True)
+            handles.append(handle)
+            facts(handle, cursor, directory=True)
+            raw_parent[0] = handle
+
+    directory = checked_path(c.report_dir / 'timing', c.report_dir)
+    with _internal():
+        directory.mkdir(exist_ok=True)
+    ledger_path = directory / 'raw-quota.bin'
+    anchor_path = directory / 'raw-custody.bin'
+    context_hash = hashlib.sha256(context_bytes).digest()
+    header = (b'MDSRAW2\0' + bytes.fromhex(c.run_id) + context_hash
+              + (67108864).to_bytes(4, 'little') + (384).to_bytes(4, 'little'))
+    initial = (header + b'\0' * 16 + (16777216).to_bytes(8, 'little') + b'\0' * 8
+               + hashlib.sha256(b'MDSRAW-SNAPSHOT-2\0' + header).digest())
+    try:
+        pin_directories(directory)
+        if c.role == 'supervisor':
+            # Existing files are refused. No cleanup ever deletes a pathname.
+            handle = open_file(ledger_path, 0xc0000000, 0, disposition=1)
+            try:
+                identity, size = facts(handle, ledger_path)
+                if size != 0:
+                    raise ValueError('RAW_FOREIGN')
+                write(handle, initial)
+                if read(handle, 128) != initial:
+                    raise ValueError('RAW_INITIAL_READBACK')
+            finally:
+                close(handle)
+            lease = open_file(ledger_path, 0x80, 3)
+            handles.append(lease)  # Attribute-only: no share-delete, no data access.
+            if facts(lease, ledger_path) != (identity, 128):
+                raise ValueError('RAW_REPLACED')
+            creation = _timing_creation()
+            if creation is None:
+                raise ValueError('RAW_CUSTODIAN')
+            anchor = (b'MDSOWN2\0' + bytes.fromhex(c.run_id) + context_hash + identity
+                      + hashlib.sha256(os.path.normcase(str(ledger_path)).encode('utf-8')).digest()
+                      + os.getpid().to_bytes(4, 'little') + creation.to_bytes(8, 'little')
+                      + bytes.fromhex(c.process_id) + hashlib.sha256(initial).digest())
+            anchor += b'\0' * (256 - len(anchor))
+            handle = open_file(anchor_path, 0xc0000000, 0, disposition=1)
+            try:
+                anchor_identity, size = facts(handle, anchor_path)
+                if size:
+                    raise ValueError('RAW_FOREIGN')
+                write(handle, anchor)
+            finally:
+                close(handle)
+            anchor_lease = open_file(anchor_path, 0x80000000, 1)
+            handles.append(anchor_lease)
+            if facts(anchor_lease, anchor_path) != (anchor_identity, 256) or read(anchor_lease, 256) != anchor:
+                raise ValueError('RAW_REPLACED')
+            custodian = None
+        else:
+            anchor_lease = open_file(anchor_path, 0x80000000, 1)
+            handles.append(anchor_lease)
+            facts(anchor_lease, anchor_path)
+            anchor = read(anchor_lease, 256)
+            if (len(anchor) != 256 or anchor[:56] != b'MDSOWN2\0' + bytes.fromhex(c.run_id) + context_hash
+                    or any(anchor[168:]) or anchor[136:168] != hashlib.sha256(initial).digest()
+                    or anchor[76:108] != hashlib.sha256(os.path.normcase(str(ledger_path)).encode('utf-8')).digest()):
+                raise ValueError('RAW_FOREIGN')
+            identity = anchor[56:76]
+            owner_pid = int.from_bytes(anchor[108:112], 'little')
+            owner_creation = int.from_bytes(anchor[112:120], 'little')
+            owner_id = anchor[120:136].hex()
+            start = _read_json(c.report_dir / 'processes' / (owner_id + '.start.json'))
+            if (start.get('role') != 'supervisor' or start.get('pid') != owner_pid
+                    or start.get('ticket_id') != owner_id or start.get('lane') != c.lane
+                    or start.get('source_mode') != 'commit'
+                    or any(start.get(key) != getattr(c, key) for key in ('run_id', 'tested_sha', 'source_digest'))):
+                raise ValueError('RAW_CUSTODIAN')
+            custodian = kernel.OpenProcess(0x101000, False, owner_pid)
+            if not custodian:
+                raise ValueError('RAW_CUSTODIAN')
+            handles.append(custodian)
+            times = [ctypes.c_ulonglong() for _ in range(4)]
+            if (not kernel.GetProcessTimes(custodian, *(ctypes.byref(v) for v in times))
+                    or times[0].value != owner_creation or kernel.WaitForSingleObject(custodian, 0) != 258):
+                raise ValueError('RAW_CUSTODIAN')
+        return dict(header=header, identity=identity, ledger=ledger_path, anchor=anchor,
+                    open=open_file, facts=facts, read=read, write=write, close=close,
+                    kernel=kernel, custodian=custodian, lifetime_handles=handles)
+    except BaseException:
+        for handle in reversed(handles):
+            try:
+                close(handle)
+            except BaseException:
+                pass  # Diagnostic is already invalid; cleanup cannot promote it.
+        raise
+
+
+def _timing_raw_reserve(ticket, fingerprint):
+    """One OS-identity-bound handle is read and appended; no native effect."""
+    def validate_identity(observed, expected):
+        if (type(expected) is not bytes or len(expected) != 20
+                or type(observed) is not tuple or len(observed) != 2
+                or type(observed[0]) is not bytes or len(observed[0]) != 20
+                or observed[0] != expected):
+            raise ValueError('RAW_REPLACED')
+        if type(observed[1]) is not int or not 128 <= observed[1] <= 24640:
+            raise ValueError('RAW_LEDGER')
+        return observed[1]
+
+    def decode(raw, header, valid_ids):
+        if (type(raw) is not bytes or raw[:64] != header or len(header) != 64
+                or len(raw) > 24640 or (len(raw) - 64) % 64):
+            raise ValueError('RAW_LEDGER')
+        seen = set()
+        used = 0
+        snapshot = hashlib.sha256(b'MDSRAW-SNAPSHOT-2\0' + header).digest()
+        for offset in range(64, len(raw), 64):
+            row = raw[offset:offset + 64]
+            identifier = row[:16].hex()
+            out_size = int.from_bytes(row[16:24], 'little')
+            err_size = int.from_bytes(row[24:32], 'little')
+            if identifier in seen:
+                raise ValueError('RAW_DUPLICATE')
+            if identifier == '0' * 32:
+                if out_size != 16777216 or err_size or row[32:] != snapshot:
+                    raise ValueError('RAW_FOREIGN')
+            elif identifier not in valid_ids:
+                raise ValueError('RAW_FOREIGN')
+            if out_size > 67108864 - used or err_size > 67108864 - used - out_size:
+                raise ValueError('RAW_BUDGET')
+            used += out_size + err_size
+            seen.add(identifier)
+        if '0' * 32 not in seen:
+            raise ValueError('RAW_SNAPSHOT_RESERVATION')
+        return seen, used
+
+    state = _TIMING
+    if state is None or state['invalid'] or state['closed']:
+        raise ValueError('RAW_CONTEXT')
+    _timing_child_binding(ticket)
+    custody = state['raw_custody']
+    if (custody['custodian'] is not None
+            and custody['kernel'].WaitForSingleObject(custody['custodian'], 0) != 258):
+        raise ValueError('RAW_CUSTODIAN')
+    identifier = ticket['ticket_id']
+    if identifier == '0' * 32:
+        raise ValueError('RAW_FOREIGN')
+    pair = hashlib.sha256(b'MDSRAW-PAIR-2\0' + b''.join(
+        size.to_bytes(8, 'little') + digest for size, digest in fingerprint)).digest()
+    request = (bytes.fromhex(identifier) + fingerprint[0][0].to_bytes(8, 'little')
+               + fingerprint[1][0].to_bytes(8, 'little') + pair)
+    valid_ids = set()
+    for path in (_CONTEXT.report_dir / 'tickets').glob('*.json'):
+        if not re.fullmatch('[0-9a-f]{32}', path.stem):
+            continue
+        obj = _read_json(path)
+        if any(obj.get(key) != state['identity'][key]
+               for key in ('run_id', 'lane', 'tested_sha', 'source_digest')):
+            raise ValueError('RAW_FOREIGN')
+        if obj.get('ticket_id') != path.stem:
+            raise ValueError('RAW_FOREIGN')
+        valid_ids.add(path.stem)
+        if len(valid_ids) > 383:
+            raise ValueError('RAW_RECORD_BUDGET')
+    # OPEN_EXISTING/share=0 is the only zero-wait lock. No foreign-path cleanup.
+    handle = custody['open'](custody['ledger'], 0xc0000000, 0)
+    try:
+        observed = custody['facts'](handle, custody['ledger'])
+        size = validate_identity(observed, custody['identity'])
+        identity = observed[0]
+        raw = custody['read'](handle, 24640)
+        if len(raw) != size:
+            raise ValueError('RAW_LEDGER')
+        seen, used = decode(raw, custody['header'], valid_ids)
+        if identifier in seen:
+            raise ValueError('RAW_OPEN_RESERVATION')
+        if len(seen) >= 384 or sum(size for size, _ in fingerprint) > 67108864 - used:
+            raise ValueError('RAW_BUDGET')
+        # The SAME handle remains at checked EOF after read(). Persist BEFORE copy.
+        custody['write'](handle, request)
+        if (custody['facts'](handle, custody['ledger']) != (identity, size + 64)
+                or custody['read'](handle, 24640) != raw + request):
+            raise ValueError('RAW_APPEND_READBACK')
+    finally:
+        custody['close'](handle)
+
+
 def timing_native_bundle(ticket, stdout, stderr):
     """Retain the SAME buffers already returned by the sole communicate reader."""
     _timing_activate()
@@ -746,13 +1065,15 @@ def timing_native_bundle(ticket, stdout, stderr):
             if child['buffers'] != fingerprint:
                 _timing_abort()
             return  # The exact completed pair is already retained; no rewrite.
+        _timing_raw_reserve(ticket, fingerprint)
         directory = checked_path(_CONTEXT.report_dir / 'timing/native', _CONTEXT.report_dir)
         with _internal():
             directory.mkdir(exist_ok=True)
             for suffix, payload in (('stdout', stdout), ('stderr', stderr)):
                 path = directory / (ticket['ticket_id'] + '.' + suffix)
                 with _ORIGINAL_OPEN(path, 'xb') as stream:
-                    stream.write(payload)
+                    if stream.write(payload) != len(payload):
+                        raise OSError('RAW_SHORT_WRITE')
                     stream.flush()
                     os.fsync(stream.fileno())
         child.update(buffers=fingerprint, buffer_phase=1, buffer_emitted=True)
