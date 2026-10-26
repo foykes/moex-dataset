@@ -99,7 +99,7 @@ The `all` pair contains 661 rows for 69 tickers, nominal amounts in RUB (638 row
 
 **The exact `dt` semantics could not be re-established from the live primary interface in this audit.** On 2026-09-07, the [exact official endpoint used by the collector](https://iss.moex.com/iss/securities/SBER/dividends.json) returned HTTP 200 with only `description` and `boards`, no `dividends` block or column metadata (response SHA-256 `76586bf51bc2a6349c4e2b83d4817f96caf21ce6dbcdba9dba2cc01920150ffc`). No original provider response was retained with the export. Registry-close date is a hypothesis supported by cross-source matching below, not verified source semantics. In particular, `dt` must not be mapped to ex-date, payment date, eligibility date or announcement date. U04 needs original provider column metadata or other primary evidence before promoting a registry-date mapping. Primary metadata status: `source unavailable` for the required dividend block/schema; the local export itself is available.
 
-The five-field format lacks announcement/payment/ex/eligibility dates, explicit realized/forecast status, revision/cancellation data, stable historical identity/board, source event IDs and per-row source references. No forecast marker was observed; this does not certify that every row is realized. Current-catalogue cross-check: 63 equity tickers, one DR and five unmapped tickers. No global ticker/date ordering; nine ticker groups are not date-ascending.
+The five-field format lacks announcement/payment/ex/eligibility dates, explicit realized/forecast status, revision/cancellation data, stable historical identity/board, source event IDs and per-row source references. No forecast marker was observed; this does not certify that every row is realized. Each of the 69 export tickers has one export ISIN, but that does not make a current ticker join date-effective: `ETLN` uses historical export ISIN `US29760G1031`, while the current stock catalogue maps `ETLN` to `RU000A10C1L6`. This is transition evidence, not proof that either row is erroneous, and both identities must be preserved until S02/U04 reconciliation. Current-catalogue cross-check: 63 equity tickers, one DR and five unmapped tickers. No global ticker/date ordering; nine ticker groups are not date-ascending.
 
 ### Dohod.ru source
 
@@ -207,6 +207,21 @@ All paths below are relative to the owner-confirmed producer root. The full byte
 | F13 | `datasets/ticker_lists/tickers_dates.csv` | 5496 | 263 | 263 | `87aa7ab7b07c1f833e6469d82d640c691aa6b6bbf655abe718da523db19f0d36` |
 | F14 | `datasets/ticker_lists/tickers_dates.xlsx` | 11757 | 263 | 263 | `a0983fd1a0b1f9e14d2a492c1be66c0986d27a9db7ea3773a6e7ea7141e07351` |
 | F15 | `datasets/ticker_lists/ticker_dates.xlsx` | 89742 | 3101 | 3101 | `b8cec0af4a27db94d3bfbd77d60d967cf0fd64a33b6516e046c581cf0cab5428` |
+
+### Explicit instrument-scope verdicts
+
+`Stock-only` below means ordinary shares only. Classification is an observed cross-check against the audited current full catalogue, not an as-of claim; nevertheless, one observed DR or other instrument is enough to reject stock-only status. CSV/XLSX pairs share a verdict unless the files are explicitly different snapshots.
+
+| Files | Stock-only verdict | Observed current-catalogue evidence |
+|---|---|---|
+| F01-F04 daily pairs | **No** | 262 equity tickers and one DR ticker (`OKEY`) in each file. |
+| F05-F06 MOEX dividends | **No; mapping also incomplete** | 63 equity tickers, one DR and five unmapped tickers; `ETLN` also has the historical/current ISIN transition described above. |
+| F07-F08 Dohod dividends | **No; mapping also incomplete** | 108 equity tickers, one DR and six unmapped tickers. |
+| F09 current stock CSV | **No** | 262 equities and one DR. |
+| F10 retained stock XLSX | **No** | 252 equities and ten DRs; one ticker is missing. |
+| F11-F12 full catalogue pair | **No** | 262 equities versus 4,008 observed non-equities; 417 ticker values are missing. |
+| F13-F14 plural ticker-date pair | **No** | Its 263 tickers map to the current stock CSV, which contains 262 equities and one DR. |
+| F15 legacy singular ticker-date XLSX | **No; mapping also incomplete** | 254 equities, one DR, 1,979 other instruments and 867 unmapped tickers. |
 
 <details>
 <summary>F01: datasets/30years_data_1d_interval.csv</summary>
@@ -811,14 +826,16 @@ These hashes describe inspected code, not a verified producing commit. The local
 
 ## Verification and remaining limits
 
-Revalidated on 2026-09-29: all 15 local export hashes and the inspected local-code hashes still match the 2026-09-07 evidence. Both retained primary-response hashes were independently recomputed; the dividend endpoint hash transcription was corrected. Those HTTP observations remain dated 2026-09-07 and were not refreshed. Capability decisions are unchanged.
+Revalidated on 2026-10-26: all 15 local export hashes and the inspected local-code hashes still match the 2026-09-07 evidence. Both retained primary-response hashes were independently recomputed; the dividend endpoint hash transcription was corrected. A bounded live refresh on 2026-10-26 still returned only `description` and `boards` from the SBER dividend URL, while its bytes had changed with mutable current board metadata; therefore the original response hash remains only a dated 2026-09-07 observation. The SBER second-page candle response remained byte-identical at 52,404 bytes and the reported hash. Capability decisions are unchanged.
 
 Strict self-review on 2026-09-29 added the previously omitted cross-window daily comparison, literal blank-header distinction and `OBLIGATION_PROGRAM_DATE` date ranges, and corrected the scope of Dohod ordering counts (107 without annotated dates; 115 including them). It also verified parsed dividend keys and complete script/notebook module ASTs, and made hypothesis verdicts explicit for each evidence layer. These corrections strengthen the existing NO-GO decisions; they do not repair or regenerate source data.
+
+Strict self-review on 2026-10-26 made every candidate's stock-only verdict explicit, added the observed `ETLN` historical/current ISIN transition to the dividend identity evidence, and refreshed the bounded live-interface checks without treating mutable responses as export provenance. These findings strengthen the identity and universe blockers without changing any GO/NO-GO decision or activating another lane.
 
 - All 15 candidates parsed successfully, with independently checked row totals, key duplicates and selected anomalies. All source-byte hashes matched after reads and at final verification.
 - Schema/date tables distinguish missing values from unparseable nonempty text; all 208 Dohod non-date strings are explained by preserved forecast annotations. Reference Russian datetimes are accepted explicitly, not incorrectly classified as malformed.
 - Daily cap counts, ABIO conflicting-key counts, zero-price rows, forecast counts and announcement-order checks were cross-checked independently. Pair comparisons preserve exact vs tolerant equality and report the stale stock XLSX separately.
-- Cross-window mismatches were checked independently using standard-library CSV, calendar-date keys and decimal arithmetic, as well as separately in XLSX. Literal headers, every-column blank counts and row widths/totals were checked without pandas NA-token conversion for all 15 files. Parsed dividend-key counts agree with raw-text counts; complete module ASTs match in all ten version/pair comparisons.
+- Cross-window mismatches were checked independently using standard-library CSV, calendar-date keys and decimal arithmetic, as well as separately in XLSX. Literal headers, every-column blank counts and row widths/totals were checked without pandas NA-token conversion for all 15 files. Parsed dividend-key counts agree with raw-text counts; complete module ASTs match in all ten version/pair comparisons. All eight candidate XLSX workbooks contain zero worksheet formulas.
 - Changed-path allowlist is only `docs/research_export_audit.md`. Whitespace and public-path/secret/data-extract checks passed on the final diff. Audit tools, raw provider checks, source exports and detailed private evidence remain outside the PR.
 - Expert checklist reviewed for applicability: no runtime, model, splits, portfolio or trading behavior changed. Existing mechanics validation is not new research evidence. No product tests were added for this documentation change; source analysis and document checks are the relevant verification.
 - No supplier run manifest, original MOEX dividend response schema, complete historical universe, adjusted price basis or complete event timing was supplied. Hypotheses with absent evidence remain unverified. The primary endpoint result is a dated observation, not a claim about all future availability.
