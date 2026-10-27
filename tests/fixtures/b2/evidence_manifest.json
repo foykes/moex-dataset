@@ -1,0 +1,569 @@
+{
+  "manifest_version": 1,
+  "reconstructed_fixture": {
+    "path": "tests/fixtures/b2/archived_observations.json",
+    "sha256": "95e3ecda17bd7aa8b55f8128f24a99c2f3df600109b7b5e8e05392baaee8cf00",
+    "sha256_basis": "UTF8_TEXT_LF",
+    "bytes": 5917,
+    "hash_meaning": "Reconstructed fixture UTF-8 text after universal newline normalization to LF; not original provider or public export bytes."
+  },
+  "evidence_layer": "RECONSTRUCTED_PARSED_ARCHIVE",
+  "source_verification": "NOT_VERIFIED",
+  "source_authentication": "NOT_VERIFIED",
+  "source_authentication_reason": "Archived parsed tool output and HTTP metadata do not authenticate original provider response bytes.",
+  "archive": {
+    "archive_id": "AUDIT_019fdd9e_20260905",
+    "sha256": "d35bc3b49f27e827855077730e4a8995fa6a7c4125ad37546543263aa4056ee3",
+    "format": "ZSTD_COMPRESSED_UTF8_JSONL",
+    "decoded_jsonl_line_numbering": "ONE_BASED",
+    "fragment_byte_range_convention": "ZERO_BASED_UTF8_END_EXCLUSIVE"
+  },
+  "scope": {
+    "issue_refs": [
+      "#55",
+      "#56"
+    ],
+    "content": "Ten reconstructed parsed public OHLC samples, one ASSB parsed source corroboration, and both parsed ABIO variants.",
+    "excluded_claims": [
+      "Original raw source snapshots",
+      "Authenticated provider bytes",
+      "Complete 79-observation row inventory",
+      "Verified historical source coverage",
+      "Original source acquisition times"
+    ]
+  },
+  "coverage_ledger": {
+    "expected_original_ohlc_observations": 79,
+    "reconstructed_parsed_public_observations": 10,
+    "unavailable_unenumerated_original_observations": 69,
+    "original_ohlc_observations_with_raw_bytes_available": 0,
+    "original_ohlc_observations_with_raw_bytes_unavailable": 79,
+    "original_unavailable_observation_ids": null,
+    "unavailable_ids_reason": "Complete original row inventory is unavailable; do not invent identifiers for the remaining 69 observations.",
+    "additional_assb_parsed_corroborations": 1,
+    "additional_abio_parsed_variants": 2,
+    "corroboration_counting_rule": "ASSB corroboration is the same public sample observation and does not increase 10/79 coverage.",
+    "archived_aggregate": {
+      "rows": 79,
+      "zero_open": 79,
+      "zero_close": 79,
+      "ticker_count": 60,
+      "ticker_count_sum": 79
+    },
+    "complete_original_inventory_status": "NOT_AVAILABLE",
+    "historical_source_membership_verification": "NOT_VERIFIED"
+  },
+  "original_raw_files": {
+    "public_ohlc_export": {
+      "status": "NOT_AVAILABLE",
+      "sha256": null,
+      "original_observation_count": 79
+    },
+    "assb_iss_response": {
+      "status": "NOT_AVAILABLE",
+      "sha256": null,
+      "historical_reported_bytes": 190
+    },
+    "abio_iss_response": {
+      "status": "NOT_AVAILABLE",
+      "sha256": null,
+      "historical_reported_bytes": 330
+    },
+    "hash_reason": "No original raw files are supplied or recoverable in this fixture set; retained fragment hashes identify archived parsed text only."
+  },
+  "sample_selection_declaration": {
+    "archive_id": "AUDIT_019fdd9e_20260905",
+    "decoded_jsonl_line": 1369,
+    "outer_json_pointer": "/payload/item/changes",
+    "member_selection": "Select the unique member whose final path segment is public_deep.py, then select content.",
+    "archived_content_sha256": "af840ae2bf84ab280ef28db33ccda3dafad6f5bb2ce64b7d858a0e99d053a397",
+    "source_line": 10,
+    "source_line_text": "out['ohlc']={'rows':len(bad),'zero_open':int((bad.open==0).sum()),'zero_close':int((bad.close==0).sum()),'tickers':bad.ticker.value_counts().to_dict(),'samples':bad.head(10).to_dict('records')}",
+    "selection_meaning": "The archived script reports aggregate counts and only bad.head(10); it does not enumerate all 79 rows."
+  },
+  "timestamp_policy": "archive_event_at is the timestamp of the archived tool event; source_acquired_at remains null and is never filled from archive event time.",
+  "fragments": {
+    "public_ohlc_samples": {
+      "evidence_layer": "ARCHIVED_PARSED_TOOL_OUTPUT_TEXT",
+      "archive_id": "AUDIT_019fdd9e_20260905",
+      "decoded_jsonl_line": 1370,
+      "outer_json_pointer": "/payload/output/2/text",
+      "decode_steps": [
+        "PARSE_OUTER_JSONL_RECORD",
+        "SELECT_OUTER_JSON_POINTER",
+        "JSON_DECODE_SELECTED_TEXT",
+        "SELECT_OUTPUT_STRING",
+        "SLICE_UTF8_BYTES",
+        "JSON_DECODE_COMPLETE_FRAGMENT"
+      ],
+      "embedded_json_pointer": "/output",
+      "output_utf8_byte_range": {
+        "start": 2459,
+        "end_exclusive": 4909
+      },
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "sha256": "945094ad17858b7ffcf614fcbfe16d8abecce3914913c507a307028b2d2a5cf0",
+      "utf8_text": "{\"rows\": 79, \"zero_open\": 79, \"zero_close\": 79, \"tickers\": {\"NSVZ\": 4, \"CNTLP\": 3, \"DZRD\": 3, \"CHGZ\": 2, \"DZRDP\": 2, \"HIMCP\": 2, \"KBSB\": 2, \"KRKN\": 2, \"KRKOP\": 2, \"NNSBP\": 2, \"RKKE\": 2, \"SAGO\": 2, \"SELG\": 2, \"STSB\": 2, \"WTCMP\": 2, \"ASSB\": 1, \"BISVP\": 1, \"BRZL\": 1, \"GAZA\": 1, \"GAZAP\": 1, \"IGST\": 1, \"KAZTP\": 1, \"KLSB\": 1, \"KRKNP\": 1, \"KROTP\": 1, \"KRSB\": 1, \"KRSBP\": 1, \"KUBE\": 1, \"KZOS\": 1, \"KZOSP\": 1, \"LIFE\": 1, \"MGNZ\": 1, \"MGTS\": 1, \"MISB\": 1, \"MRKU\": 1, \"NKSH\": 1, \"OMZZP\": 1, \"PAZA\": 1, \"PMSB\": 1, \"PRFN\": 1, \"PRMB\": 1, \"ROLO\": 1, \"RTGZ\": 1, \"RTSB\": 1, \"RZSB\": 1, \"SAGOP\": 1, \"STSBP\": 1, \"TGKN\": 1, \"TORSP\": 1, \"UKUZ\": 1, \"UTAR\": 1, \"VGSB\": 1, \"VGSBP\": 1, \"VJGZ\": 1, \"VRSB\": 1, \"WTCM\": 1, \"YAKG\": 1, \"YKEN\": 1, \"YRSB\": 1, \"ZILL\": 1}, \"samples\": [{\"open\": 0.0, \"close\": 0.0, \"high\": 0.3, \"low\": 0.3, \"value\": 300.0, \"volume\": 1000, \"begin\": \"2013-12-05 00:00:00\", \"end\": \"2013-12-05 23:59:59\", \"ticker\": \"ASSB\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 5.101, \"low\": 5.101, \"value\": 5101.0, \"volume\": 1000, \"begin\": \"2013-08-22 00:00:00\", \"end\": \"2013-08-22 23:59:59\", \"ticker\": \"BISVP\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 500.0, \"low\": 500.0, \"value\": 5000.0, \"volume\": 10, \"begin\": \"2013-05-06 00:00:00\", \"end\": \"2013-05-06 23:59:59\", \"ticker\": \"BRZL\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 12.005, \"low\": 12.005, \"value\": 12005.0, \"volume\": 1000, \"begin\": \"2012-07-17 00:00:00\", \"end\": \"2012-07-17 23:59:59\", \"ticker\": \"CHGZ\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 22.59, \"low\": 22.59, \"value\": 22590.0, \"volume\": 1000, \"begin\": \"2014-02-12 00:00:00\", \"end\": \"2014-02-12 23:59:59\", \"ticker\": \"CHGZ\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 7.094, \"low\": 7.094, \"value\": 709.4, \"volume\": 100, \"begin\": \"2012-08-10 00:00:00\", \"end\": \"2012-08-10 23:59:59\", \"ticker\": \"CNTLP\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 7.044, \"low\": 7.044, \"value\": 704.4, \"volume\": 100, \"begin\": \"2013-08-06 00:00:00\", \"end\": \"2013-08-06 23:59:59\", \"ticker\": \"CNTLP\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 6.858, \"low\": 6.858, \"value\": 3429.0, \"volume\": 500, \"begin\": \"2013-12-16 00:00:00\", \"end\": \"2013-12-16 23:59:59\", \"ticker\": \"CNTLP\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 994.1, \"low\": 994.1, \"value\": 1988.2, \"volume\": 2, \"begin\": \"2012-08-14 00:00:00\", \"end\": \"2012-08-14 23:59:59\", \"ticker\": \"DZRD\"}, {\"open\": 0.0, \"close\": 0.0, \"high\": 827.5, \"low\": 827.5, \"value\": 827.5, \"volume\": 1, \"begin\": \"2012-10-08 00:00:00\", \"end\": \"2012-10-08 23:59:59\", \"ticker\": \"DZRD\"}]}"
+    },
+    "source_spot_assb": {
+      "evidence_layer": "ARCHIVED_PARSED_TOOL_OUTPUT_TEXT",
+      "archive_id": "AUDIT_019fdd9e_20260905",
+      "decoded_jsonl_line": 1472,
+      "outer_json_pointer": "/payload/output/1/text",
+      "decode_steps": [
+        "PARSE_OUTER_JSONL_RECORD",
+        "SELECT_OUTER_JSON_POINTER",
+        "JSON_DECODE_SELECTED_TEXT",
+        "SELECT_OUTPUT_STRING",
+        "SLICE_UTF8_BYTES",
+        "JSON_DECODE_COMPLETE_FRAGMENT"
+      ],
+      "embedded_json_pointer": "/output",
+      "output_utf8_byte_range": {
+        "start": 13,
+        "end_exclusive": 420
+      },
+      "archive_event_at": "2026-09-05T13:34:08.394Z",
+      "sha256": "e55cddcdd90f25be1f7db2b41506844b6c2dcf8114344f788c344430153417a2",
+      "utf8_text": "{\r\n    \"candles\": {\r\n      \"columns\": [\r\n        \"open\",\r\n        \"close\",\r\n        \"high\",\r\n        \"low\",\r\n        \"value\",\r\n        \"volume\",\r\n        \"begin\",\r\n        \"end\"\r\n      ],\r\n      \"data\": [\r\n        [\r\n          0,\r\n          0,\r\n          0.3,\r\n          0.3,\r\n          300,\r\n          1000,\r\n          \"2013-12-05 00:00:00\",\r\n          \"2013-12-05 23:59:59\"\r\n        ]\r\n      ]\r\n    }\r\n  }"
+    },
+    "source_spot_abio": {
+      "evidence_layer": "ARCHIVED_PARSED_TOOL_OUTPUT_TEXT",
+      "archive_id": "AUDIT_019fdd9e_20260905",
+      "decoded_jsonl_line": 1472,
+      "outer_json_pointer": "/payload/output/1/text",
+      "decode_steps": [
+        "PARSE_OUTER_JSONL_RECORD",
+        "SELECT_OUTER_JSON_POINTER",
+        "JSON_DECODE_SELECTED_TEXT",
+        "SELECT_OUTPUT_STRING",
+        "SLICE_UTF8_BYTES",
+        "JSON_DECODE_COMPLETE_FRAGMENT"
+      ],
+      "embedded_json_pointer": "/output",
+      "output_utf8_byte_range": {
+        "start": 433,
+        "end_exclusive": 1086
+      },
+      "archive_event_at": "2026-09-05T13:34:08.394Z",
+      "sha256": "d1be621a3470d6297b2127fe66a847f91deb928633ff40f16803890e4a9598d3",
+      "utf8_text": "{\r\n    \"candles\": {\r\n      \"columns\": [\r\n        \"open\",\r\n        \"close\",\r\n        \"high\",\r\n        \"low\",\r\n        \"value\",\r\n        \"volume\",\r\n        \"begin\",\r\n        \"end\"\r\n      ],\r\n      \"data\": [\r\n        [\r\n          15.508,\r\n          113.56,\r\n          177,\r\n          7.6,\r\n          89460829048.60226,\r\n          1050632740,\r\n          \"2011-01-01 00:00:00\",\r\n          \"2023-08-22 10:08:36\"\r\n        ],\r\n        [\r\n          10.812,\r\n          15.099,\r\n          21.985,\r\n          9.265,\r\n          329244623.3999992,\r\n          22398800,\r\n          \"2011-01-01 00:00:00\",\r\n          \"2023-08-22 10:08:36\"\r\n        ]\r\n      ]\r\n    }\r\n  }"
+    },
+    "http_spot_assb": {
+      "evidence_layer": "ARCHIVED_PARSED_TOOL_OUTPUT_TEXT",
+      "archive_id": "AUDIT_019fdd9e_20260905",
+      "decoded_jsonl_line": 1482,
+      "outer_json_pointer": "/payload/output/1/text",
+      "decode_steps": [
+        "PARSE_OUTER_JSONL_RECORD",
+        "SELECT_OUTER_JSON_POINTER",
+        "JSON_DECODE_SELECTED_TEXT",
+        "SELECT_OUTPUT_STRING",
+        "SLICE_UTF8_BYTES",
+        "JSON_DECODE_COMPLETE_FRAGMENT"
+      ],
+      "embedded_json_pointer": "/output",
+      "output_utf8_byte_range": {
+        "start": 5,
+        "end_exclusive": 417
+      },
+      "archive_event_at": "2026-09-05T13:35:01.299Z",
+      "sha256": "ed4ee5fed9cf58d0af617f9688b74ee194714bb130ab952ff22758c3f65b3cec",
+      "utf8_text": "{\r\n    \"url\": \"https://iss.moex.com/iss/engines/stock/markets/shares/securities/ASSB/candles.json?from=2013-12-05&till=2013-12-05&interval=24&iss.meta=off\",\r\n    \"status\": 200,\r\n    \"effective_url\": \"https://iss.moex.com/iss/engines/stock/markets/shares/securities/ASSB/candles.json?from=2013-12-05&till=2013-12-05&interval=24&iss.meta=off\",\r\n    \"type\": \"application/json; charset=utf-8\",\r\n    \"bytes\": 190\r\n  }"
+    },
+    "http_spot_abio": {
+      "evidence_layer": "ARCHIVED_PARSED_TOOL_OUTPUT_TEXT",
+      "archive_id": "AUDIT_019fdd9e_20260905",
+      "decoded_jsonl_line": 1482,
+      "outer_json_pointer": "/payload/output/1/text",
+      "decode_steps": [
+        "PARSE_OUTER_JSONL_RECORD",
+        "SELECT_OUTER_JSON_POINTER",
+        "JSON_DECODE_SELECTED_TEXT",
+        "SELECT_OUTPUT_STRING",
+        "SLICE_UTF8_BYTES",
+        "JSON_DECODE_COMPLETE_FRAGMENT"
+      ],
+      "embedded_json_pointer": "/output",
+      "output_utf8_byte_range": {
+        "start": 422,
+        "end_exclusive": 834
+      },
+      "archive_event_at": "2026-09-05T13:35:01.299Z",
+      "sha256": "f07f923fb94691ccfbb14e936f39b9aa202c0e10e844dac872ffd899b9a29853",
+      "utf8_text": "{\r\n    \"url\": \"https://iss.moex.com/iss/engines/stock/markets/shares/securities/ABIO/candles.json?from=2011-01-01&till=2011-01-01&interval=24&iss.meta=off\",\r\n    \"status\": 200,\r\n    \"effective_url\": \"https://iss.moex.com/iss/engines/stock/markets/shares/securities/ABIO/candles.json?from=2011-01-01&till=2011-01-01&interval=24&iss.meta=off\",\r\n    \"type\": \"application/json; charset=utf-8\",\r\n    \"bytes\": 330\r\n  }"
+    }
+  },
+  "provenance": {
+    "PUB07_SAMPLE_00": {
+      "observation_id": "PUB07_SAMPLE_00",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_00",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/0",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 0,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_01": {
+      "observation_id": "PUB07_SAMPLE_01",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_01",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/1",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 1,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_02": {
+      "observation_id": "PUB07_SAMPLE_02",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_02",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/2",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 2,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_03": {
+      "observation_id": "PUB07_SAMPLE_03",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_03",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/3",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 3,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_04": {
+      "observation_id": "PUB07_SAMPLE_04",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_04",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/4",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 4,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_05": {
+      "observation_id": "PUB07_SAMPLE_05",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_05",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/5",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 5,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_06": {
+      "observation_id": "PUB07_SAMPLE_06",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_06",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/6",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 6,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_07": {
+      "observation_id": "PUB07_SAMPLE_07",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_07",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/7",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 7,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_08": {
+      "observation_id": "PUB07_SAMPLE_08",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_08",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/8",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 8,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "PUB07_SAMPLE_09": {
+      "observation_id": "PUB07_SAMPLE_09",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/PUB07_SAMPLE_09",
+      "record_role": "PUBLIC_EXPORT_PARSED_SAMPLE",
+      "fragment_id": "public_ohlc_samples",
+      "fragment_json_pointer": "/samples/9",
+      "archive_event_at": "2026-09-05T13:23:03.813Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "parsed_sample_ordinal": 9,
+      "original_export_name": "30years_data_1d_interval.csv",
+      "scoped_identity_status": "NOT_VERIFIED",
+      "identity_reason": "Export ticker is a display/source label; full scoped raw identity is not attested by this sample."
+    },
+    "ASSB_SOURCE_SPOT_00": {
+      "observation_id": "ASSB_SOURCE_SPOT_00",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/ASSB_SOURCE_SPOT_00",
+      "record_role": "SOURCE_SPOT_PARSED_CORROBORATION",
+      "fragment_id": "source_spot_assb",
+      "fragment_json_pointer": "/candles/data/0",
+      "archive_event_at": "2026-09-05T13:34:08.394Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "columns_json_pointer": "/candles/columns",
+      "parsed_row_ordinal": 0,
+      "http_metadata_fragment_id": "http_spot_assb",
+      "corroborates": "PUB07_SAMPLE_00",
+      "endpoint_identity_from_archived_http_metadata": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "ASSB",
+        "interval": 24
+      }
+    },
+    "ABIO_SOURCE_SPOT_00": {
+      "observation_id": "ABIO_SOURCE_SPOT_00",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/ABIO_SOURCE_SPOT_00",
+      "record_role": "SOURCE_SPOT_PARSED_ABIO_VARIANT",
+      "fragment_id": "source_spot_abio",
+      "fragment_json_pointer": "/candles/data/0",
+      "archive_event_at": "2026-09-05T13:34:08.394Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "columns_json_pointer": "/candles/columns",
+      "parsed_row_ordinal": 0,
+      "http_metadata_fragment_id": "http_spot_abio",
+      "endpoint_identity_from_archived_http_metadata": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "ABIO",
+        "interval": 24
+      }
+    },
+    "ABIO_SOURCE_SPOT_01": {
+      "observation_id": "ABIO_SOURCE_SPOT_01",
+      "observation_id_status": "LOCALLY_ASSIGNED_FIXTURE_ID",
+      "evidence_ref": "b2/archive/ABIO_SOURCE_SPOT_01",
+      "record_role": "SOURCE_SPOT_PARSED_ABIO_VARIANT",
+      "fragment_id": "source_spot_abio",
+      "fragment_json_pointer": "/candles/data/1",
+      "archive_event_at": "2026-09-05T13:34:08.394Z",
+      "source_acquired_at": null,
+      "original_observation_id": null,
+      "original_csv_row_ordinal": null,
+      "original_raw_row_ordinal": null,
+      "original_raw_bytes_sha256": null,
+      "source_verification": "NOT_VERIFIED",
+      "null_reasons": {
+        "source_acquired_at": "SOURCE_ACQUISITION_TIME_NOT_RETAINED; ARCHIVE_EVENT_TIME_IS_NOT_ACQUISITION_TIME",
+        "original_observation_id": "NO_ORIGINAL_OBSERVATION_IDENTIFIER_RETAINED",
+        "original_csv_row_ordinal": "ORIGINAL_CSV_ROW_ORDINAL_NOT_RETAINED",
+        "original_raw_row_ordinal": "ONLY_PARSED_ARCHIVE_POSITION_AVAILABLE",
+        "original_raw_bytes_sha256": "ORIGINAL_SOURCE_BYTES_NOT_AVAILABLE"
+      },
+      "columns_json_pointer": "/candles/columns",
+      "parsed_row_ordinal": 1,
+      "http_metadata_fragment_id": "http_spot_abio",
+      "endpoint_identity_from_archived_http_metadata": {
+        "engine": "stock",
+        "market": "shares",
+        "source_scope": "AGGREGATE",
+        "board": null,
+        "raw_instrument_id": "ABIO",
+        "interval": 24
+      }
+    }
+  },
+  "abio_signature_policy": {
+    "rule": "Match the full explicit scoped identity, interval, ordered raw column names, and all eight observed values for each retained variant; begin/end alone is not a signature.",
+    "evidence_refs": [
+      "b2/archive/ABIO_SOURCE_SPOT_00",
+      "b2/archive/ABIO_SOURCE_SPOT_01"
+    ],
+    "singleton_requirement": "Each retained ABIO variant is independently an invalid daily multiyear record; a duplicate is not required for invalidity.",
+    "conflict_requirement": "When both variants are present, retain both individual invalidity findings and both conflicting source variants.",
+    "source_verification": "NOT_VERIFIED"
+  }
+}

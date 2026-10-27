@@ -15,7 +15,11 @@
 
 # %%
 import talib, pandas as pd
+import numpy as np
 import sys
+from copy import deepcopy
+import data_quality
+from time import perf_counter
 from os import listdir
 from os.path import isfile, join
 
@@ -28,10 +32,374 @@ current_path = sys.path[0]
 # print(talib.get_function_groups())
 
 # %%
-def calculator(filename):
+def _tech_diagnostic(logging_context, event, message, state, started, *, error=None, instrument=None, rows=None, instruments=None):
+    # Диагностика не меняет результат расчёта и не заменяет исходное исключение.
+    try:
+        duration_ms = (perf_counter() - started) * 1000
+        if logging_context is None:
+            code = 'TECH_CALCULATOR_FAILED' if error is not None else event.upper()
+            print('{}; {}; phase={}; duration_ms={:.3f}'.format(code, message, state['phase'], duration_ms))
+            return
+        import run_logging
+        counts = dict(rows_received=state['rows'] if rows is None else rows,
+                      instruments=state['instruments'] if instruments is None else instruments,
+                      rows_accepted=None, rows_quarantined=None, pages=None)
+        counts['null_reasons'] = {key: 'NOT_ASSESSED_BY_TECH' for key, value in counts.items() if value is None}
+        fields = dict(stage='tech', file='dataset', instrument=instrument,
+                      duration_ms=duration_ms, counts=counts,
+                      outcome='FAILED' if error is not None else 'RETURNED' if event == 'calculator_returned' else state['phase'])
+        if error is not None:
+            fields['error'] = run_logging.make_error(logging_context, error, 'tech', code='TECH_CALCULATOR_FAILED')
+        level = 'ERROR' if error is not None else 'INFO'
+        receipt = run_logging.emit_event(logging_context, level, event, message, fields)
+        if not receipt.get('accepted') or (error is not None and not receipt.get('confirmed')):
+            raise RuntimeError('TECH_EVENT_UNCONFIRMED')
+    except Exception:
+        try:
+            print('TECH_DIAGNOSTICS_FAILED; phase={}'.format(state['phase']), file=sys.stderr)
+        except Exception:
+            pass
+
+
+_INDICATOR_COLUMNS = (
+    'BBANDS_upperband', 'BBANDS_middleband', 'BBANDS_lowerband', 'DEMA', 'EMA',
+    'HT_TRENDLINE', 'KAMA', 'MA', 'MIDPOINT', 'MIDPRICE', 'SAR', 'SAREXT', 'T3',
+    'TEMA', 'TRIMA', 'WMA', 'ADX', 'ADXR', 'APO', 'AROON_down', 'AROON_up',
+    'AROONOSC', 'BOP', 'CCI', 'CMO', 'DX', 'MACD_real', 'MACD_signal', 'MACD_hist',
+    'MACDEXT_real', 'MACDEXT_signal', 'MACDEXT_hist', 'MACDFIX_real',
+    'MACDFIX_signal', 'MACDFIX_hist', 'MFI', 'MINUS_DI', 'MINUS_DM', 'MOM',
+    'PLUS_DI', 'PLUS_DM', 'PPO', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'RSI14',
+    'STOCH_slowk', 'STOCH_slowd', 'STOCHF_fastk', 'STOCHF_fastd',
+    'STOCHRSI_fastk', 'STOCHRSI_fastd', 'TRIX', 'ULTOSC', 'WILLR', 'ATR',
+    'NATR', 'TRANGE', 'AD', 'ADOSC', 'OBV', 'AVGPRICE', 'MEDPRICE', 'TYPPRICE',
+    'WCLPRICE', 'HT_DCPERIOD', 'HT_DCPHASE', 'HT_PHASOR_inphase',
+    'HT_PHASOR_quadrature', 'HT_SINE_sine', 'HT_SINE_leadsine', 'HT_TRENDMODE',
+    'LINEARREG', 'LINEARREG_ANGLE', 'LINEARREG_INTERCEPT', 'LINEARREG_SLOPE',
+    'STDDEV', 'TSF', 'VAR',
+)
+_NUMERIC_COLUMNS = ('open', 'close', 'high', 'low', 'value', 'volume')
+_NATIVE_UNSTABLE = (
+    'ADX', 'ADXR', 'ATR', 'CMO', 'DX', 'EMA', 'HT_DCPERIOD', 'HT_DCPHASE',
+    'HT_PHASOR', 'HT_SINE', 'HT_TRENDLINE', 'HT_TRENDMODE', 'KAMA', 'MFI',
+    'MINUS_DI', 'MINUS_DM', 'NATR', 'PLUS_DI', 'PLUS_DM', 'RSI', 'STOCHRSI', 'T3',
+)
+
+
+def _candidate_copy(frame):
+    # pandas deep=True не копирует вложенные объекты в object-колонках.
+    result = frame.copy(deep=True)
+    for column, dtype in enumerate(frame.dtypes):
+        if pd.api.types.is_object_dtype(dtype):
+            for ordinal in range(len(frame)):
+                result.iat[ordinal, column] = deepcopy(frame.iat[ordinal, column])
+    result.index = deepcopy(frame.index)
+    result.columns = deepcopy(frame.columns)
+    result.attrs = deepcopy(frame.attrs)
+    return result
+
+
+def _native_profile():
+    try:
+        compatibility = talib.get_compatibility()
+        unstable = {name: talib.get_unstable_period(name) for name in _NATIVE_UNSTABLE}
+    except (AttributeError, KeyError, ValueError):
+        return None
+    if type(compatibility) is not int or compatibility != 0:
+        return None
+    if any(type(value) is not int or value != 0 for value in unstable.values()):
+        return None
+    return dict(compatibility=compatibility, unstable=unstable)
+
+
+def _binary64_frame(frame):
+    # Это отдельная вычислительная копия, а не нормализация retained raw.
+    result = _candidate_copy(frame)
+    for column in _NUMERIC_COLUMNS:
+        converted = []
+        for value in frame[column]:
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
+                return None
+            try:
+                with np.errstate(over='ignore', invalid='ignore'):
+                    number = np.float64(value)
+            except (OverflowError, TypeError, ValueError):
+                return None
+            if not np.isfinite(number):
+                return None
+            if isinstance(value, (int, np.integer)):
+                if int(number) != int(value):
+                    return None
+            elif value != number or (value == 0 and np.signbit(value) != np.signbit(number)):
+                return None
+            converted.append(number)
+        result[column] = np.asarray(converted, dtype=np.float64)
+    return result
+
+
+def _calculation_diagnostic(context, diagnostics, metadata, started, event, outcome, counts, error=None, *, interval=None):
+    if context is None:
+        return
+    try:
+        import run_logging
+        record = None
+        if error is not None:
+            record = run_logging.make_error(context, error, 'tech',
+                code='B2_CALCULATION_BLOCKED' if outcome == 'BLOCKED' else 'B2_CALCULATION_EXCEPTION')
+            if outcome == 'BLOCKED':
+                record['category'] = 'QUALITY'
+            record.update(snapshot_id=metadata.get('snapshot_id'), dataset_id=metadata.get('dataset_id'), interval=interval)
+            record['null_reasons'] = {key: value for key, value in record['null_reasons'].items()
+                                      if record.get(key) is None}
+        elapsed = max(0.0, (perf_counter() - started) * 1000)
+        fields = dict(stage='tech', run_id=metadata.get('run_id'),
+                      snapshot_id=metadata.get('snapshot_id'), dataset_id=metadata.get('dataset_id'),
+                      interval=interval, duration_ms=elapsed, elapsed_ms=elapsed, outcome=outcome,
+                      counts=deepcopy(counts), error=record, fields={})
+        level = 'ERROR' if error is not None else 'INFO'
+        receipt = run_logging.emit_event(context, level, event, 'Локальный расчёт B2.', fields)
+        if (not isinstance(receipt, dict) or receipt.get('accepted') is not True
+                or level == 'ERROR' and receipt.get('confirmed') is not True):
+            diagnostics['status'] = 'FAILED'
+    except Exception:
+        # Не раскрываем исключение диагностики и не заменяем первичную ошибку.
+        diagnostics['status'] = 'FAILED'
+
+
+def calculate_candles(frame, *, spec, metadata, retained_evidence, logging_context=None):
+    """Проверенный локальный вход; файловый/производственный допуск не включён."""
+    started = perf_counter()
+    diagnostics = {'status': 'NOT_CONFIGURED' if logging_context is None else 'RECORDED'}
+    snapshot_spec = {}
+    snapshot_metadata = {}
+    counts = dict(rows_received=None, rows_accepted=None, rows_quarantined=None, pages=None, instruments=None)
+    counts['null_reasons'] = {key: 'NOT_YET_MEASURED' for key in counts}
+    try:
+        candidate = _candidate_copy(frame)
+        snapshot_spec = deepcopy(spec)
+        snapshot_metadata = deepcopy(metadata)
+        snapshot_evidence = deepcopy(retained_evidence)
+        counts['rows_received'] = len(candidate)
+        counts['null_reasons'].pop('rows_received')
+        _calculation_diagnostic(logging_context, diagnostics, snapshot_metadata, started,
+                                'b2_calculation_started', 'STARTED', counts, interval=snapshot_spec.get('interval'))
+        assessment = data_quality.assess_candles(candidate, spec=snapshot_spec,
+            metadata=snapshot_metadata, retained_evidence=snapshot_evidence, logging_context=logging_context)
+        blockers = []
+
+        def block(reason, identifier=None):
+            item = dict(reason=reason, identity_record_id=identifier)
+            if item not in blockers:
+                blockers.append(item)
+
+        checks = assessment['quality_result']['checks']
+        binding_verified = any(check.get('check_id') == 'IDENTITY_BINDING' and check.get('status') == 'PASS'
+                               for check in checks)
+        if not binding_verified:
+            for check in checks:
+                if check.get('check_id') in ('IDENTITY_BINDING_MISMATCH', 'IMMUTABLE_LINEAGE_NOT_VERIFIED'):
+                    block(check['check_id'])
+            block('ORIGINAL_SELECTION_NOT_VERIFIED')
+        if assessment['coverage_assessment']['status'] != 'COMPLETE':
+            block('SOURCE_MEMBERSHIP_NOT_COMPLETE')
+        eligibility = assessment['eligibility']
+        if eligibility['status'] != 'PASS':
+            block('COMPUTATIONAL_ELIGIBILITY_NOT_PASS')
+        records = {}
+        for record in snapshot_metadata.get('identity_records', []):
+            identifier = record.get('record_id')
+            identity = record.get('identity', {})
+            if type(identifier) is not str or not identifier or identifier in records:
+                block('IDENTITY_RECORDS_NOT_VERIFIED')
+            else:
+                records[identifier] = record
+                if (not isinstance(identity, dict)
+                        or any(field not in identity for field in data_quality.IDENTITY_FIELDS)
+                        or type(record.get('interval')) is not int):
+                    block('IDENTITY_RECORDS_NOT_VERIFIED', identifier)
+        if not records or not eligibility['groups']:
+            block('REQUIRED_GROUPS_NOT_AVAILABLE')
+        entries = snapshot_metadata.get('row_bindings', {}).get('entries', [])
+        by_ordinal = {}
+        if binding_verified:
+            for entry in entries:
+                ordinal = entry.get('ordinal')
+                if type(ordinal) is not int or not 0 <= ordinal < len(candidate) or ordinal in by_ordinal:
+                    binding_verified = False
+                    break
+                by_ordinal[ordinal] = entry
+            if len(by_ordinal) != len(candidate):
+                binding_verified = False
+            if not binding_verified:
+                block('ORIGINAL_SELECTION_NOT_VERIFIED')
+        findings = assessment['raw_assessment']['findings']
+        failed_raw = {tuple(item['locator']): item for item in findings if item['status'] == 'FAIL'}
+        quarantined = [] if binding_verified else None
+        row_map = []
+        for ordinal in range(len(candidate)):
+            entry = by_ordinal.get(ordinal) if binding_verified else None
+            source = entry.get('source_row_ref', {}) if entry is not None else None
+            failure = None
+            if source is not None:
+                locator = (entry.get('identity_record_id'), source.get('provenance_ref'), source.get('raw_row_ordinal'))
+                failure = failed_raw.get(locator)
+            if failure is not None:
+                quarantined.append(ordinal)
+            row_map.append(dict(candidate_ordinal=ordinal, original_index=deepcopy(candidate.index[ordinal]),
+                identity_record_id=entry.get('identity_record_id') if entry is not None else None,
+                source_row_ref=deepcopy(source), raw_key=deepcopy(source.get('raw_key')) if source is not None else None,
+                disposition='QUARANTINED' if failure is not None else 'BLOCKED',
+                reasons=deepcopy(failure['reasons']) if failure is not None else ['CALCULATION_NOT_ADMITTED']))
+        result = dict(status='BLOCKED', assessment=assessment, candidate_rows=candidate,
+                      candidate_row_map=row_map, effective_groups=[],
+                      quarantine=dict(candidate_ordinals=quarantined, retained_findings=deepcopy(findings),
+                                      raw_groups=deepcopy(assessment['raw_assessment']['groups']),
+                                      null_reason=None if binding_verified else 'ORIGINAL_SELECTION_NOT_VERIFIED'),
+                      blockers=blockers, production_admission='NOT_ENABLED', diagnostics=diagnostics)
+        seen_groups, seen_ordinals = set(), set()
+        projections = []
+        for group in eligibility['groups']:
+            identifier = group.get('identity_record_id')
+            record = records.get(identifier)
+            ordinals = group.get('candidate_ordinals', [])
+            for reason in group.get('reasons', []):
+                block(reason, identifier)
+            if group.get('status') != 'PASS' or not ordinals:
+                block('REQUIRED_GROUP_NOT_ELIGIBLE', identifier)
+            if record is None or identifier in seen_groups:
+                block('IDENTITY_GROUP_MISMATCH', identifier)
+                continue
+            seen_groups.add(identifier)
+            if (type(group.get('interval')) is not int or group.get('interval') != record.get('interval')
+                    or record.get('interval') != snapshot_spec.get('interval')):
+                block('INTERVAL_MISMATCH', identifier)
+            local_seen, begins = set(), []
+            for ordinal in ordinals:
+                if (type(ordinal) is not int or not 0 <= ordinal < len(candidate)
+                        or ordinal in local_seen or ordinal in seen_ordinals):
+                    block('EFFECTIVE_ORDINAL_INVALID', identifier)
+                    continue
+                local_seen.add(ordinal)
+                seen_ordinals.add(ordinal)
+                entry = by_ordinal.get(ordinal) if binding_verified else None
+                key = entry.get('source_row_ref', {}).get('raw_key', {}) if entry is not None else {}
+                identity = record.get('identity', {})
+                if (entry is None or entry.get('identity_record_id') != identifier
+                        or any(key.get(field) != identity.get(field) for field in data_quality.IDENTITY_FIELDS)
+                        or key.get('interval') != group.get('interval') or ordinal in (quarantined or [])):
+                    block('EFFECTIVE_IDENTITY_MISMATCH', identifier)
+                begins.append(key.get('begin'))
+            if any(type(begin) is not str for begin in begins) or begins != sorted(set(begins)):
+                block('EFFECTIVE_CHRONOLOGY_INVALID', identifier)
+            projections.append((record, list(ordinals)))
+        if set(records) != seen_groups:
+            block('REQUIRED_GROUPS_NOT_AVAILABLE')
+        if binding_verified and seen_ordinals != set(range(len(candidate))) - set(quarantined):
+            block('EFFECTIVE_PROJECTION_INCOMPLETE')
+
+        # Фаза 1: все группы и все шесть числовых колонок до любого вызова TA-Lib.
+        prepared = []
+        if not blockers:
+            for record, ordinals in projections:
+                original = _candidate_copy(candidate.iloc[ordinals]).reset_index(drop=True)
+                numeric = _binary64_frame(original)
+                if numeric is None:
+                    block('BINARY64_INPUT_UNREPRESENTABLE', record['record_id'])
+                prepared.append((record, ordinals, original, numeric))
+        profile = _native_profile() if not blockers else None
+        if not blockers and profile is None:
+            block('B2_NATIVE_PROFILE_UNSUPPORTED')
+
+        # Фаза 2: один доверенный identity/interval на ядро, без группировки по ticker.
+        computed_groups = []
+        if not blockers:
+            for record, ordinals, original, numeric in prepared:
+                if _native_profile() != profile:
+                    block('B2_NATIVE_PROFILE_CHANGED')
+                    break
+                state = dict(phase='CALCULATING', rows=len(numeric), instruments=1, columns=None,
+                             diagnostics=False, native_dtypes=True)
+                enriched = _calculate_frame(numeric, None, state, group_ordinals=[list(range(len(numeric)))])
+                if _native_profile() != profile:
+                    block('B2_NATIVE_PROFILE_CHANGED')
+                    break
+                if len(enriched) != len(numeric) or not enriched.index.equals(pd.RangeIndex(len(numeric))):
+                    raise RuntimeError('B2_INDICATOR_ALIGNMENT_INVALID')
+                indicators = enriched.loc[:, list(_INDICATOR_COLUMNS)].copy(deep=True)
+                computed_groups.append(dict(identity_record_id=record['record_id'],
+                    identity=deepcopy(record['identity']), interval=record['interval'],
+                    candidate_ordinals=list(ordinals), effective_rows=original, indicators=indicators))
+        if not blockers:
+            result['status'] = 'CALCULATED_OFFLINE'
+            result['effective_groups'] = computed_groups
+            for item in row_map:
+                if item['candidate_ordinal'] in seen_ordinals:
+                    item['disposition'], item['reasons'] = 'EFFECTIVE', []
+        else:
+            for item in row_map:
+                if item['disposition'] == 'BLOCKED':
+                    item['reasons'] = list(dict.fromkeys(blocker['reason'] for blocker in blockers))
+        counts.update(rows_accepted=len(seen_ordinals) if not blockers else None,
+                      rows_quarantined=len(quarantined) if quarantined is not None else None,
+                      instruments=len(records))
+        counts['null_reasons'] = {key: 'NOT_VERIFIED_OR_NOT_APPLICABLE' for key, value in counts.items() if value is None}
+        _calculation_diagnostic(logging_context, diagnostics, snapshot_metadata, started,
+            'b2_calculation_returned' if not blockers else 'b2_calculation_blocked', result['status'], counts,
+            ValueError('B2_CALCULATION_BLOCKED') if blockers else None, interval=snapshot_spec.get('interval'))
+        return result
+    except BaseException as error:
+        _calculation_diagnostic(logging_context, diagnostics, snapshot_metadata, started,
+                                'b2_calculation_failed', 'FAILED', counts, error,
+                                interval=snapshot_spec.get('interval') if isinstance(snapshot_spec, dict) else None)
+        raise
+
+
+def calculator(filename, *, logging_context=None):
+    started = perf_counter()
+    state = dict(phase='READING', rows=None, instruments=None, columns=None)
+    versions = 'TA-Lib={}; pandas={}'.format(talib.__version__[:32], pd.__version__[:32])
+    _tech_diagnostic(logging_context, 'calculator_started', 'STOCH 5/3/3; matype 0/0; ' + versions, state, started)
+    try:
+        _calculator_impl(filename, logging_context, state)
+    except Exception as error:
+        _tech_diagnostic(logging_context, 'calculator_failed', 'Расчёт тех метрик завершился ошибкой', state, started, error=error)
+        raise
+    _tech_diagnostic(logging_context, 'calculator_returned', 'Расчёт завершён; columns={}'.format(state['columns']), state, started)
+
+
+def _calculator_impl(filename, logging_context, state):
     path = current_path + "/datasets/" + filename
 
+    if path.endswith('csv') and "~$" not in path:
+        df = pd.read_csv(path)
+    elif path.endswith('xlsx') and "~$" not in path:
+        df = pd.read_excel(path)
 
+    state['rows'] = len(df)
+    state['phase'] = 'CALCULATING'
+    # Старый файловый вход остаётся UNVERIFIED и сохраняет прежние группы ticker.
+    ticker_list = list(set(df['ticker'].to_list()))
+    group_ordinals = [[ordinal for ordinal, selected in enumerate(df['ticker'] == ticker) if selected]
+                      for ticker in ticker_list]
+    df = _calculate_frame(df, logging_context, state, group_ordinals=group_ordinals)
+
+# запись файла в его исходный формат
+    state['columns'] = len(df.columns)
+    state['phase'] = 'WRITING'
+    if path.endswith('csv'):
+        if len(df) > 0:
+            df.to_csv(path,index = False)
+            state['phase'] = 'WRITTEN'
+    elif path.endswith('xlsx'):
+        if len(df) > 0:
+            df.to_excel(path,index = False)
+            state['phase'] = 'WRITTEN'
+    else:
+        print('TECH_UNSUPPORTED_FORMAT')
+    if state['phase'] == 'WRITING': state['phase'] = 'NOT_WRITTEN'
+
+
+def _calculate_frame(df, logging_context, state, *, group_ordinals):
+    # Группы задаёт вызывающий код; внутри ядра нет повторной группировки по ticker.
     ## Overlap Studies
     BBANDS_full_upperband = pd.DataFrame()
     BBANDS_full_middleband = pd.DataFrame()
@@ -148,10 +516,8 @@ def calculator(filename):
 
     
 
-    if path.endswith('csv') and "~$" not in path:
-        df = pd.read_csv(path)
-    elif path.endswith('xlsx') and "~$" not in path:
-        df = pd.read_excel(path)
+    state['rows'] = len(df)
+    state['phase'] = 'CALCULATING'
 
 
     ### Проверка наличия колонки индикатора в df. Убирает в случае наличия. Необходимо для пересчёта индикаторов без перевыгрузки данных
@@ -273,12 +639,11 @@ def calculator(filename):
     if 'BullBearPower' in df.columns: df.drop('BullBearPower', axis=1, inplace=True)
     
 
-    ticker_list = df['ticker'].to_list()
-    ticker_list = list(set(ticker_list))
+    state['instruments'] = len(group_ordinals)
 
-    for i in range(0,len(ticker_list)):
-        ticker = ticker_list[i]
-        df_ticker = df[(df['ticker'] == ticker)]
+    for i, ordinals in enumerate(group_ordinals):
+        instrument_started = perf_counter()
+        df_ticker = df.iloc[ordinals]
 
         ## Overlap Studies Functions
         BBANDS_real_ticker_upperband, BBANDS_real_ticker_middleband, BBANDS_real_ticker_lowerband = talib.BBANDS(df_ticker['close'], timeperiod=5, nbdevup=2, nbdevdn=2, matype=0)
@@ -424,7 +789,7 @@ def calculator(filename):
         STOCH_real_ticker_slowk, STOCH_real_ticker_slowd = talib.STOCH(df_ticker['high'], df_ticker['low'], df_ticker['close'], fastk_period=5, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
         if len(STOCH_real_ticker_slowk) > 0 and len(STOCH_real_ticker_slowd) > 0:
             STOCH_full_slowk = pd.concat([STOCH_full_slowk,STOCH_real_ticker_slowk])
-            STOCH_full_slowd = pd.concat([STOCH_full_slowd,STOCH_real_ticker_slowk])
+            STOCH_full_slowd = pd.concat([STOCH_full_slowd,STOCH_real_ticker_slowd])
 
         STOCHF_real_ticker_fastk, STOCHF_real_ticker_fastd = talib.STOCHF(df_ticker['high'], df_ticker['low'], df_ticker['close'], fastk_period=5, fastd_period=3, fastd_matype=0)
         if len(STOCHF_real_ticker_fastk) > 0 and len(STOCHF_real_ticker_fastd) > 0:
@@ -437,7 +802,7 @@ def calculator(filename):
             STOCHRSI_full_fastd = pd.concat([STOCHRSI_full_fastd,STOCHRSI_ticker_fastd])
 
         TRIX_real_ticker = talib.TRIX(df_ticker['close'], timeperiod=30)
-        if len(TRIX_real_ticker) > 0: _full = pd.concat([TRIX_full, TRIX_real_ticker])
+        if len(TRIX_real_ticker) > 0: TRIX_full = pd.concat([TRIX_full, TRIX_real_ticker])
   
         ULTOSC_real_ticker = talib.ULTOSC(df_ticker['high'], df_ticker['low'], df_ticker['close'], timeperiod1=7, timeperiod2=14, timeperiod3=28)
         if len(ULTOSC_real_ticker) > 0: ULTOSC_full = pd.concat([ULTOSC_full,ULTOSC_real_ticker])
@@ -551,6 +916,10 @@ def calculator(filename):
         # BullBearPower_real_ticker = talib.
         # if len(BullBearPower_real_ticker) > 0: BullBearPower_full = pd.concat([BullBearPower_full,BullBearPower_real_ticker])
 
+
+        if state.get('diagnostics', True):
+            _tech_diagnostic(logging_context, 'calculator_instrument_returned', 'Расчёт инструмента завершён', state, instrument_started,
+                             instrument='instrument-{}'.format(i + 1), rows=len(df_ticker), instruments=1)
 
     ### Overlap Studies Functions
     BBANDS_full_upperband = BBANDS_full_upperband.rename(columns= {0: 'BBANDS_upperband'})
@@ -843,13 +1212,12 @@ def calculator(filename):
     BullBearPower_full = BullBearPower_full.rename(columns= {0: 'BullBearPower'})
     df = df.join(BullBearPower_full)
 
-# запись файла в его исходный формат
-    if path.endswith('csv'):
-        if len(df) > 0: df.to_csv(path,index = False)
-    elif path.endswith('xlsx'):
-        if len(df) > 0: df.to_excel(path,index = False)
-    else:
-        print(path)
+    if state.get('native_dtypes', False) and 'HT_TRENDMODE' in df.columns:
+        # Legacy concat повышает int32 до float64; локальный путь сохраняет native 0/1 и warm-up 0.
+        df['HT_TRENDMODE'] = df['HT_TRENDMODE'].astype(np.int32)
+
+    return df
+
 
 # %%
 ### Ниже блоки для проверки отдельно функции
@@ -869,7 +1237,7 @@ def calculator(filename):
 # real
 
 # %%
-def main(current_path):
+def main(current_path, *, logging_context=None):
     #getting datasets
     datasets_list = [f for f in listdir(current_path + '/datasets') if isfile(join(current_path + '/datasets', f))]
 
@@ -877,15 +1245,14 @@ def main(current_path):
 
     datasets_list = list(set(datasets_list))
 
-    for file in datasets_list:
+    for file_number, file in enumerate(datasets_list, start=1):
         if (file.endswith('csv') and "~$" not in file) or (file.endswith('xlsx') and "~$" not in file):
             try:
-                print('Начал рассчёт файла {}'.format(file))
-                calculator(file)
-            except Exception as e:
-                print (e)
-                print(file)
-                print('------------------------')
+                print('Начал рассчёт файла №{}'.format(file_number))
+                calculator(file, logging_context=logging_context)
+            except Exception:
+                # calculator уже сообщил безопасную диагностику; продолжаем прежний цикл.
+                continue
 
 
 # %%

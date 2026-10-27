@@ -1,8 +1,12 @@
+fail_fast: true
 repos:
-  - repo: https://github.com/mwouts/jupytext
-    rev: v1.19.2
+  - repo: local
     hooks:
-      - id: jupytext
-        args: [--sync]
-        files: \.ipynb$
-        exclude: (^|/)(\.ipynb_checkpoints/|playground\.ipynb$)
+      - id: notebook-sync
+        name: Check notebook pairs and require explicit restaging
+        entry: python -I -B tools/notebook_sync.py hook-check
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        stages: [pre-commit]

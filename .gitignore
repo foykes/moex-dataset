@@ -29,3 +29,7 @@ datasets/100years_data_1h_interval.csv
 datasets/100years_data_10m_interval.csv
 playground.ipynb
 playground.py
+.f1/
+.f2/
+.f-log/
+.f3/

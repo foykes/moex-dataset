@@ -3,6 +3,8 @@
 <h1 align="center">Выгрузка данных торгов акциями с Мосбиржи (MOEX)</h1>
 Используется официальное API https://iss.moex.com/iss/reference/.
 
+[Data contracts](docs/dataset_contracts.md) · [Coordination and acceptance](docs/coordination.md)
+
 <h3 align="center">Данные приготовлены в срезах:</h3>
 
 1) Выгрузка 10 лет с интервалом (свечкой) 1 день
@@ -19,7 +21,7 @@
 *✔️ Добавить все остальные типы ценных бумаг
 * Обогатить данные тех индикаторами
     *✔️ RSI(14)
-    *✔️ STOCH(9,6)
+    *✔️ STOCH(5,3,3), matype 0/0: `STOCH_slowk` — первый, `STOCH_slowd` — второй output TA-Lib
     *✔️ STOCHRSI(14)
     *✔️ MACD(12,26)
     *✔️ ADX(14)
@@ -59,3 +61,5 @@
 
 Парсинг данных о дивидендах с доход.ру:
 /dividends/dohod.ru
+
+[Offline tests and safety boundaries](docs/testing.md)

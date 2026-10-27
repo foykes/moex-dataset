@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "schema": ["ticker", "begin", "close"],
+  "previous": {
+    "text": "ticker,begin,close\nSEED,2024-01-01 10:00:00,100.0\n",
+    "bytes": 50,
+    "sha256": "91ad749933aa05b9ad736e2f477f964f35fca09b2e750242bdec1249e84177e2",
+    "rows": [["SEED", "2024-01-01 10:00:00", "100.0"]],
+    "keys": [["SEED", "2024-01-01 10:00:00"]]
+  },
+  "previous_checkout_variants": [
+    {"bytes": 50, "sha256": "91ad749933aa05b9ad736e2f477f964f35fca09b2e750242bdec1249e84177e2"},
+    {"bytes": 52, "sha256": "9b47f248a78dd2062327ed5f91894820863a9291412e7c73cb87012b4b41e967"}
+  ],
+  "replacement": {
+    "text": "ticker,begin,close\nSEED,2024-01-01 10:00:00,100.0\nA,2024-01-01 10:00:00,200.0\n",
+    "bytes": 78,
+    "sha256": "f036dd3db5822d92ba499b38bddcbf8a64ef0f9cb431c06c3cd3db9ae6b7d91d",
+    "rows": [["SEED", "2024-01-01 10:00:00", "100.0"], ["A", "2024-01-01 10:00:00", "200.0"]],
+    "keys": [["SEED", "2024-01-01 10:00:00"], ["A", "2024-01-01 10:00:00"]]
+  },
+  "two_updates": {
+    "text": "ticker,begin,close\nSEED,2024-01-01 10:00:00,100.0\nA,2024-01-01 10:00:00,200.0\nB,2024-01-01 10:00:00,300.0\n",
+    "bytes": 106,
+    "sha256": "1d921e43e234a08dee03c61b716acfe60511ac3b40d2da02974a3659e476d206",
+    "rows": [["SEED", "2024-01-01 10:00:00", "100.0"], ["A", "2024-01-01 10:00:00", "200.0"], ["B", "2024-01-01 10:00:00", "300.0"]],
+    "keys": [["SEED", "2024-01-01 10:00:00"], ["A", "2024-01-01 10:00:00"], ["B", "2024-01-01 10:00:00"]]
+  },
+  "name_oracle": {
+    "prefix": "Global\\MDS-D1-v1-",
+    "preimage_hex": "4d44532d44312d7631000807060504030201000102030405060708090a0b0c0d0e0f",
+    "digest": "SHA256",
+    "identity": "FILE_ID_INFO",
+    "excludes": ["cwd", "worktree", "environment", "run_id", "slot", "display_path", "PID", "session", "salt"],
+    "negative_scope": "Reject synthetic alternate names before any native call"
+  }
+}

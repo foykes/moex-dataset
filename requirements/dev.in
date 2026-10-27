@@ -1,0 +1,6 @@
+-r test.in
+# Match the existing notebook pairing hook. These tools are not runtime dependencies.
+jupytext==1.19.2
+pre-commit==4.3.0
+nbconvert==7.16.6
+jupyter-core==5.8.1

@@ -14,6 +14,41 @@
 # ---
 
 # %%
+import argparse, importlib.util
+from pathlib import Path
+import sys
+
+
+def _diagnostic_gate():
+    parser = argparse.ArgumentParser(description='Явный live-read профиль MOEX diagnostics')
+    parser.add_argument('--allow-live-diagnostics', action='store_true')
+    parser.add_argument('--profile', choices=['live-read'])
+    arguments = parser.parse_args()
+    if not arguments.allow_live_diagnostics or arguments.profile != 'live-read':
+        parser.error('Нужны --allow-live-diagnostics --profile live-read; отдельно согласуйте ограниченный профиль')
+    parser.error('Ограниченный live-read профиль не согласован; параметры CLI не дают разрешения на запуск')
+
+
+def _offline_bootstrap():
+    root = Path(__file__).resolve().parent
+    guard = sys.modules.get('mds_offline_guard')
+    if guard is None:
+        specification = importlib.util.spec_from_file_location('mds_offline_guard', root / 'tools/offline_guard.py')
+        guard = importlib.util.module_from_spec(specification)
+        sys.modules['mds_offline_guard'] = guard
+        specification.loader.exec_module(guard)
+    guard.ensure_context(root, lane='f3', role='entry', mode='run')
+
+
+_offline_bootstrap()
+if __name__ == '__main__':
+    try:
+        _diagnostic_gate()
+    except SystemExit as error:
+        sys.modules['mds_offline_guard'].finish(error.code)
+        raise
+
+# %%
 import unittest, json, os, sys
 current_path = sys.path[0]
 
@@ -23,8 +58,8 @@ current_path = sys.path[0]
 # %%
 import data_gathering, pandas as pd
 
-
 # %%
+@unittest.skip('Live MOEX diagnostics: отдельно согласуйте ограниченный live-read профиль; import не разрешает запуск')
 class data_gathering___moex_query(unittest.TestCase):
    def tests_moex_query(self):
         # отправляем тестовую строку в функцию
@@ -44,8 +79,8 @@ class data_gathering___moex_query(unittest.TestCase):
         control_len = len(df_ticker_control)
         self.assertEqual(result_len, control_len)
 
-
 # %%
+@unittest.skip('Live MOEX diagnostics: отдельно согласуйте ограниченный live-read профиль; import не разрешает запуск')
 class data_gathering___moex(unittest.TestCase):
    def tests_moex_(self):
     ticker_in = "YDEX"
@@ -60,19 +95,22 @@ class data_gathering___moex(unittest.TestCase):
     # ticker_list = list(set(ticker_list))
     self.assertTrue(len(df_ticker) > 0 )
 
+# %%
+def main():
+    # Рабочие действия выполняются только при явном запуске скрипта.
+    ticker_in = "SBER"
+    years = 1
+    interval = 24
+    ticker_type = "Акции"
+    df_ticker = data_gathering.moex(ticker_in, ticker_type, years, interval)
+    df_ticker
+
+    # запускаем тестирование
+    unittest.main()
 
 # %%
-ticker_in = "SBER"
-years = 1
-interval = 24
-ticker_type = "Акции"
-df_ticker = data_gathering.moex(ticker_in, ticker_type, years, interval)
-df_ticker
-
-# %%
-# запускаем тестирование
-if __name__ == '__main__':
-    unittest.main() 
+if __name__ == "__main__":
+    main()
 
 # %%
 # SBERP

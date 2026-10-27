@@ -1,0 +1,140 @@
+name: F3 offline Windows checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    # Activation/network SETUP require a separate grant. Skipped is NOT VERIFIED.
+    if: vars.MDS_F3_CI_SETUP_APPROVED == 'true'
+    name: offline-${{ matrix.check }}
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - lane: f1
+            check: f1
+          - lane: f2
+            check: f2
+          - lane: flog
+            check: f-log
+          - lane: f3
+            check: f3
+    env:
+      TASK_LANE: ${{ matrix.lane }}
+      TASK_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      TASK_EVENT_SHA: ${{ github.sha }}
+      TASK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+      MDS_ENVIRONMENT_PROFILE: dev
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify actual exact source revision
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Preserve Windows checkout normalization when offline Git ignores system config.
+          git config --local core.autocrlf true
+          if ($LASTEXITCODE -ne 0) { throw 'Checkout line-ending policy failed' }
+          $taskHead = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $taskHead -ne $env:TASK_EXPECTED_SHA) { throw 'Exact source SHA mismatch' }
+      - name: SETUP exact reviewed baseline for offline regressions
+        if: matrix.lane == 'f3'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $taskBaseline = '07945ed4ded747145b40d7a7c25e8ce97abeaa0d'
+          git -c core.hooksPath=NUL fetch --no-tags --depth=1 origin $taskBaseline
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed baseline fetch failed' }
+          $taskFetched = git rev-parse "$taskBaseline^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $taskFetched -ne $taskBaseline) { throw 'Reviewed baseline identity mismatch' }
+          $taskHead = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $taskHead -ne $env:TASK_EXPECTED_SHA) { throw 'SETUP changed exact source SHA' }
+      - name: SETUP approved hash-locked Windows dev environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath '.f1') { throw 'CI requires fresh worktree-local F1 roots' }
+          New-Item -ItemType Directory -Path '.f1/downloads','.f1/tmp','.f1/cache','.f1/evidence' -Force | Out-Null
+          $env:TEMP = (Resolve-Path '.f1/tmp').Path
+          $env:TMP = $env:TEMP
+          $env:PIP_CONFIG_FILE = 'nul'
+          $taskArchive = '.f1/downloads/python-3.14.8-amd64.zip'
+          Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.14.8/python-3.14.8-amd64.zip' -OutFile $taskArchive -TimeoutSec 60 -MaximumRedirection 0 -ErrorAction Stop
+          $taskHash = (Get-FileHash -LiteralPath $taskArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($taskHash -ne '4873947a8afc037846b180312b83c744a4146a851cfd316a75c3125a4d8299da') { throw 'Python archive hash mismatch' }
+          Expand-Archive -LiteralPath $taskArchive -DestinationPath '.f1/python' -ErrorAction Stop
+          $taskBase = (Resolve-Path '.f1/python/python.exe').Path
+          & $taskBase -I -B -S -c 'import struct,sys,sysconfig; assert sys.version_info[:3]==(3,14,8); assert struct.calcsize("P")==8; assert sysconfig.get_config_var("Py_GIL_DISABLED")==0; assert sys._is_gil_enabled()'
+          if ($LASTEXITCODE -ne 0) { throw 'Interpreter profile failed' }
+          & $taskBase -I -B -m venv '.f1/venv-dev'
+          if ($LASTEXITCODE -ne 0) { throw 'Fresh venv failed' }
+          $taskPython = (Resolve-Path '.f1/venv-dev/Scripts/python.exe').Path
+          $taskPip = & $taskPython -I -B -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw 'pip provenance failed' }
+          if ($taskPip -notmatch '^pip 26\.2\.1 ') { throw 'Unexpected bootstrap pip' }
+          & $taskPython -I -B -m pip --isolated --no-cache-dir download --retries 0 --timeout 60 --only-binary=:all: --index-url https://pypi.org/simple --require-hashes --dest '.f1/wheelhouse' -r 'requirements/windows-cp314-dev.lock'
+          if ($LASTEXITCODE -ne 0) { throw 'Hash-locked wheel download failed' }
+          & $taskPython -I -B -m pip --isolated --no-cache-dir install --no-index --find-links '.f1/wheelhouse' --only-binary=:all: --require-hashes -r 'requirements/windows-cp314-dev.lock'
+          if ($LASTEXITCODE -ne 0) { throw 'Offline lock install failed' }
+          & $taskPython -I -B -m pip --isolated check
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency check failed' }
+          "MDS_F3_PYTHON=$taskPython" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Path '.f1/evidence/setup' | Out-Null
+          $taskFiles = Get-ChildItem -LiteralPath '.f1/python','.f1/venv-dev','.f1/wheelhouse' -Recurse -File | Sort-Object FullName
+          $taskManifest = foreach ($taskFile in $taskFiles) {
+            $taskRelative = [IO.Path]::GetRelativePath((Get-Location).ProviderPath, $taskFile.FullName).Replace('\','/')
+            $taskHash = (Get-FileHash -LiteralPath $taskFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$taskRelative $taskHash"
+          }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) '.f1/evidence/setup/environment-manifest.txt'), $taskManifest, [Text.UTF8Encoding]::new($false))
+      - name: OFFLINE guarded native lane
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          [Environment]::SetEnvironmentVariable('PYTEST_ADDOPTS', $null, 'Process')
+          [Environment]::SetEnvironmentVariable('PYTEST_PLUGINS', $null, 'Process')
+          & $env:MDS_F3_PYTHON -I -B -X utf8 tools/offline_tests.py --lane $env:TASK_LANE
+          if ($LASTEXITCODE -ne 0) { throw 'Offline lane or guard evidence failed' }
+      - name: Verify immutable environment and unchanged source
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:MDS_F3_PYTHON) { throw 'SETUP did not finish; offline evidence unavailable' }
+          $taskBefore = [IO.File]::ReadAllLines((Join-Path (Get-Location) '.f1/evidence/setup/environment-manifest.txt'))
+          $taskFiles = Get-ChildItem -LiteralPath '.f1/python','.f1/venv-dev','.f1/wheelhouse' -Recurse -File | Sort-Object FullName
+          $taskAfter = foreach ($taskFile in $taskFiles) {
+            $taskRelative = [IO.Path]::GetRelativePath((Get-Location).ProviderPath, $taskFile.FullName).Replace('\','/')
+            $taskHash = (Get-FileHash -LiteralPath $taskFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$taskRelative $taskHash"
+          }
+          if (Compare-Object $taskBefore $taskAfter) { throw 'Offline phase changed immutable environment' }
+          $taskHead = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $taskHead -ne $env:TASK_EXPECTED_SHA) { throw 'Source HEAD changed' }
+          git diff --exit-code HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked source changed during checks' }
+          $taskFingerprint = (Get-FileHash -LiteralPath '.f1/evidence/setup/environment-manifest.txt' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "tested_sha=$taskHead; event_sha=$env:TASK_EVENT_SHA; pr_head_sha=$env:TASK_PR_HEAD_SHA; environment_sha256=$taskFingerprint" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+  notebook-sync:
+    # Dependent invocation keeps total active hosted jobs <=2 even on failure.
+    needs: offline
+    if: always() && vars.MDS_F3_CI_SETUP_APPROVED == 'true'
+    uses: ./.github/workflows/notebook-sync.yml
