@@ -1,0 +1,30 @@
+{
+  "direction": "A4_EARLIER",
+  "status": "WIP_PRESERVED_NOT_ACCEPTED_NOT_EXECUTED",
+  "source_head": "e7800add6ba700f37656cba3517b4e6db83ca413",
+  "source_index_preserved": true,
+  "source_worktree_preserved": true,
+  "encoding_policy": "exact original worktree bytes in Git blobs; physical versus normalized identities remain distinct",
+  "files": [
+    {
+      "path": "docs/a4_catalogue_snapshot.md",
+      "bytes": 13325,
+      "sha256": "cfcb0dc598530fe526fc3ff026f5169f4d03a310df71810999cc3de704e2ffcb",
+      "blob": "ab463c9483458d2a8fea91f62760c22d493a382e"
+    },
+    {
+      "path": "tests/A/test_catalogue_snapshot.py",
+      "bytes": 29374,
+      "sha256": "a5e878b0fcb3a965ab24b1124d00e28176b9e65a3a68bc3b5c8b1872c73de37c",
+      "blob": "8ff435ac742f08f36b5413d99f99ac6c6755270d"
+    },
+    {
+      "path": "tests/fixtures/a4/catalogue_cases.json",
+      "bytes": 1626,
+      "sha256": "864d6bf176bb0fc8e62eb67fa84fd4995a80c6828cab0c07bd2b68ee5cd27c92",
+      "blob": "c9fb0fc8f060a540abaaa320b2f6aa668e70f90a"
+    }
+  ],
+  "execution_authority": false,
+  "notes": "Historical grants and test results remain scoped to their original source manifests. This snapshot grants no execution, implementation adoption, ownership release, CI, merge or production."
+}

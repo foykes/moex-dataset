@@ -1,0 +1,39 @@
+{
+  "fixture_version": "A4_LITERAL_CASES_V1",
+  "mixed": {
+    "columns": ["TRADE_CODE", "SUPERTYPE", "NAME", "SOURCE_ADDED"],
+    "rows": [
+      [" SBER ", "Акции", "Первый,\n\"эмитент\"", "00123"],
+      ["SBER", "Акции", "#N/A", "=1+1"],
+      ["DR01", "Депозитарные расписки", "+SUM(A1)", "-42"],
+      ["BOND", "Облигации", "@SUM(A1)", "NaN"],
+      ["FUND", "Паи", "None", "nan"],
+      ["FUT", "Фьючерсы", "", "0"],
+      ["UNKNOWN", "НОВЫЙ_КЛАСС", "00123", "=HYPERLINK(\"https://example.invalid\")"],
+      ["", "Акции", "blank code stays", ""],
+      ["NaN", "Акции", "literal ticker", ""],
+      ["SBER", "Акции", "duplicate kept", ""],
+      ["lower", "Акции", "lower stays", ""]
+    ],
+    "stocks": [
+      [" SBER ", "Акции", "Первый,\n\"эмитент\"", "00123"],
+      ["SBER", "Акции", "#N/A", "=1+1"],
+      ["DR01", "Депозитарные расписки", "+SUM(A1)", "-42"],
+      ["", "Акции", "blank code stays", ""],
+      ["NaN", "Акции", "literal ticker", ""],
+      ["SBER", "Акции", "duplicate kept", ""],
+      ["lower", "Акции", "lower stays", ""]
+    ]
+  },
+  "undeclared_utf8": {
+    "source_text": "TRADE_CODE,SUPERTYPE\r\nSBER,Акции\r\n",
+    "columns": ["TRADE_CODE", "SUPERTYPE"],
+    "rows": [["SBER", "РђРєС†РёРё"]],
+    "stocks": []
+  },
+  "simple_text": "TRADE_CODE,SUPERTYPE\r\nSBER,Акции\r\n",
+  "invalid_csv": [
+    "TRADE_CODE,SUPERTYPE\r\n\"SBER,Акции\r\n",
+    "TRADE_CODE,SUPERTYPE\r\n\"SBER\"x,Акции\r\n"
+  ]
+}
