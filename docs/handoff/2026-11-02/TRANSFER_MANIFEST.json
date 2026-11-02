@@ -1,0 +1,1327 @@
+{
+  "schema_version": 1,
+  "repository": "foykes/moex-dataset",
+  "repository_url": "https://github.com/foykes/moex-dataset",
+  "created_at": "2026-11-02T07:39:47.096076+00:00",
+  "status": "PARTIAL_HANDOFF",
+  "handoff": {
+    "branch": "handoff/moex-migration-20261102",
+    "commit_sha": null,
+    "commit_sha_role": "Will bind immutable documentation payload commit in a validation-only successor; containing commit is identified externally to avoid self-reference",
+    "remote_verified": false
+  },
+  "main": {
+    "remote_sha": "e7800add6ba700f37656cba3517b4e6db83ca413",
+    "tree": "95a0e09b19be7350f2af6cb229d7486a242ae16b",
+    "original_local_sha": "5e4eb07fa24e9ecf1c77c2fefb0adfde453ff1c4",
+    "original_local_unchanged": true
+  },
+  "counts": {
+    "original_registered_worktrees": 68,
+    "additional_independent_checkouts": 6,
+    "original_shared_local_branches": 67,
+    "modified_tracked_source_files": 13,
+    "untracked_source_files_outside_primary": 11,
+    "source_files_checkpointed": 24,
+    "original_primary_untracked_entries": 4758,
+    "initial_commits_absent_from_origin_history": 17,
+    "initial_unreachable_commits": 5,
+    "new_source_checkpoint_commits": 3,
+    "preservation_refs": 22
+  },
+  "branches": [
+    {
+      "direction": "D2_WINDOWS",
+      "branch": "handoff/d2-windows-wip-20261102",
+      "sha": "c55768dc0e3d8d84c4cd86f4e25d29b8a4964e55",
+      "parent": "42830d91b4c701b899cbadb5ebdf8829eec6b5cf",
+      "tree": "74bca15644a291a8a9408dfec3acb6ae104efef6",
+      "files": [
+        {
+          "path": "docs/coordination.md",
+          "bytes": 51594,
+          "sha256": "e7f28b91bdbc83ca7a9fa5b07819d2f714e1ad0eb9f0d65357a1fd579ce69d66",
+          "blob": "b731bcb7f98307d181735f1746667db2952e64ec"
+        },
+        {
+          "path": "docs/testing.md",
+          "bytes": 16123,
+          "sha256": "c16bcc31b2a7cff9f364068cc07ff7f9380f86412974accedb3ace8874b85f02",
+          "blob": "bbe379dd6aaa275daf27d217d42e8e6f230fae7e"
+        },
+        {
+          "path": "main.py",
+          "bytes": 9910,
+          "sha256": "ac83dbbab37c758d6f9e231959035d7e1a1ac9822123a361f8847c419455822a",
+          "blob": "3a4f3c48e9e8d6022d8b60cea5663a5a46086b02"
+        },
+        {
+          "path": "tools/offline_guard.py",
+          "bytes": 295279,
+          "sha256": "c468737861175633180f89b0629d09490c9b1024ad4c23d19cc960c7a822c07b",
+          "blob": "b45d7f5b001a4e5196efd0742981c290516ae22e"
+        },
+        {
+          "path": "tools/offline_tests.py",
+          "bytes": 30158,
+          "sha256": "8ad562e43f9065a321855cd303838fde8d78002a9f334f5e5fbb082af0d48d55",
+          "blob": "a974a496ac644c1c8e046bc070aa05649949bc86"
+        },
+        {
+          "path": "upload.ipynb",
+          "bytes": 115458,
+          "sha256": "05e0ec1c440341eb7d4ffc4a34289c7d5fcba6d7dce133e47db976eba2d9aff3",
+          "blob": "088211e9a717b215ae0471a54e871aca0d0a5d38"
+        },
+        {
+          "path": "upload.py",
+          "bytes": 98072,
+          "sha256": "70c2b89bbc0543ce462c4ef5b650c8111af080cb2daabea3d8c018fc83b66c53",
+          "blob": "91479d5e80eeb5e14516dab2d3b7e9183ff26817"
+        },
+        {
+          "path": "docs/d2_supervision.md",
+          "bytes": 18005,
+          "sha256": "8246684f96b2ed02d003e90fc5c5bf58a3464a90896840b3917d19c0e9f0b6fa",
+          "blob": "2640a26772f5af88d4bca27aad40a28969ccb265"
+        },
+        {
+          "path": "tests/d2/conftest.py",
+          "bytes": 2060,
+          "sha256": "55b41c27ffa827a654c50f14a5a14127e37c0c214837858ea1ba0e39ac29ca60",
+          "blob": "d961a07714b1e2e2fc4d9941b32c0f871abf9734"
+        },
+        {
+          "path": "tests/d2/d2_worker.py",
+          "bytes": 43159,
+          "sha256": "f804ac5d9845cee3344d58081e1fbdf61a3a8183f28065ebf5d7b3febed5efe7",
+          "blob": "0e2b9f98ff4319a25135c018a7b996a46465e794"
+        },
+        {
+          "path": "tests/d2/test_guard_admission.py",
+          "bytes": 22119,
+          "sha256": "e972105de573cf74bfe30467ff7a23ab8f363001b15b5f2b105824b089f47cb0",
+          "blob": "1cdc01c2c8e1be8433203fad2844a87bc6cb0aff"
+        },
+        {
+          "path": "tests/d2/test_logging_contract.py",
+          "bytes": 8909,
+          "sha256": "8abcf072ce4e5d2287e9b27e0f5409d69803a46204a937bea0ccc8b2facea7ba",
+          "blob": "489e8d480f85815188c6893c876018adcdcf4f69"
+        },
+        {
+          "path": "tests/d2/test_supervision.py",
+          "bytes": 53022,
+          "sha256": "31792809517c39e380227c144c95a38901008ef93d66c4d784100385c144d5bb",
+          "blob": "146ec6a2472dfa60d8cd186b2fbea767ddea7f2e"
+        },
+        {
+          "path": "tests/d2/test_targets.py",
+          "bytes": 16167,
+          "sha256": "ec98d8430b01d42d0f3b39509332d40a8deeb69acfbdca68b36fcf216d7d1e57",
+          "blob": "97171f2a9140201d727804a95e52594367729d94"
+        },
+        {
+          "path": "tests/fixtures/d2/expected.json",
+          "bytes": 11717,
+          "sha256": "fb90b362303c9afb33b2594009d748b79a28cadddaed9303e62944a8822bc2d8",
+          "blob": "abb68d48b36237cfd6a51993bcfaf0a6ae919934"
+        }
+      ],
+      "receipt_path": "handoff/snapshots/2026-11-02/D2_WINDOWS_RECEIPT.json",
+      "kind": "dirty_checkpoint",
+      "status": "WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "D2_FIXTURES",
+      "branch": "handoff/d2-fixtures-wip-20261102",
+      "sha": "042c606a97987e135653df61f54d04e3cb3e65c8",
+      "parent": "f3dd8e206b40e31c40d5da8a8a3ee982a6c1919f",
+      "tree": "ce1c322db008fd12ca51a66933291b2680784f35",
+      "files": [
+        {
+          "path": "tests/f2/test_entrypoint_contract.py",
+          "bytes": 16000,
+          "sha256": "afe6d146e705dc4a8e3b1e7a41a6df84c83947ed770312abcde1b1c59f2344b4",
+          "blob": "c029b57cd4f217a5a454da88ef15be36c25332da"
+        },
+        {
+          "path": "tests/logging/_probe.py",
+          "bytes": 15446,
+          "sha256": "9a56adb7f7095b8d4877448ad7b3162a212abf0f5601433d5c54fd7d98d5215a",
+          "blob": "74b2501e218febe0e38557c57b33e4f7c3cc4738"
+        },
+        {
+          "path": "tests/logging/test_entrypoint.py",
+          "bytes": 24776,
+          "sha256": "0e53868f024a3774bb12efec6646ba5de03e0aa4b7ef4004a2d9bfe42f330d4b",
+          "blob": "558df76560895b72b05555b88e1bc5f7b8af794a"
+        },
+        {
+          "path": "tests/shared/c1/test_main_logging.py",
+          "bytes": 21731,
+          "sha256": "3f3ccf743ff8763240a6aa6bda348c7412fee36725615fb10be9d0b0d5d256eb",
+          "blob": "95bcf3f5c2d9a759cab7a4fa9f1d4568b4c3987d"
+        },
+        {
+          "path": "tests/shared/c2/test_dohod_compatibility.py",
+          "bytes": 20140,
+          "sha256": "654ff516581088e83d8a79090294d4ed82df9e73bff0b985c4dffa0aaa088503",
+          "blob": "9b07edad48568d340f2f4f83093332e98c0f098b"
+        },
+        {
+          "path": "tests/shared/c2/test_source_result.py",
+          "bytes": 29249,
+          "sha256": "7e9cc5fac63349fcfbced5a14f81dcf307d7a786c767382a8c328d38aa627739",
+          "blob": "79f5cceb01b6bd1b924760dadad733de5a94bd11"
+        }
+      ],
+      "receipt_path": "handoff/snapshots/2026-11-02/D2_FIXTURES_RECEIPT.json",
+      "kind": "dirty_checkpoint",
+      "status": "WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "A4_EARLIER",
+      "branch": "handoff/a4-earlier-wip-20261102",
+      "sha": "af5669ba47dba301dcbe413d5b63f4b75bbd677b",
+      "parent": "e7800add6ba700f37656cba3517b4e6db83ca413",
+      "tree": "a34854b548593c54829359081abeaa8c440824a5",
+      "files": [
+        {
+          "path": "docs/a4_catalogue_snapshot.md",
+          "bytes": 13325,
+          "sha256": "cfcb0dc598530fe526fc3ff026f5169f4d03a310df71810999cc3de704e2ffcb",
+          "blob": "ab463c9483458d2a8fea91f62760c22d493a382e"
+        },
+        {
+          "path": "tests/A/test_catalogue_snapshot.py",
+          "bytes": 29374,
+          "sha256": "a5e878b0fcb3a965ab24b1124d00e28176b9e65a3a68bc3b5c8b1872c73de37c",
+          "blob": "8ff435ac742f08f36b5413d99f99ac6c6755270d"
+        },
+        {
+          "path": "tests/fixtures/a4/catalogue_cases.json",
+          "bytes": 1626,
+          "sha256": "864d6bf176bb0fc8e62eb67fa84fd4995a80c6828cab0c07bd2b68ee5cd27c92",
+          "blob": "c9fb0fc8f060a540abaaa320b2f6aa668e70f90a"
+        }
+      ],
+      "receipt_path": "handoff/snapshots/2026-11-02/A4_EARLIER_RECEIPT.json",
+      "kind": "dirty_checkpoint",
+      "status": "WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-U",
+      "branch": "handoff/f3-u-20261102",
+      "sha": "a1071014c536c27c5cc1311e003d08a21346db0d",
+      "source_branch": "codex/u-f3-native-completion",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-provenance",
+      "branch": "handoff/f3-provenance-20261102",
+      "sha": "f8717a1ac122b3c65881e22e079905f0894fde98",
+      "source_branch": "codex/u-f3-native-provenance",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-aggregate",
+      "branch": "handoff/f3-aggregate-20261102",
+      "sha": "7f9e63d8a43372f4c66788d803ecfad023b0c053",
+      "source_branch": "codex/f3-aggregate-r2",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-retention",
+      "branch": "handoff/f3-retention-20261102",
+      "sha": "b84d2034b70396c22237975c7b6bb19c6e2a4411",
+      "source_branch": "codex/f3-retention-r3",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "LNX-preserved",
+      "branch": "handoff/lnx-02-preserved-20261102",
+      "sha": "bacd494c44c04ce0ae9320e715a6cebb34dbc0c6",
+      "source_branch": "codex/lnx-02-h0-preserved-bacd494",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "B2-prep",
+      "branch": "handoff/b2-prep-20261102",
+      "sha": "9470d04e064e4c8b7c3b700d039116ed06c49802",
+      "source_branch": "codex/mds-b2-03-prep",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "C2-integration",
+      "branch": "handoff/c2-integration-20261102",
+      "sha": "1ed9ff6f6ea2788447c4a0c81cc1b8e91c8d58d8",
+      "source_branch": "codex/mds-c2-03c-integration-109-223be5e",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "Workspace-guides",
+      "branch": "handoff/workspace-guides-20261102",
+      "sha": "ddb6906e3ec6511302f1b85ae8e20b03b5d7965a",
+      "source_branch": "codex/prepare-workspace",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "D2-frozen-base",
+      "branch": "handoff/d2-base-20261102",
+      "sha": "42830d91b4c701b899cbadb5ebdf8829eec6b5cf",
+      "source_branch": "codex/mds-d2-01",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "LNX-access-anchor",
+      "branch": "handoff/lnx-access-anchor-20261102",
+      "sha": "6323e89380dea6fc37d92efd0b94ef5f81b483f4",
+      "source_branch": "codex/lnx-02-access-anchor-6323",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "LNX-h0prime",
+      "branch": "handoff/lnx-h0prime-20261102",
+      "sha": "57d83501f4a1a4964876bb510055fadb51c33aa9",
+      "source_branch": "codex/lnx-02-h0prime-preserved-57d835",
+      "kind": "exact_anchor",
+      "status": "HISTORICAL_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-recovered-WIP",
+      "branch": "handoff/recovered-f3-034c560c-20261102",
+      "sha": "034c560cc122306067416acefaa980428d7ec4df",
+      "kind": "recovered_commit",
+      "status": "HISTORICAL_WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-recovered-WIP",
+      "branch": "handoff/recovered-f3-01e7de77-20261102",
+      "sha": "01e7de77addf7e995505788bd0a7f4b15a6ac50b",
+      "kind": "recovered_commit",
+      "status": "HISTORICAL_WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-recovered-WIP",
+      "branch": "handoff/recovered-f3-e42ed09f-20261102",
+      "sha": "e42ed09f4d4b555e86e5333aa385755213c2957f",
+      "kind": "recovered_commit",
+      "status": "HISTORICAL_WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-recovered-WIP",
+      "branch": "handoff/recovered-f3-f8743d79-20261102",
+      "sha": "f8743d79843ececa1656a8a5d4cf6f2a6e854294",
+      "kind": "recovered_commit",
+      "status": "HISTORICAL_WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "F3-recovered-WIP",
+      "branch": "handoff/recovered-f3-8cf750a1-20261102",
+      "sha": "8cf750a15cdba036c4c08b8a1daac108ec66c168",
+      "kind": "recovered_commit",
+      "status": "HISTORICAL_WIP_NOT_ACCEPTED",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "C1-preview-9dc",
+      "branch": "handoff/c1-preview-9dc-20261102",
+      "sha": "96047a56a2540ea46cde412c3bcdf07ba941267f",
+      "kind": "historical_independent_clone_preview",
+      "status": "SYNTHETIC_INTEGRATION_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "C1-preview-2d3",
+      "branch": "handoff/c1-preview-2d3-20261102",
+      "sha": "f60859006b1b431365e65d5ca2a76cb3e433a48e",
+      "kind": "historical_independent_clone_preview",
+      "status": "SYNTHETIC_INTEGRATION_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    },
+    {
+      "direction": "A2-detached-preview",
+      "branch": "handoff/a2-merge-preview-20261102",
+      "sha": "dacfed4b969908b517453ecdee43ddda211c887e",
+      "kind": "historical_detached_preview",
+      "status": "SYNTHETIC_INTEGRATION_NOT_NEW_ACCEPTANCE",
+      "remote_present_at_capture": false,
+      "remote_verified": false
+    }
+  ],
+  "original_local_branches": [
+    {
+      "name": "codex/a2-103-integration-check",
+      "sha": "4e6e4f247dbcea43babdbd159a287f51c73c3243",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/a2-98-integration-check",
+      "sha": "7e77f6f37e95554070844b160ea503af7942e7c3",
+      "upstream": "origin/codex/a2-98-integration-check",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/a3-closeout-f07-native",
+      "sha": "e29951f7f033bd80b08d0663a06b35af493ea3c1",
+      "upstream": "origin/codex/a3-closeout-f07-native",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/b1-02-integration-ci",
+      "sha": "60bbf84714d437f12ad1988340af956a641ef57e",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/b1-02-integration-ci-r2",
+      "sha": "dd25f3406c5529f41cf8badaa68acdeb4bcd1705",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/b1-f3-reference-p0",
+      "sha": "f1bdf95aa84bbdd875f2bf1eeaf1b00f379f259d",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/c2-integration-i1-e3d4d2a-20261022",
+      "sha": "e9e375e9701f8bb64a3488e05942b38f908f0dec",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/c2-integration-i2-e3d4d2a-20261022",
+      "sha": "0bc086b5af5c271f6f16467cb43b9cee327d07f6",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/c2-run-state-r0",
+      "sha": "577d46fe13be24934e0de4a7b6a662fded69d285",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/c2-runtime-contract-u",
+      "sha": "ef5b9611620712417366f0710743cd892ac0ae53",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/c2-runtime-quality-q",
+      "sha": "1d5beefd9481d1d27d153df2f38df73dae27ff59",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/c2-source-evidence-e",
+      "sha": "a6f01721d7d7a3f990bc10770a5d18ac5e71e744",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/c2-uw-integration-e7800ad-20261023",
+      "sha": "1d7f78823ec74e11422b67e2505b4ee07ef5f6dd",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/d-r1-workspace-contract",
+      "sha": "2bf0641a99debdb7f3a7baa851da797631abf0b6",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/d2-fixture-p6",
+      "sha": "25dee502a68128aea752f24ff67dfcb16b615a36",
+      "upstream": "origin/codex/d2-fixture-p6",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/f3-aggregate-r2",
+      "sha": "7f9e63d8a43372f4c66788d803ecfad023b0c053",
+      "upstream": "",
+      "not_on_origin_commits": 7
+    },
+    {
+      "name": "codex/f3-retention-r3",
+      "sha": "b84d2034b70396c22237975c7b6bb19c6e2a4411",
+      "upstream": "",
+      "not_on_origin_commits": 9
+    },
+    {
+      "name": "codex/lnx-02",
+      "sha": "e312c55b1c013dd1ff4b44858ce1139537319614",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/lnx-02-access-anchor-6323",
+      "sha": "6323e89380dea6fc37d92efd0b94ef5f81b483f4",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/lnx-02-h0-preserved-bacd494",
+      "sha": "bacd494c44c04ce0ae9320e715a6cebb34dbc0c6",
+      "upstream": "",
+      "not_on_origin_commits": 1
+    },
+    {
+      "name": "codex/lnx-02-h0prime-preserved-57d835",
+      "sha": "57d83501f4a1a4964876bb510055fadb51c33aa9",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/lnx-03-d2-bootstrap",
+      "sha": "4a04fce788d2bad9507081e2b01d02f194d02e61",
+      "upstream": "origin/codex/lnx-03-d2-bootstrap",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a1-01",
+      "sha": "bfe7ee3b0b4cafc621814a0f31b35ad8c076bf03",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a2-01",
+      "sha": "99923cfd3a9cf9e2528679cfbc8803149594759d",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a2-02",
+      "sha": "032b5f8b94806a4481d0c86dd20aafca52c3adf5",
+      "upstream": "origin/codex/mds-a2-02",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a2-03",
+      "sha": "fdc2c79b87a137fc2851dc8bb52bd5b2226a77f4",
+      "upstream": "origin/codex/mds-a2-03",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a3-01",
+      "sha": "e68de9c71cb2ecc29077bd7caed2c4c1dd643200",
+      "upstream": "origin/codex/mds-a3-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a3-02",
+      "sha": "e709bd11918bf2dbae140f985309d6ef59551e65",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a3-final",
+      "sha": "7079caa24bdb50c866b38b46c7ae0bf991fe3512",
+      "upstream": "origin/codex/mds-a3-final",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-a4-01",
+      "sha": "bf63a6469678b253f6a4a647f6222fff98c017ce",
+      "upstream": "origin/codex/mds-a4-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b1-01",
+      "sha": "a8b6db2ff1442a65f5f7c5290332ee29c2372f73",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b1-02",
+      "sha": "8da07cb0ae41cec3c2566db1806910d8ee86c50c",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b2-01",
+      "sha": "e84e6c966102608efdb8ee99abb95d9f6081c8b4",
+      "upstream": "origin/codex/mds-b2-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b2-02",
+      "sha": "44e810e9097c22faabafb097cf099eded3e5febb",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b2-02-post-p0",
+      "sha": "129fd31eb076f55d1de2ae2365e6903c916e78d3",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b2-03",
+      "sha": "e4258f7148cb15aa202a52f5fa549674c6b9c598",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b2-03-post-p0",
+      "sha": "96f98f39c9d602ed821190dca33249d9904e1f64",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-b2-03-prep",
+      "sha": "9470d04e064e4c8b7c3b700d039116ed06c49802",
+      "upstream": "",
+      "not_on_origin_commits": 1
+    },
+    {
+      "name": "codex/mds-b2-03-r2",
+      "sha": "60f3569b54f005127bfcbf729e9032ac587a10af",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c1-01",
+      "sha": "d1a20731d075cac6535b8d6bd2094665e0a5ebc2",
+      "upstream": "origin/codex/mds-c1-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-01",
+      "sha": "4bde9a4441e5ac11c27287c26ebb7e84b894f546",
+      "upstream": "origin/codex/mds-c2-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-02a1",
+      "sha": "05cf7d42f5b99a4b7b8e24b6bf4713269898beac",
+      "upstream": "origin/codex/mds-c2-02a1",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-02b",
+      "sha": "e3d2458856141265e8ab188aec521c7562a4bed0",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-03a",
+      "sha": "4cbe99c05ae40c2feefffb113704b2ccfd6a063f",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-03b",
+      "sha": "0e7cdefe44eeff197604a61c63c46dbbe3b4a4ce",
+      "upstream": "origin/codex/mds-c2-03b",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-03c",
+      "sha": "429f36f3a7ae6ff5e23f6f55cfb09209028d6698",
+      "upstream": "origin/codex/mds-c2-03c",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-03c-integration-109-03beff4",
+      "sha": "1a07f95c3cb70fcc2412528626787a2407876f74",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c2-03c-integration-109-223be5e",
+      "sha": "1ed9ff6f6ea2788447c4a0c81cc1b8e91c8d58d8",
+      "upstream": "",
+      "not_on_origin_commits": 1
+    },
+    {
+      "name": "codex/mds-c2-03c-integration-109-586f0bd",
+      "sha": "dba1ebb6eaa0139fd05d8cc8d552ce09a8d3ea2e",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c3-01",
+      "sha": "96568aa73a371b1306f5c0206bff6afd7d5fa39a",
+      "upstream": "origin/codex/mds-c3-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c3-02",
+      "sha": "6bdc15da527a5e15c595204f3636e6c455962486",
+      "upstream": "origin/codex/mds-c3-02",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-c3-03",
+      "sha": "eb9dade4411768cb494aa5adbaed173445a5e42f",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-d1-01",
+      "sha": "66cf7f176de6a89a3be027cbca0077e7880dd0ca",
+      "upstream": "origin/codex/mds-d1-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-d2-01",
+      "sha": "42830d91b4c701b899cbadb5ebdf8829eec6b5cf",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-d2-fixture-prereq",
+      "sha": "f3dd8e206b40e31c40d5da8a8a3ee982a6c1919f",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-d2-linux-stage-b",
+      "sha": "29d0f040a3cca989ad51b007d05c6d8fa1c8d535",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-f-log-01",
+      "sha": "c0d1a2b46288b9ac01d951654ec7674bc5c14b8b",
+      "upstream": "origin/codex/mds-f-log-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-f0-01",
+      "sha": "84b99f2f150842849243dbea3cab4e8e6882b091",
+      "upstream": "origin/codex/mds-f0-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-f1-01",
+      "sha": "2b7afb6143f994af4075207a04e085b756f2bcda",
+      "upstream": "origin/codex/mds-f1-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-f2-01",
+      "sha": "ef94d839420d175e4de65a89a6533a23432f62dd",
+      "upstream": "",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-f3-01",
+      "sha": "2417193260dfc4033f71db0de2ab3fcadd712a35",
+      "upstream": "origin/codex/mds-f3-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/mds-f3-admission-01",
+      "sha": "e8804c05622dbdd2f570aebf153f73ac42a93c08",
+      "upstream": "origin/codex/mds-f3-admission-01",
+      "not_on_origin_commits": 0
+    },
+    {
+      "name": "codex/prepare-workspace",
+      "sha": "ddb6906e3ec6511302f1b85ae8e20b03b5d7965a",
+      "upstream": "",
+      "not_on_origin_commits": 4
+    },
+    {
+      "name": "codex/u-f3-native-completion",
+      "sha": "a1071014c536c27c5cc1311e003d08a21346db0d",
+      "upstream": "",
+      "not_on_origin_commits": 3
+    },
+    {
+      "name": "codex/u-f3-native-provenance",
+      "sha": "f8717a1ac122b3c65881e22e079905f0894fde98",
+      "upstream": "",
+      "not_on_origin_commits": 6
+    },
+    {
+      "name": "handoff/f3-transfer-20261102",
+      "sha": "def2108abdb157b4ee05f4ba6fcb63385dd7d7e4",
+      "upstream": "",
+      "not_on_origin_commits": 1
+    },
+    {
+      "name": "main",
+      "sha": "5e4eb07fa24e9ecf1c77c2fefb0adfde453ff1c4",
+      "upstream": "origin/main",
+      "not_on_origin_commits": 0
+    }
+  ],
+  "remote_refs_at_capture": {
+    "ci/mds-linux-preflight": "f26d8b77adf19a47e28b21ef6304da5dfdfdca11",
+    "codex/a2-103-integration-check": "4e6e4f247dbcea43babdbd159a287f51c73c3243",
+    "codex/a2-89-integration-check": "0a41d74bb853a10245378d6ba002bac3a56a6969",
+    "codex/a2-98-integration-check": "7e77f6f37e95554070844b160ea503af7942e7c3",
+    "codex/a3-closeout-f07-native": "e29951f7f033bd80b08d0663a06b35af493ea3c1",
+    "codex/add-agents-md": "b4389cd2443f140745ccd315b6caae854bfbab17",
+    "codex/b1-02-integration-ci": "60bbf84714d437f12ad1988340af956a641ef57e",
+    "codex/b1-02-integration-ci-r2": "dd25f3406c5529f41cf8badaa68acdeb4bcd1705",
+    "codex/b1-93-integration-ci-8df6fcd": "8df6fcd01506aad35e857fa4238fcaddcd50870c",
+    "codex/b1-f3-reference-p0": "f1bdf95aa84bbdd875f2bf1eeaf1b00f379f259d",
+    "codex/c2-integration-i1-e3d4d2a-20261022": "e9e375e9701f8bb64a3488e05942b38f908f0dec",
+    "codex/c2-integration-i2-e3d4d2a-20261022": "0bc086b5af5c271f6f16467cb43b9cee327d07f6",
+    "codex/c2-run-state-r0": "577d46fe13be24934e0de4a7b6a662fded69d285",
+    "codex/c2-runtime-contract-u": "ef5b9611620712417366f0710743cd892ac0ae53",
+    "codex/c2-runtime-quality-q": "1d5beefd9481d1d27d153df2f38df73dae27ff59",
+    "codex/c2-source-evidence-e": "a6f01721d7d7a3f990bc10770a5d18ac5e71e744",
+    "codex/c2-uw-integration-e7800ad-20261023": "1d7f78823ec74e11422b67e2505b4ee07ef5f6dd",
+    "codex/d-r1-workspace-contract": "2bf0641a99debdb7f3a7baa851da797631abf0b6",
+    "codex/d2-fixture-p6": "25dee502a68128aea752f24ff67dfcb16b615a36",
+    "codex/lnx-02": "e312c55b1c013dd1ff4b44858ce1139537319614",
+    "codex/lnx-03-d2-bootstrap": "4a04fce788d2bad9507081e2b01d02f194d02e61",
+    "codex/mds-a1-01": "bfe7ee3b0b4cafc621814a0f31b35ad8c076bf03",
+    "codex/mds-a2-01": "99923cfd3a9cf9e2528679cfbc8803149594759d",
+    "codex/mds-a2-02": "032b5f8b94806a4481d0c86dd20aafca52c3adf5",
+    "codex/mds-a2-03": "fdc2c79b87a137fc2851dc8bb52bd5b2226a77f4",
+    "codex/mds-a3-01": "e68de9c71cb2ecc29077bd7caed2c4c1dd643200",
+    "codex/mds-a3-02": "e709bd11918bf2dbae140f985309d6ef59551e65",
+    "codex/mds-a3-final": "7079caa24bdb50c866b38b46c7ae0bf991fe3512",
+    "codex/mds-a4-01": "bf63a6469678b253f6a4a647f6222fff98c017ce",
+    "codex/mds-b1-01": "a8b6db2ff1442a65f5f7c5290332ee29c2372f73",
+    "codex/mds-b1-02": "8da07cb0ae41cec3c2566db1806910d8ee86c50c",
+    "codex/mds-b2-01": "e84e6c966102608efdb8ee99abb95d9f6081c8b4",
+    "codex/mds-b2-02": "44e810e9097c22faabafb097cf099eded3e5febb",
+    "codex/mds-b2-02-post-p0": "129fd31eb076f55d1de2ae2365e6903c916e78d3",
+    "codex/mds-b2-03": "e4258f7148cb15aa202a52f5fa549674c6b9c598",
+    "codex/mds-b2-03-post-p0": "96f98f39c9d602ed821190dca33249d9904e1f64",
+    "codex/mds-b2-03-r2": "60f3569b54f005127bfcbf729e9032ac587a10af",
+    "codex/mds-c1-01": "d1a20731d075cac6535b8d6bd2094665e0a5ebc2",
+    "codex/mds-c2-01": "4bde9a4441e5ac11c27287c26ebb7e84b894f546",
+    "codex/mds-c2-02a1": "05cf7d42f5b99a4b7b8e24b6bf4713269898beac",
+    "codex/mds-c2-02b": "e3d2458856141265e8ab188aec521c7562a4bed0",
+    "codex/mds-c2-03a": "4cbe99c05ae40c2feefffb113704b2ccfd6a063f",
+    "codex/mds-c2-03b": "0e7cdefe44eeff197604a61c63c46dbbe3b4a4ce",
+    "codex/mds-c2-03c": "429f36f3a7ae6ff5e23f6f55cfb09209028d6698",
+    "codex/mds-c2-03c-integration-109-03beff4": "1a07f95c3cb70fcc2412528626787a2407876f74",
+    "codex/mds-c2-03c-integration-109-586f0bd": "dba1ebb6eaa0139fd05d8cc8d552ce09a8d3ea2e",
+    "codex/mds-c3-01": "96568aa73a371b1306f5c0206bff6afd7d5fa39a",
+    "codex/mds-c3-02": "6bdc15da527a5e15c595204f3636e6c455962486",
+    "codex/mds-c3-03": "eb9dade4411768cb494aa5adbaed173445a5e42f",
+    "codex/mds-d1-01": "66cf7f176de6a89a3be027cbca0077e7880dd0ca",
+    "codex/mds-d2-linux-stage-b": "29d0f040a3cca989ad51b007d05c6d8fa1c8d535",
+    "codex/mds-f-log-01": "c0d1a2b46288b9ac01d951654ec7674bc5c14b8b",
+    "codex/mds-f0-01": "84b99f2f150842849243dbea3cab4e8e6882b091",
+    "codex/mds-f1-01": "2b7afb6143f994af4075207a04e085b756f2bcda",
+    "codex/mds-f2-01": "ef94d839420d175e4de65a89a6533a23432f62dd",
+    "codex/mds-f3-01": "2417193260dfc4033f71db0de2ab3fcadd712a35",
+    "codex/mds-f3-admission-01": "e8804c05622dbdd2f570aebf153f73ac42a93c08",
+    "codex/pr117-integration-ae8466f": "ae8466f84dd6b4d950207e2ffbea4b2f7f39caf2",
+    "codex/research-export-audit": "f4eae712ebe2392130936912fd56e3caacb9cc3f",
+    "main": "e7800add6ba700f37656cba3517b4e6db83ca413",
+    "stage": "a3f4757c4dcb26aad15ccab4df22343ee3cb0b90"
+  },
+  "workstreams": [
+    {
+      "direction": "F0",
+      "issues": [
+        63,
+        77,
+        78
+      ],
+      "pull_requests": [
+        79
+      ],
+      "state": "Initial dataset and coordination contracts integrated",
+      "evidence_boundary": "Documentation acceptance only; runtime interfaces remain proposed",
+      "remaining": "All downstream conformance and release checks"
+    },
+    {
+      "direction": "F1",
+      "issues": [
+        43
+      ],
+      "pull_requests": [
+        80
+      ],
+      "state": "Windows ordinary-GIL CPython 3.14.8 scripts profiles and hash locks integrated",
+      "evidence_boundary": "27-test hosted lane is present; no environment recreated for migration",
+      "remaining": "Fresh owned SETUP on next host; locks are platform specific"
+    },
+    {
+      "direction": "F2",
+      "issues": [
+        4,
+        44,
+        45,
+        46
+      ],
+      "pull_requests": [
+        81
+      ],
+      "state": "Passive entrypoints and explicit notebook-sync gate integrated",
+      "evidence_boundary": "Local retained exact-head receipt: 54 passed; current main hosted f2 success",
+      "remaining": "Later F3 consumer operational release remains blocked; no archived PREPARE replay"
+    },
+    {
+      "direction": "F-LOG",
+      "issues": [
+        78
+      ],
+      "pull_requests": [
+        82
+      ],
+      "state": "Bounded shared logging and sealed diagnostic infrastructure integrated",
+      "evidence_boundary": "Current main hosted f-log success; global logging completion not implied",
+      "remaining": "Call-site/process/delivery coverage, release and diagnostic bundle acceptance"
+    },
+    {
+      "direction": "F3",
+      "issues": [
+        47
+      ],
+      "pull_requests": [
+        83,
+        85
+      ],
+      "state": "Original guarded offline collection and A-target admission integrated",
+      "evidence_boundary": "Current main run: 1614 passed, 2 warnings; separate historical failures remain FAILED",
+      "remaining": "Timing/provenance/retention recovery, old failed-attempt settlement, final qualification and consumer release"
+    },
+    {
+      "direction": "A1",
+      "issues": [
+        5,
+        10
+      ],
+      "pull_requests": [
+        86
+      ],
+      "state": "Cold-start preservation and catalogue identity subset integrated",
+      "evidence_boundary": "Merged source confirmed; no new runtime run",
+      "remaining": "Source completeness, D caller/release integration"
+    },
+    {
+      "direction": "A2",
+      "issues": [
+        20,
+        22,
+        24
+      ],
+      "pull_requests": [
+        89,
+        98,
+        103
+      ],
+      "state": "HTTPS, response validation, retries and bounded response intake integrated",
+      "evidence_boundary": "Owner post-merge scoped progress in issue #76; no new run",
+      "remaining": "Coverage/source qualification and complete pipeline integration"
+    },
+    {
+      "direction": "A3",
+      "issues": [
+        6,
+        21
+      ],
+      "pull_requests": [
+        107,
+        114,
+        119,
+        120
+      ],
+      "state": "Pagination, calendar windows, lossless assembly and native F07 capture integrated",
+      "evidence_boundary": "Owner CLOSED_SCOPED / POST_MERGE_ACCEPT; exact main hosted checks success",
+      "remaining": "A5 actual source/history universe, eight live F07 cases NOT_RUN, Linux A runtime NOT_VERIFIED"
+    },
+    {
+      "direction": "A4",
+      "issues": [
+        19,
+        58,
+        35,
+        78
+      ],
+      "pull_requests": [
+        126
+      ],
+      "state": "Detached supplied-bytes catalogue candidate helper; existing caller NOT_CONNECTED",
+      "evidence_boundary": "BLOCKED_EXECUTION; two hosted F3 failures; local RED/GREEN/full A NOT_RUN",
+      "remaining": "Qualified F execution profile and F3 leaf disposition; A4-02 caller ownership and source feasibility"
+    },
+    {
+      "direction": "A5",
+      "issues": [
+        11,
+        12,
+        14,
+        59
+      ],
+      "pull_requests": [],
+      "state": "No separate implementation branch/PR found in available snapshot",
+      "evidence_boundary": "NOT_VERIFIED; issue #59 CLOSED is a contract decision, not complete instrument-life proof",
+      "remaining": "Identity, boards/lifecycle, historical universe and actual source matrix"
+    },
+    {
+      "direction": "A6",
+      "issues": [
+        7,
+        8,
+        9
+      ],
+      "pull_requests": [],
+      "state": "No separate implementation branch/PR found",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Overlap revision policy, 30-day filter and new-ticker full horizon"
+    },
+    {
+      "direction": "A7",
+      "issues": [
+        23,
+        48
+      ],
+      "pull_requests": [],
+      "state": "No separate implementation branch/PR found",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Separately scoped diagnostic all.py isolation/control"
+    },
+    {
+      "direction": "A8",
+      "issues": [
+        77
+      ],
+      "pull_requests": [],
+      "state": "All-time target is specified; implementation not established",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "A3/A5/A6 and B3/D4 canonical history/window integration"
+    },
+    {
+      "direction": "B1",
+      "issues": [
+        13,
+        15
+      ],
+      "pull_requests": [
+        93,
+        96,
+        113
+      ],
+      "state": "STOCH slowd fix, TRIX30/H89 and accepted reference reconstruction integrated",
+      "evidence_boundary": "Merged source confirmed; closed CI-only PRs #94/#101/#102 are distinct",
+      "remaining": "Keep 66 TA-Lib calls / 80 output indicator columns / H89 and independent reference controls"
+    },
+    {
+      "direction": "B2",
+      "issues": [
+        16,
+        55,
+        56,
+        60
+      ],
+      "pull_requests": [
+        108,
+        111,
+        112,
+        115,
+        116
+      ],
+      "state": "Quality assessment and post-P0 admitted calculation subset integrated; math/source ledger draft",
+      "evidence_boundary": "Earlier #111/#112 retain FAILED F3; #116 is current post-P0 draft with successful hosted F3 at its own SHA",
+      "remaining": "Source-backed reference completeness and original anomaly inventory; do not revive superseded branches"
+    },
+    {
+      "direction": "B3",
+      "issues": [
+        54,
+        60
+      ],
+      "pull_requests": [],
+      "state": "No separate completed B3 PR established",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Compute once on approved maximum history, then equal all-time/30y/10y overlaps and CSV/XLSX"
+    },
+    {
+      "direction": "B4",
+      "issues": [
+        17
+      ],
+      "pull_requests": [],
+      "state": "No separate implementation PR established",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Block publication after failed enrichment; preserve independent release truth"
+    },
+    {
+      "direction": "C1",
+      "issues": [
+        28,
+        75
+      ],
+      "pull_requests": [
+        84
+      ],
+      "state": "Exact dividend identity and domain diagnostics integrated",
+      "evidence_boundary": "Merged source; two historical local preview trees separately preserved",
+      "remaining": "Do not infer full #75/#62 source/event completeness from identity subset"
+    },
+    {
+      "direction": "C2",
+      "issues": [
+        27,
+        29,
+        30,
+        57,
+        62,
+        75
+      ],
+      "pull_requests": [
+        88,
+        90,
+        95,
+        99,
+        105,
+        109,
+        121,
+        123,
+        124,
+        125
+      ],
+      "state": "Acquisition/retry/precision/release-policy subsets integrated; U/Q/E/R0 runtime contracts are draft",
+      "evidence_boundary": "U/Q/E hosted source checks success; R0/#125 hosted F3 failure remains; I1/I2/I3 integration trees are not acceptance",
+      "remaining": "Runtime state/source/quality wiring and source-bound release checks; preserve encoding/precision"
+    },
+    {
+      "direction": "C3",
+      "issues": [
+        31,
+        32,
+        33,
+        57
+      ],
+      "pull_requests": [
+        100,
+        106,
+        110
+      ],
+      "state": "Parser encoding, URL/redirect and table-role/coverage subsets integrated",
+      "evidence_boundary": "Merged source only; complete source semantic coverage and release #33 AC3 not established",
+      "remaining": "D2/F context, runtime result and completeness/publication acceptance"
+    },
+    {
+      "direction": "D1",
+      "issues": [
+        25,
+        26,
+        47,
+        78
+      ],
+      "pull_requests": [
+        87
+      ],
+      "state": "Windows single-writer lock and one-file os.replace primitive integrated",
+      "evidence_boundary": "Helper-level evidence only; production caller connections absent",
+      "remaining": "Stage B full-scope faults, caller hookup, CSV/XLSX transaction/release and platforms"
+    },
+    {
+      "direction": "D2",
+      "issues": [
+        39,
+        41,
+        47,
+        78
+      ],
+      "pull_requests": [
+        104,
+        117,
+        122
+      ],
+      "state": "Windows frozen 15-file WIP preserved; Linux bootstrap merged; Linux upload supervision draft stacked on #117",
+      "evidence_boundary": "Windows historical full run: 216 PASS / 5 FAIL, runner 86 on a working-tree digest; #117 combined main runtime NOT_TESTED",
+      "remaining": "Paired custody grant, final F3 evidence, exact combination acceptance and D1 Stage B; no auto adoption"
+    },
+    {
+      "direction": "D3",
+      "issues": [
+        18,
+        35
+      ],
+      "pull_requests": [],
+      "state": "No separate implementation PR established",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Required XLSX capacity-before-current, literal escaping policy and single snapshot"
+    },
+    {
+      "direction": "D4",
+      "issues": [
+        38,
+        64,
+        77
+      ],
+      "pull_requests": [],
+      "state": "Release manifest implementation not established",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Candidate/current/previous, 12 datasets, checksums, atomic release/readback"
+    },
+    {
+      "direction": "D5",
+      "issues": [
+        34,
+        35,
+        36
+      ],
+      "pull_requests": [],
+      "state": "Google safety implementation not established",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Preserve legacy view/IDs; prepare before mutation, formula safety and actual workbook capacity"
+    },
+    {
+      "direction": "D6",
+      "issues": [
+        37,
+        40,
+        42
+      ],
+      "pull_requests": [],
+      "state": "Secure FTP/remote transaction implementation not established",
+      "evidence_boundary": "NOT_VERIFIED / backlog",
+      "remaining": "Transport decision, per-target state, mid-list errors, timeouts and readback"
+    },
+    {
+      "direction": "D/R1 workspace",
+      "issues": [
+        38,
+        64,
+        66
+      ],
+      "pull_requests": [
+        118
+      ],
+      "state": "Draft release workspace declaration contract",
+      "evidence_boundary": "Source-only contract; no operational workspace admission",
+      "remaining": "Close binding and owner decisions before use"
+    },
+    {
+      "direction": "LNX",
+      "issues": [
+        67,
+        92
+      ],
+      "pull_requests": [
+        91,
+        97,
+        104
+      ],
+      "state": "Syntax preflight, hash-locked Linux environment and fixed application bootstrap integrated",
+      "evidence_boundary": "A Linux D2 supervision job on #122 is successful at its own source; Linux application route skip is not PASS",
+      "remaining": "Legacy LNX-02 exact-main verification, native combined Stage B and broader supported-platform acceptance"
+    },
+    {
+      "direction": "R/integration",
+      "issues": [
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        61,
+        66,
+        68,
+        69,
+        70,
+        71
+      ],
+      "pull_requests": [],
+      "state": "Public restoration, staging, benchmark, source rights, historical secret audit and runbook remain distinct",
+      "evidence_boundary": "No production, staging, large XLSX or live source revalidation for migration",
+      "remaining": "Owner chooses ordered slices after prerequisites; issue state alone does not prove AC"
+    }
+  ],
+  "excluded_or_incomplete": [
+    {
+      "id": "PRIVATE_EVIDENCE",
+      "status": "LOCAL_ONLY_SECURE_TRANSFER_REQUIRED",
+      "details": "Raw logs, owner receipts, prospective source and host metadata; see LOCAL_ONLY_MATERIALS.md"
+    },
+    {
+      "id": "PUBLICATION",
+      "status": "AUTO_REVIEW_REJECTED",
+      "details": "No public push completed. Concrete public refs require approval."
+    },
+    {
+      "id": "OLD_HOST_STATE",
+      "status": "NONPORTABLE_NOT_SETTLED_BY_COPY",
+      "details": "Original FileIds, process lifetimes, storage claims and ledgers require owner disposition"
+    },
+    {
+      "id": "CREDENTIALS",
+      "status": "PRESERVED_ORIGINAL_NOT_COPIED",
+      "details": "Presence/JSON object/required field names checked; connection NOT_TESTED"
+    },
+    {
+      "id": "DATA_ENV",
+      "status": "PRESERVED_ORIGINAL_NOT_REBUILT",
+      "details": "No generated datasets or installed runtimes published; next-host setup remains separately admitted"
+    },
+    {
+      "id": "F3_PRIVATE_HANDOFF",
+      "branch": "handoff/f3-transfer-20261102",
+      "sha": "def2108abdb157b4ee05f4ba6fcb63385dd7d7e4",
+      "status": "PRIVATE_BUNDLE_ONLY"
+    }
+  ],
+  "transfer_validation": {
+    "github_clean_clone": "PENDING",
+    "new_remote_refs": "BLOCKED_AUTO_REVIEW",
+    "local_bundle_restore": "PENDING",
+    "document_links": "PENDING",
+    "source_checkpoint_bytes": "PASS_24_FILES",
+    "original_source_indexes": "PASS_AT_CHECKPOINT_CREATION",
+    "project_runtime_tests": "NOT_RUN_NOT_REQUIRED_FOR_MIGRATION",
+    "f3_qualification": "NOT_RUN",
+    "new_machine_environment": "NOT_VERIFIED"
+  }
+}

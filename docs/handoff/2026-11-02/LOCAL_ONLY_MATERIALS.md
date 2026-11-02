@@ -1,0 +1,21 @@
+# Materials requiring private transfer or host disposition
+
+The public repository is unsuitable for raw local logs, owner inputs or machine metadata. Their exclusion is deliberate and does not mean they were deleted. Original worktrees, secret files, environments and artifacts remain on the original PC. Public summaries are not replacement evidence for exact custody/acceptance.
+
+| Material | Location alias / identity | Preservation / missing requirement |
+|---|---|---|
+| Retained evidence roots | [EVIDENCE_CATALOGUE.json](EVIDENCE_CATALOGUE.json): 453,303 files / 2,751,415,326 bytes in bounded census | Private local archive being built and separately verified; excludes installs, tmp/cache and credential/binary payloads. Exact archive receipt is local, not a public payload. |
+| Mixed primary untracked materials | 4,758 entries across `.worktrees/` and `.codex-remote-attachments/`, including embedded repository directories | Reports, owner attachments, scripts and previous archives classified separately. New source checkpoints do not blindly add these directories. |
+| Original F3 transfer | `.worktrees/f3-transfer-delivery-20261102/`, original `F3_TRANSFER_20261102_FULL_R2.zip` and earlier revision | Preserve both revision histories. Existing evidence ZIP, Git bundle, EVIDENCE_CONTENTS.json, MANIFEST.json and cost/custody addenda remain private. Separate hashes are retained locally. |
+| F3 final prospective implementation | Aggregate `.f3/evidence/f3-final-continuation-20261031/implementation-preparation/` | Six source files / composition manifest, unbound business executor and unapplied patches are in private evidence, not installed project code. Needs private receipt access and owner continuation. |
+| F3 exact private handoff commit | `handoff/f3-transfer-20261102` at `def2108abdb157b4ee05f4ba6fcb63385dd7d7e4` | Contains original-host physical identities. Preserve in private bundle; public replacement is the status/blockers summary. No new public push is planned for that original ref. |
+| D2 frozen evidence/index | `.worktrees/mds-d2-01/.f3/evidence/d2-preflight/`; paired custody under `.worktrees/p6/.f3/evidence/d2-f3-handback-review-20261021/` | Original index and 15 dirty source files remain untouched. New snapshot includes exact bytes; historical tests remain working-tree bound. Private original receipts still needed for adoption. |
+| A4 handoff | `external/mds-a4-01/.f3/evidence/a4-final-handoff-20261026T083126Z/` | Execution BLOCKED; hosted failure analysis and local unrun gates retained privately. Source #126 is already public. |
+| F2 reports/plans/scripts | `.worktrees/mds-f2-01/.f2/` and later F3 consumer preparations | Historical exact-head 54-test report remains distinct from later operational consumer release. Do not run archived setup/consumer commands. |
+| Credentials | Ignored `secrets/`; FTP and Google service-account JSON | Both files present, JSON objects, required field names present. Values not printed/copied/committed; connectivity NOT_TESTED. Owner must transfer/reissue securely. |
+| Datasets | Existing tracked history plus any ignored generated local files | No new dataset payload is added to migration commits. Source completeness, freshness and private historical dataset audit are separate. Large originals remain on original host. |
+| Installed runtimes and wheels | Per-worktree `.f1/` and other owned roots | Environment installs, caches and large archives are not silently adopted/copied into a new runtime. Fresh approved hash-locked setup required. |
+| Old H0 / NTFS / process state | Original-host storage, physical FileIds, old account/ledger and lifetime observations | Not portable by Git/ZIP. Do not recreate claims, reset ledgers or infer current settlement from later controls. Owner disposition required. |
+| Old chats | Original Codex/session storage | Not needed for basic bootstrap; authoritative private owner receipts may still require secure transfer. Full transcript export was not authorized or claimed. |
+
+Use an encrypted transport or encrypted removable archive, provide the key separately, verify SHA-256 out of band and retain originals until the recipient acknowledges inventory/integrity. No public hosting service, paid storage or automatic upload was enabled.
