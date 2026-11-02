@@ -497,12 +497,64 @@ def test_domain_error_redacts_synthetic_canary(monkeypatch, context, capsys):
 
 
 def test_pipeline_stage_failure_never_reaches_later_stages(monkeypatch, context):
+    import ast
+    from contextlib import contextmanager
+    source_text = (ROOT / 'main.py').read_bytes().replace(b'\r\n', b'\n')
+    tree = ast.parse(source_text.decode('utf-8'))
+    functions = {name: [node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+        for name in ('main', '_run_cli')}
+    markers = [node for node in tree.body if (
+        isinstance(node, ast.Assign)
+        and any(isinstance(part, ast.Name) and part.id == 'D2_SOURCE_PROFILE'
+                for target in node.targets for part in ast.walk(target))) or (
+        isinstance(node, (ast.AnnAssign, ast.AugAssign))
+        and any(isinstance(part, ast.Name) and part.id == 'D2_SOURCE_PROFILE'
+                for part in ast.walk(node.target)))]
+    modern = (len(markers) == 1 and isinstance(markers[0], ast.Assign)
+        and len(markers[0].targets) == 1
+        and isinstance(markers[0].targets[0], ast.Name)
+        and isinstance(markers[0].value, ast.Constant)
+        and markers[0].value.value == 'linux-stage-b-v1'
+        and all(len(value) == 1 and isinstance(value[0], ast.FunctionDef)
+                for value in functions.values()))
+    if modern:
+        main_args = functions['main'][0].args
+        cli_args = functions['_run_cli'][0].args
+        modern = (not functions['main'][0].decorator_list
+            and not functions['_run_cli'][0].decorator_list
+            and not main_args.posonlyargs and not main_args.args
+            and main_args.vararg is None and main_args.kwarg is None
+            and [arg.arg for arg in main_args.kwonlyargs] == ['logging_context', 'result_sink']
+            and all(isinstance(value, ast.Constant) and value.value is None
+                    for value in main_args.kw_defaults)
+            and not cli_args.posonlyargs and not cli_args.args
+            and cli_args.vararg is None and cli_args.kwarg is None
+            and not cli_args.kwonlyargs)
+    legacy = hashlib.sha256(source_text).hexdigest() == (
+        'c035f4439c060391e38c270f6f7adf257b356e6aae2104b135cf53e770509c3a')
+    assert legacy or modern, 'D2_FIXTURE_SOURCE_PROFILE_UNSUPPORTED'
+    runtime_events = []
+    class Runtime:
+        def bind_context(self, value):
+            assert runtime_events in (['entered'], ['entered', 'bound']) and value is context
+            if runtime_events == ['entered']:
+                runtime_events.append('bound')
+    @contextmanager
+    def runtime_scope(*, logging_context=None):
+        assert logging_context is None or logging_context is context
+        assert runtime_events == []
+        runtime_events.append('entered')
+        try:
+            yield Runtime()
+        finally:
+            assert runtime_events == ['entered', 'bound']
+            runtime_events.append('closed')
     module = load_dividends()
     source(monkeypatch, module, EMPTY)
     _, writes = exporters(monkeypatch, module, [['SBER', ISIN]])
     spec = importlib.util.spec_from_file_location('c2_main_fixture', ROOT / 'main.py')
     pipeline = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(pipeline)
     reached = []
     def initial(root):
         reached.append('data_gathering')
@@ -511,7 +563,12 @@ def test_pipeline_stage_failure_never_reaches_later_stages(monkeypatch, context)
     monkeypatch.setitem(sys.modules, 'data_gathering', types.SimpleNamespace(main=initial))
     monkeypatch.setitem(sys.modules, 'dividends', module)
     for name in ('tech', 'dohodru_data', 'upload'):
-        monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(main=forbidden))
+        stub = types.SimpleNamespace(main=forbidden)
+        if name == 'upload':
+            stub.runtime_scope = runtime_scope
+            stub._d2_completion_allowed = lambda result_sink: False
+        monkeypatch.setitem(sys.modules, name, stub)
+    exec(compile(tree, str(ROOT / 'main.py'), 'exec'), pipeline.__dict__)
     with pytest.raises(ValueError, match='^DIVIDEND_EMPTY_RELEASE_BLOCKED:'):
         pipeline.main(logging_context=context)
     assert reached == ['data_gathering'] and writes == []
@@ -520,4 +577,5 @@ def test_pipeline_stage_failure_never_reaches_later_stages(monkeypatch, context)
                and event['outcome'] == 'FAILED' for event in events)
     assert not any(event['event'] == 'stage_returned' and event['stage'] == 'dividends'
                    for event in events)
+    assert runtime_events == (['entered', 'bound', 'closed'] if modern else [])
     assert_failed(context)

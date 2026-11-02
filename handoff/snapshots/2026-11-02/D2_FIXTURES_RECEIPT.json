@@ -1,0 +1,48 @@
+{
+  "direction": "D2_FIXTURES",
+  "status": "WIP_PRESERVED_NOT_ACCEPTED_NOT_EXECUTED",
+  "source_head": "f3dd8e206b40e31c40d5da8a8a3ee982a6c1919f",
+  "source_index_preserved": true,
+  "source_worktree_preserved": true,
+  "encoding_policy": "exact original worktree bytes in Git blobs; physical versus normalized identities remain distinct",
+  "files": [
+    {
+      "path": "tests/f2/test_entrypoint_contract.py",
+      "bytes": 16000,
+      "sha256": "afe6d146e705dc4a8e3b1e7a41a6df84c83947ed770312abcde1b1c59f2344b4",
+      "blob": "c029b57cd4f217a5a454da88ef15be36c25332da"
+    },
+    {
+      "path": "tests/logging/_probe.py",
+      "bytes": 15446,
+      "sha256": "9a56adb7f7095b8d4877448ad7b3162a212abf0f5601433d5c54fd7d98d5215a",
+      "blob": "74b2501e218febe0e38557c57b33e4f7c3cc4738"
+    },
+    {
+      "path": "tests/logging/test_entrypoint.py",
+      "bytes": 24776,
+      "sha256": "0e53868f024a3774bb12efec6646ba5de03e0aa4b7ef4004a2d9bfe42f330d4b",
+      "blob": "558df76560895b72b05555b88e1bc5f7b8af794a"
+    },
+    {
+      "path": "tests/shared/c1/test_main_logging.py",
+      "bytes": 21731,
+      "sha256": "3f3ccf743ff8763240a6aa6bda348c7412fee36725615fb10be9d0b0d5d256eb",
+      "blob": "95bcf3f5c2d9a759cab7a4fa9f1d4568b4c3987d"
+    },
+    {
+      "path": "tests/shared/c2/test_dohod_compatibility.py",
+      "bytes": 20140,
+      "sha256": "654ff516581088e83d8a79090294d4ed82df9e73bff0b985c4dffa0aaa088503",
+      "blob": "9b07edad48568d340f2f4f83093332e98c0f098b"
+    },
+    {
+      "path": "tests/shared/c2/test_source_result.py",
+      "bytes": 29249,
+      "sha256": "7e9cc5fac63349fcfbced5a14f81dcf307d7a786c767382a8c328d38aa627739",
+      "blob": "79f5cceb01b6bd1b924760dadad733de5a94bd11"
+    }
+  ],
+  "execution_authority": false,
+  "notes": "Historical grants and test results remain scoped to their original source manifests. This snapshot grants no execution, implementation adoption, ownership release, CI, merge or production."
+}

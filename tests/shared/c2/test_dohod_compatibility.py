@@ -308,7 +308,61 @@ def test_healthy_budget_unrecognized_detail_is_terminal_without_partial_return(
 def test_parent_stage_propagates_dohod_failure_upload_and_success_unreachable(
         monkeypatch, model, tmp_path, context, capsys):
     # Compile only the inspected function, never import or execute main.py CLI.
+    from contextlib import contextmanager
     import run_logging
+    source_text = (ROOT / 'main.py').read_bytes().replace(b'\r\n', b'\n')
+    tree = ast.parse(source_text.decode('utf-8'))
+    functions = {name: [node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+        for name in ('main', '_run_cli')}
+    markers = [node for node in tree.body if (
+        isinstance(node, ast.Assign)
+        and any(isinstance(part, ast.Name) and part.id == 'D2_SOURCE_PROFILE'
+                for target in node.targets for part in ast.walk(target))) or (
+        isinstance(node, (ast.AnnAssign, ast.AugAssign))
+        and any(isinstance(part, ast.Name) and part.id == 'D2_SOURCE_PROFILE'
+                for part in ast.walk(node.target)))]
+    modern = (len(markers) == 1 and isinstance(markers[0], ast.Assign)
+        and len(markers[0].targets) == 1
+        and isinstance(markers[0].targets[0], ast.Name)
+        and isinstance(markers[0].value, ast.Constant)
+        and markers[0].value.value == 'linux-stage-b-v1'
+        and all(len(value) == 1 and isinstance(value[0], ast.FunctionDef)
+                for value in functions.values()))
+    if modern:
+        main_args = functions['main'][0].args
+        cli_args = functions['_run_cli'][0].args
+        modern = (not functions['main'][0].decorator_list
+            and not functions['_run_cli'][0].decorator_list
+            and not main_args.posonlyargs and not main_args.args
+            and main_args.vararg is None and main_args.kwarg is None
+            and [arg.arg for arg in main_args.kwonlyargs] == ['logging_context', 'result_sink']
+            and all(isinstance(value, ast.Constant) and value.value is None
+                    for value in main_args.kw_defaults)
+            and not cli_args.posonlyargs and not cli_args.args
+            and cli_args.vararg is None and cli_args.kwarg is None
+            and not cli_args.kwonlyargs)
+    legacy = hashlib.sha256(source_text).hexdigest() == (
+        'c035f4439c060391e38c270f6f7adf257b356e6aae2104b135cf53e770509c3a')
+    assert legacy or modern, 'D2_FIXTURE_SOURCE_PROFILE_UNSUPPORTED'
+    runtime_events = []
+    class Runtime:
+        def bind_context(self, value):
+            assert runtime_events in (['entered'], ['entered', 'bound']) and value is context
+            if runtime_events == ['entered']:
+                runtime_events.append('bound')
+    @contextmanager
+    def runtime_scope(*, logging_context=None):
+        assert logging_context is None or logging_context is context
+        assert runtime_events == []
+        runtime_events.append('entered')
+        try:
+            yield Runtime()
+        finally:
+            assert runtime_events == ['entered', 'bound']
+            runtime_events.append('closed')
+    def forbidden_upload(*args, **kwargs):
+        pytest.fail('Upload was reached after a required dohod failure')
     module, _, _ = model
     error = requests.ConnectTimeout('fixture final network failure')
     source(monkeypatch, module, [(URL, error)] * 3)
@@ -317,11 +371,16 @@ def test_parent_stage_propagates_dohod_failure_upload_and_success_unreachable(
     for name in ('data_gathering', 'dividends', 'tech', 'upload'):
         stub = types.ModuleType(name)
         stub.main = lambda *a, stage=name, **kw: called.append(stage)
+        if name == 'upload':
+            stub.main = forbidden_upload
+            stub.runtime_scope = runtime_scope
+            stub._d2_completion_allowed = lambda result_sink: False
         monkeypatch.setitem(sys.modules, name, stub)
     monkeypatch.setitem(sys.modules, 'dohodru_data', module)
-    tree = ast.parse((ROOT / 'main.py').read_text(encoding='utf-8'))
     function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
     namespace = {'time': time, 'datetime': datetime, 'Path': Path, '__file__': str(ROOT / 'main.py')}
+    if modern:
+        namespace['D2_SOURCE_PROFILE'] = 'linux-stage-b-v1'
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(ROOT / 'main.py'), 'exec'), namespace)
     with pytest.raises(requests.ConnectTimeout) as caught:
         namespace['main'](logging_context=context)
@@ -332,4 +391,5 @@ def test_parent_stage_propagates_dohod_failure_upload_and_success_unreachable(
     assert stage_failed[0]['outcome'] == 'FAILED'
     assert stage_failed[0]['error']['category'] == 'UNKNOWN'  # Parent hookup remains D/F.
     assert 'Скрипт полностью закончил работу' not in capsys.readouterr().out
+    assert runtime_events == (['entered', 'bound', 'closed'] if modern else [])
     failed(context)
