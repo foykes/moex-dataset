@@ -160,9 +160,9 @@ Portable locations: `primary` is the original checkout; `.worktrees/NAME` is ben
 | handoff/f3-transfer-20261102 | `def2108abdb157b4ee05f4ba6fcb63385dd7d7e4` | NONE | NO | 1 | private bundle only; public summary in this package |
 | main | `5e4eb07fa24e9ecf1c77c2fefb0adfde453ff1c4` | origin/main | NO | 0 | existing public history |
 
-## New preservation refs (publication pending)
+## New preservation refs (published and exact-SHA verified)
 
-All are explicit `handoff/**` refs. Existing reviewed branches are not advanced. **Remote state is not assumed.** See manifest `remote_verified` and final publication receipt.
+All are explicit `handoff/**` refs. Existing reviewed branches are not advanced. All 22 listed preservation refs were normally pushed and independently verified at their exact remote SHA after the owner's explicit grant. The original-state tables above remain the initial capture. See manifest `remote_verified` and final publication receipt.
 
 | Direction | Handoff branch | SHA | Type |
 |---|---|---|---|

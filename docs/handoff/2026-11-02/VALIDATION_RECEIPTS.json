@@ -1,0 +1,134 @@
+{
+  "source": "migration verification receipts",
+  "payload_commit_sha": "db8418fcb4efa0f60d7c2cea7010f420d3e6a8fc",
+  "private_bundle_phase": "Pre-publication payload restoration; historical blocked GitHub field is not the final remote verdict",
+  "private_bundle": {
+    "status": "PASS_LOCAL_BUNDLE_ONLY",
+    "bundle": "PRIVATE_ALL_GIT_20261102.bundle",
+    "bundle_bytes": 289737633,
+    "bundle_sha256": "455ebb837cfbf1237dbe7eb7b90e7bf62ce84e4cc5d58d5f9f16a0234c96297d",
+    "bundle_complete_history": true,
+    "bundle_refs": 224,
+    "payload_commit_sha": "db8418fcb4efa0f60d7c2cea7010f420d3e6a8fc",
+    "ref_count": 22,
+    "source_files_verified": 24,
+    "source_files_materialized_exact_bytes": true,
+    "documentation_files_verified": 18,
+    "documentation_checkout_policy": "Git LF blobs materialize as exact CRLF conversion under observed core.autocrlf=true; physical and Git hashes remain distinct",
+    "github_new_refs_verification": "BLOCKED_AUTO_REVIEW; local bundle is not GitHub proof"
+  },
+  "public_payload_scan": {
+    "novel_commits": 28,
+    "novel_blobs": 93,
+    "actual_secrets_found": false,
+    "method": "pattern/path/size scanning and reviewed synthetic URL canaries; historical public dataset audit is not claimed"
+  },
+  "original_preservation": {
+    "status": "PASS",
+    "original_registered_worktrees": 68,
+    "original_shared_local_branches": 67,
+    "additional_checkouts": 6,
+    "main_local_sha": "5e4eb07fa24e9ecf1c77c2fefb0adfde453ff1c4",
+    "scope": "Original HEADs, raw indexes, dirty/untracked file bytes where hashed, porcelain states; no whole-environment immutability claim"
+  },
+  "private_archives": [
+    {
+      "archive": "PRIVATE_LOCAL_EVIDENCE_20261102.zip",
+      "bytes": 726367867,
+      "sha256": "bc1b1bde543697ed3441ae92db3955dfba574c9be1182f89b4edfbf7b14a2751",
+      "files": 444812,
+      "uncompressed_bytes": 2361822311,
+      "status": "PASS_FULL_ENTRY_SHA256_AND_ZIP_CRC_READBACK",
+      "entries_verified": 444812
+    },
+    {
+      "file": "PRIVATE_GIT_ADMIN_20261102.zip",
+      "bytes": 1655238511,
+      "sha256": "406805f5745888477bf21585f26f456a4741895f1e068672937967d0813eee88",
+      "entries": 6002,
+      "status": "PASS_FULL_ENTRY_SHA256_AND_ZIP_CRC_READBACK",
+      "entries_verified": 6002
+    },
+    {
+      "file": "PRIVATE_EVIDENCE_LONG_PATHS_20261102.zip",
+      "bytes": 33575223,
+      "sha256": "0a1d012137d04a1e9611243b4446bd0b280c4c08e1e568ede239414b639c1f3d",
+      "recovered_entries": 10191,
+      "failed_count": 0,
+      "status": "PASS_FULL_ENTRY_SHA256_AND_ZIP_CRC_READBACK",
+      "entries_verified": 10191
+    }
+  ],
+  "default_checkout_transformations": 7,
+  "exact_d2_worktree_files_verified": 15,
+  "github_new_refs_verified": true,
+  "remote_payload_restore": {
+    "status": "PASS_REMOTE_GITHUB_CLONE",
+    "checked_at": "2026-11-02T08:01:29.632964+00:00",
+    "origin": "https://github.com/foykes/moex-dataset.git",
+    "handoff_head_sha": "db8418fcb4efa0f60d7c2cea7010f420d3e6a8fc",
+    "preservation_refs_verified": 22,
+    "source_files_verified": 24,
+    "main_sha": "e7800add6ba700f37656cba3517b4e6db83ca413",
+    "clean_status": true,
+    "fsck_exit": 0,
+    "local_object_borrowing": false,
+    "payload_phase": "initial_documentation_payload"
+  },
+  "github_refresh": {
+    "captured_at": "2026-11-02T08:02:42.502510+00:00",
+    "main_sha": "e7800add6ba700f37656cba3517b4e6db83ca413",
+    "pull_requests": 49,
+    "open_pull_requests": 13,
+    "draft_open": 12,
+    "issues": 77,
+    "workflow_runs": 291,
+    "pull_identity_state_changes_since_initial": [],
+    "unexpected_handoff_actions_runs": [
+      {
+        "id": 41409851740,
+        "sha": "bacd494c44c04ce0ae9320e715a6cebb34dbc0c6",
+        "branch": "handoff/lnx-02-preserved-20261102",
+        "url": "https://github.com/foykes/moex-dataset/actions/runs/41409851740"
+      }
+    ],
+    "remote_heads_count": 84
+  },
+  "actions_side_effects": {
+    "captured_at": "2026-11-02T08:05:50.615081+00:00",
+    "static_trigger_review": "handoff/** excluded by declared push branch filters",
+    "actual_side_effects": [
+      {
+        "run_id": 41409874319,
+        "url": "https://github.com/foykes/moex-dataset/actions/runs/41409874319",
+        "head_sha": "57d83501f4a1a4964876bb510055fadb51c33aa9",
+        "api_head_branch": "codex/lnx-02",
+        "workflow_path": ".github/workflows/linux-environment.yml",
+        "status": "completed",
+        "conclusion": "failure",
+        "jobs_count": 0,
+        "latest_check_runs_count": 0,
+        "check_suite_before": "0000000000000000000000000000000000000000",
+        "rerequestable": false,
+        "diagnosis": "COMPLETED_FAILURE_WITH_NO_JOBS; exact reason NOT_VERIFIED; no rerun or source repair"
+      },
+      {
+        "run_id": 41409851740,
+        "url": "https://github.com/foykes/moex-dataset/actions/runs/41409851740",
+        "head_sha": "bacd494c44c04ce0ae9320e715a6cebb34dbc0c6",
+        "api_head_branch": "handoff/lnx-02-preserved-20261102",
+        "workflow_path": ".github/workflows/linux-environment.yml",
+        "status": "completed",
+        "conclusion": "failure",
+        "jobs_count": 0,
+        "latest_check_runs_count": 0,
+        "check_suite_before": "0000000000000000000000000000000000000000",
+        "rerequestable": false,
+        "diagnosis": "COMPLETED_FAILURE_WITH_NO_JOBS; exact reason NOT_VERIFIED; no rerun or source repair"
+      }
+    ],
+    "correction": "Branch-filter inspection did not account for GitHub failure records without jobs. No runner/job execution is evidenced. Do not call these PASS or silently fix archived workflows.",
+    "original_codex_lnx02_remote_sha": "e312c55b1c013dd1ff4b44858ce1139537319614",
+    "main_remote_sha": "e7800add6ba700f37656cba3517b4e6db83ca413"
+  }
+}

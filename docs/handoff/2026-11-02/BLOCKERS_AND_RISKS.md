@@ -2,7 +2,7 @@
 
 ## Transfer blockers
 
-1. **Public push blocked by automatic approval review.** The user authorized safe commits and push to existing origin, but the runtime reviewer rejected the concrete multi-branch publication as insufficiently specific authorization. No workaround, connector ref creation or force push was used. The reviewed branch/SHA payload is in [manifest](TRANSFER_MANIFEST.json) and [publication request](PUBLICATION_REQUEST.md). Remote-only recovery cannot be declared successful before these refs are actually published and cloned.
+1. **Original public-push approval blocker resolved.** After the automatic rejection, the owner explicitly approved the concrete set. Normal explicit-ref push and exact remote readback were completed; see the manifest/publication receipt. No workaround or force push occurred. Private evidence/host-state limitations below remain.
 2. **Private evidence is not on GitHub.** Raw evidence, owner receipts, machine/process metadata and historical transfer archives require encrypted owner-to-owner transfer. Their absence blocks exact receipt revalidation and some continuation work. Source checkpoints and public summaries do not replace those originals.
 3. **Original host identities are nonportable.** Old NTFS identities, accounts/ledgers, storage claims, OS process lifetimes and outstanding custody cannot be recreated by copying files. Any new host needs new admission and explicit continuation decisions.
 
@@ -67,3 +67,13 @@ C2 U/Q/E/R0 and I1/I2/I3 are distinct source/evidence/runtime contracts. R0 has 
 ## Remaining uncertainty
 
 No fresh live MOEX, Google, FTP/VPS or public dataset probe was performed. Full Linux/macOS application acceptance, source rights, historical Git dataset secret audit (#69), large workbook visual QA and staging remain separate work. Existing committed dataset history was not re-audited for secrets or freshness; new commits add no generated datasets.
+
+
+## Private census boundary
+
+The additional metadata-only scan found 84 retained junction fixture directories, with targets under the original worktree tree. It also retained 269 missing and 37 denied directory observations in sandbox/profile evidence. No access-control repair or path recreation was attempted. These descendants cannot be described as completely transferable; the raw private scan and existing original F3 delivery remain available to the owner.
+
+
+## Two new historical-workflow failure records
+
+The transfer's approved publication produced two completed LNX workflow failure events with zero jobs/check runs: [41409851740](https://github.com/foykes/moex-dataset/actions/runs/41409851740) and [41409874319](https://github.com/foykes/moex-dataset/actions/runs/41409874319). Their precise reason remains NOT_VERIFIED. No canonical/qualification test, workflow repair or rerun was performed. Original remote codex/lnx-02 and main still match their prior SHA. See ACTIONS_SIDE_EFFECTS.json for exact identity and the correction to the pre-push static estimate.

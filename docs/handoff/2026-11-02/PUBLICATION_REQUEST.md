@@ -1,6 +1,6 @@
 # Concrete public publication request
 
-The owner already authorized ordinary safe branch pushes to existing origin in the migration request. Automatic approval review nevertheless rejected the multi-branch push; no public mutation occurred. This document makes the exact requested payload reviewable.
+The owner already authorized ordinary safe branch pushes to existing origin in the migration request. Automatic approval review nevertheless rejected the multi-branch push; no public mutation had occurred at that initial rejection. This document makes the exact requested payload reviewable.
 
 Destination: **public** `https://github.com/foykes/moex-dataset.git`. Only new `refs/heads/handoff/**` refs listed below and the documentation branch are proposed. No existing owner ref, main, PR or issue is changed. No force. No new PR.
 
@@ -36,3 +36,15 @@ Workflow YAML at each distinct historical candidate version was inspected: push 
 The documentation branch `handoff/moex-migration-20261102` will use the final exact local SHA in the signed-by-Git commit/readback receipt supplied with the approval request. Documentation validation receipts may be committed normally on that isolated branch after restoration verification; owner-reviewed implementation refs remain fixed.
 
 Authorization request: approve these new public refs/SHA payloads plus the final reviewed documentation commit and its validation-only follow-up, then normal push and independent clean GitHub clone verification. Private bundles/evidence/credentials are excluded from public publication.
+
+
+## Resolution
+
+The owner explicitly approved the listed 22 refs, documentation payload db8418fcb4efa0f60d7c2cea7010f420d3e6a8fc and validation-only follow-up. All 22 refs plus that payload were then published by normal explicit-ref push and checked from an independent HTTPS clone. The final containing validation commit and its readback are identified by the external publication receipt. Private archives remain excluded.
+
+
+## Actual Actions side effects: correction to static trigger estimate
+
+The explicit push filters exclude handoff/**, but GitHub nevertheless created two completed failure events for preserved historical LNX source: [41409851740](https://github.com/foykes/moex-dataset/actions/runs/41409851740) at bacd494c44c04ce0ae9320e715a6cebb34dbc0c6 and [41409874319](https://github.com/foykes/moex-dataset/actions/runs/41409874319) at 57d83501f4a1a4964876bb510055fadb51c33aa9. Both report 0 jobs, 0 check runs, check-suite before=zero, rerequestable=false. No runner execution is evidenced; the exact rejection reason is NOT_VERIFIED. The second API head_branch label is codex/lnx-02; direct remote readback still proves that original ref is e312c55b1c013dd1ff4b44858ce1139537319614 and was not advanced by this transfer.
+
+The pre-push filter review did not cover this GitHub validation-event behavior; the earlier zero-side-effect expectation was too broad. No rerun, workflow/grant change, source fix or production action followed. These new failure records remain failures and are included in ACTIONS_SIDE_EFFECTS.json; they do not invalidate the byte/ref transfer or replace old qualification evidence.

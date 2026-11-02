@@ -2,7 +2,7 @@
 
 ## Public source and handoff
 
-Git operations below are safe and platform-independent unless noted. **The new handoff refs were not yet remotely published when this package was prepared.** Check the final publication receipt before relying on the handoff fetch. A missing ref is a transfer blocker; do not replace it with main or an older branch.
+Git operations below are safe and platform-independent unless noted. The new handoff refs were published and read back at exact SHAs. Check the final publication receipt before relying on the handoff fetch. A missing ref is a transfer blocker; do not replace it with main or an older branch.
 
 ```powershell
 git clone https://github.com/foykes/moex-dataset.git moex-dataset
@@ -20,20 +20,21 @@ Read `docs/handoff/2026-11-02/README_START_HERE.md`. Inspect `TRANSFER_MANIFEST.
 Explicit immutable worktree examples (after the refs are available):
 
 ```powershell
-git worktree add --detach ../mds-main e7800add6ba700f37656cba3517b4e6db83ca413
-git worktree add --detach ../mds-a4 origin/codex/mds-a4-01
-git worktree add --detach ../mds-d2-wip origin/handoff/d2-windows-wip-20261102
-git worktree add --detach ../mds-f3-history origin/handoff/f3-retention-20261102
+git -c core.autocrlf=false worktree add --detach ../mds-main e7800add6ba700f37656cba3517b4e6db83ca413
+git -c core.autocrlf=false worktree add --detach ../mds-a4 origin/codex/mds-a4-01
+git -c core.autocrlf=false worktree add --detach ../mds-d2-wip origin/handoff/d2-windows-wip-20261102
+git -c core.autocrlf=false worktree add --detach ../mds-f3-history origin/handoff/f3-retention-20261102
 ```
 
 Verify exact HEAD in each new worktree. Detached review is intentional; create a fresh `codex/<topic>` implementation branch only for an approved next slice. Do not check out another active owner's branch or merge checkpoints. Existing original machine paths and its worktree administration are not restoration targets.
 
 ## Private offline bundle fallback
 
-If publication remains blocked, the owner must securely transfer the private local Git bundle and this documentation. Obtain its exact SHA-256 receipt outside public Git. Then, in a new empty destination:
+If publication remains blocked, the owner must securely transfer the private local Git bundle and this documentation. Obtain its exact SHA-256 receipt outside public Git. From an existing Git repository, verify the bundle; then change to its parent and clone into a new destination:
 
 ```powershell
 git bundle verify PATH_TO_PRIVATE_BUNDLE
+cd ..
 git clone PATH_TO_PRIVATE_BUNDLE moex-offline
 cd moex-offline
 git remote rename origin transfer-bundle
@@ -69,3 +70,12 @@ The Git clone/ref/worktree commands above also work in a POSIX shell. For SHA-25
 ## What requires the owner
 
 Choose the next small scope after reading blockers; obtain original private receipts needed for that scope, fresh ownership/H and execution authority. F3 old-host recovery, A4 runtime, Windows D2 adoption, #117/#122 combined acceptance, D1 Stage B, live/source diagnostics, staging/publication and production cannot resume automatically. Credentials require a separate secure owner transfer; validate only presence/format/missing field names, never print their values. Budget remains zero.
+
+
+## Verified Windows byte restoration
+
+The default test-clone policy `core.autocrlf=true` physically converted seven of the fifteen frozen D2 files. This is a Git checkout transformation, not changed committed source. The per-command `-c core.autocrlf=false worktree add --detach` spelling above was actually tested in a fresh second worktree and reproduced all fifteen original file SHA-256 values exactly. All twenty-four snapshot files were also read from the restored Git blobs and materialized with exact original bytes. Do not bulk-normalize or sync notebooks to make an old seal fit.
+
+The private bundle at the first payload commit was independently cloned: 22 required preservation refs, 24 exact source files and 18 documents verified. A final successor bundle/receipt also records the containing validation commit; use the final external delivery receipt to select that archive. Git-admin ZIP is forensic custody only: never overlay its original indexes/paths onto the new clone's `.git`.
+
+The private evidence delivery includes a separate LONG_PATHS ZIP: all 10,191 initial ordinary-path read failures were recovered and verified through Windows extended-length paths. Keep both evidence manifests. Five reserved-name fixture entries in the base ZIP should be retained/extracted by content hash under neutral filenames, with their original names kept only in the manifest; never recreate NUL/CON-style names or junctions on the new host. An archive is evidence, not a live fixture/OS-state restoration.

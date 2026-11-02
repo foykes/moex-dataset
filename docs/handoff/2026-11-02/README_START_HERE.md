@@ -1,7 +1,7 @@
 # MOEX Dataset: start here
 
 Handoff date: 2026-11-02. Repository: [https://github.com/foykes/moex-dataset](https://github.com/foykes/moex-dataset). Default branch: `main`.
-Transfer status: **PARTIAL_HANDOFF**. The local preservation and documentation are prepared; publication of the new handoff refs was rejected by automatic approval review and remains pending explicit approval of the concrete public payload. Private evidence also requires a separate secure transfer. Existing public source branches remain available. No product readiness or F3 completion is claimed.
+Transfer status: **PARTIAL_HANDOFF**. The public source checkpoints and documentation have been published and verified at exact refs. Private evidence still requires a separate secure transfer; full migration remains partial until the recipient receives it and the old host-state boundaries are resolved. Existing public source branches remain available. No product readiness or F3 completion is claimed.
 
 This Python scripts/notebooks project acquires MOEX ISS raw OHLCV, catalogues and dividends, computes TA-Lib indicators and prepares CSV/XLSX plus legacy Google/FTP publication. It is an existing application under incremental repair, not a new architecture project. The historical datasets in Git are observations, not a newly produced release.
 

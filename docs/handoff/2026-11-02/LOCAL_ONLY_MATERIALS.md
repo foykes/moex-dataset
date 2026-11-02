@@ -4,7 +4,7 @@ The public repository is unsuitable for raw local logs, owner inputs or machine 
 
 | Material | Location alias / identity | Preservation / missing requirement |
 |---|---|---|
-| Retained evidence roots | [EVIDENCE_CATALOGUE.json](EVIDENCE_CATALOGUE.json): 453,303 files / 2,751,415,326 bytes in bounded census | Private local archive being built and separately verified; excludes installs, tmp/cache and credential/binary payloads. Exact archive receipt is local, not a public payload. |
+| Retained evidence roots | [EVIDENCE_CATALOGUE.json](EVIDENCE_CATALOGUE.json): 453,303 files / 2,751,415,326 bytes in bounded census | Private archive completed: 444,812 entries / 726,367,867 archive bytes, all entry SHA-256 and CRC verified. Excludes installs, tmp/cache and credential/binary payloads; inaccessible descendants remain explicitly unverified. |
 | Mixed primary untracked materials | 4,758 entries across `.worktrees/` and `.codex-remote-attachments/`, including embedded repository directories | Reports, owner attachments, scripts and previous archives classified separately. New source checkpoints do not blindly add these directories. |
 | Original F3 transfer | `.worktrees/f3-transfer-delivery-20261102/`, original `F3_TRANSFER_20261102_FULL_R2.zip` and earlier revision | Preserve both revision histories. Existing evidence ZIP, Git bundle, EVIDENCE_CONTENTS.json, MANIFEST.json and cost/custody addenda remain private. Separate hashes are retained locally. |
 | F3 final prospective implementation | Aggregate `.f3/evidence/f3-final-continuation-20261031/implementation-preparation/` | Six source files / composition manifest, unbound business executor and unapplied patches are in private evidence, not installed project code. Needs private receipt access and owner continuation. |
@@ -19,3 +19,8 @@ The public repository is unsuitable for raw local logs, owner inputs or machine 
 | Old chats | Original Codex/session storage | Not needed for basic bootstrap; authoritative private owner receipts may still require secure transfer. Full transcript export was not authorized or claimed. |
 
 Use an encrypted transport or encrypted removable archive, provide the key separately, verify SHA-256 out of band and retain originals until the recipient acknowledges inventory/integrity. No public hosting service, paid storage or automatic upload was enabled.
+
+
+The final external local delivery receipt identifies the authoritative successor Git bundle, evidence ZIP and Git-admin ZIP with exact lengths and SHA-256. Prior bundle revisions remain preserved. The Git-admin ZIP also preserves the original unreachable blob/tree files and four temporary object files; it is a forensic archive, not a runnable/restorable `.git` overlay. Raw evidence includes retained synthetic sandbox/profile metadata and alias-derived ordinary copies; do not treat counts as unique physical identities or issue qualification.
+
+The supplemental PRIVATE_EVIDENCE_LONG_PATHS_20261102.zip contains all 10,191 initially unread ordinary-path files, now byte-verified. Transfer it together with the base archive. Also transfer the original F3_TRANSFER_20261102_FULL_R2.zip (484,527,376 bytes; SHA-256 b1be138dbe06997f6a981dab63e894982267960a9e9900d4f885853fd7499ead) to retain selected original owner attachments and the prior independent F3 package; it is excluded from the general ZIP as an existing large archive.
