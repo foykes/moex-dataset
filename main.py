@@ -2,7 +2,7 @@ import time, datetime
 from pathlib import Path
 
 
-def main(*, logging_context=None):
+def main(*, logging_context=None, result_sink=None):
     if logging_context is not None:
         import run_logging
         run_logging.initialize_main_stages(logging_context)
@@ -11,9 +11,9 @@ def main(*, logging_context=None):
     start_time = time.time()
     current_path = str(Path(__file__).resolve().parent)
 
-    def run_stage(stage, call, *args):
+    def run_stage(stage, call, *args, **kwargs):
         if logging_context is None:
-            return call(*args)
+            return call(*args, **kwargs)
         if not run_logging.check_logging_health(logging_context)['healthy']:
             run_logging.mark_unreached(logging_context, 'DIAGNOSTICS_FAILURE')
             raise RuntimeError('LOGGING_INCOMPLETE')
@@ -24,12 +24,18 @@ def main(*, logging_context=None):
             raise RuntimeError('LOGGING_INCOMPLETE')
         run_logging.observe_stage(logging_context, stage, 'STARTED')
         try:
-            result = call(*args)
+            result = call(*args, **kwargs)
         except BaseException as error:
             interrupted = isinstance(error, (KeyboardInterrupt, SystemExit))
             state = 'INTERRUPTED' if interrupted else 'FAILED'
             try:
-                record = run_logging.make_error(logging_context, error, stage)
+                if stage == 'upload':
+                    # D2 передаёт только закрытый код; исходные args/traceback не логируются.
+                    safe_error = RuntimeError('D2_REQUIRED_CHILD_FAILED')
+                    record = run_logging.make_error(logging_context, safe_error, stage,
+                        code='D2_REQUIRED_CHILD_FAILED')
+                else:
+                    record = run_logging.make_error(logging_context, error, stage)
                 logging_context['_application_error'] = record
                 run_logging.observe_stage(logging_context, stage, state, error=record,
                     reason='INTERRUPTION' if interrupted else 'PRIOR_STAGE_FAILED')
@@ -64,7 +70,17 @@ def main(*, logging_context=None):
     run_stage('dohodru_data', dohodru_data.main, url)
 
     gdoc_to_write = "https://docs.google.com/spreadsheets/d/1HXXoxcDVqIrWN6QEg5ij88AxcNAKT-G-xm2UTUfQe1Q/edit?usp=sharing" ## Гугл док для сохранения данных
-    run_stage('upload', upload.main, current_path, gdoc_to_write)
+    if logging_context is None and result_sink is None:
+        run_stage('upload', upload.main, current_path, gdoc_to_write)
+    else:
+        run_stage('upload', upload.main, current_path, gdoc_to_write,
+            logging_context=logging_context, result_sink=result_sink)
+
+    # CLI печатает завершение только после настоящей parent-owned F-LOG finalization.
+    if logging_context is not None:
+        return
+    if result_sink is not None and not upload._d2_completion_allowed(result_sink):
+        raise RuntimeError('D2_DIAGNOSTICS_INCOMPLETE')
 
     print("Скрипт закончил отрабатывать: {}".format(datetime.datetime.now()))
     end_time = time.time()
@@ -139,8 +155,9 @@ def _run_cli():
         sys.stderr.write('LOG_STARTUP_FAILED: ' + cause + '\n')
         return 130 if isinstance(error, KeyboardInterrupt) else 1
     outcome, status, application_error = 'COMPLETED', 0, None
+    result_sink = {}
     try:
-        main(logging_context=context)
+        main(logging_context=context, result_sink=result_sink)
     except BaseException as error:
         outcome = 'INTERRUPTED' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'FAILED'
         if isinstance(error, KeyboardInterrupt):
@@ -156,9 +173,23 @@ def _run_cli():
         run_logging.mark_unreached(context, 'INTERRUPTION' if outcome == 'INTERRUPTED' else 'PRIOR_STAGE_FAILED')
     try:
         report = run_logging.finalize_logging(context, execution_outcome=outcome,
-            exit_status=status, application_error=application_error)
-        return report['exit_status']
+            exit_status=status, application_error=application_error, release_result=None)
+        if not result_sink:
+            # До upload сохраняется существующая F-LOG CLI семантика остальных этапов.
+            return report['exit_status']
+        import upload
+        status = upload._d2_apply_finalization(result_sink, report, status=status)
+        if outcome == 'COMPLETED' and upload._d2_completion_allowed(result_sink):
+            print('Скрипт полностью закончил работу. Локальные операции и диагностика завершены.')
+        return status
     except BaseException:
+        if result_sink:
+            try:
+                import upload
+                upload._d2_apply_finalization(result_sink, None, status=status)
+            except BaseException:
+                result_sink.update(diagnostics_state='INCOMPLETE', final_exit_status=status or 1,
+                    storage_sealed='UNKNOWN')
         sys.stderr.write('LOG_FINALIZATION_FAILED\n')
         return status if status else 1
 

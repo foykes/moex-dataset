@@ -183,3 +183,78 @@ reports. Expected payload rejection is distinct from enclosing test success.
 Windows red-before/green evidence is retained separately for all three findings.
 New exact-head checks require repeat independent review; earlier successful runs
 do not establish acceptance of the revised guard boundary.
+
+## D2-01 fixed offline lane
+
+The separate owner H and isolated SETUP grants are recorded in coordination.
+Use this worktree's verified `.f1/venv-dev` interpreter and unchanged hash-locked
+dependencies. Fixed commands:
+
+```text
+python -I -B -X utf8 tools/offline_tests.py --lane d2 --d2-scope previous-failures
+python -I -B -X utf8 tools/offline_tests.py --lane d2 --d2-scope r31a-contract
+python -I -B -X utf8 tools/offline_tests.py --lane d2 --collect-only
+python -I -B -X utf8 tools/offline_tests.py --lane d2
+```
+
+The two named scopes expand only to literal registered D2 node IDs and verify
+the exact collection set/count, including duplicate refusal. The first repeats
+the two original failures; the second covers the closed R3.1a contract inventory.
+They cannot combine with collection-only, legacy collection, `--ref` or another
+lane. Arbitrary pytest arguments, targets and timeout overrides are not accepted.
+The default full D2 inventory remains required.
+
+D2 targets only `tests/d2`. Its roots are fresh `.f3/d2` temp/cache/evidence and
+issued `.f-log/d2` slots. Controller, publication-worker, baseline-worker and
+lock-worker roles have fixed targets, arguments, source identity, one-use tickets
+and registry case IDs. Unknown cases/targets/options confer no permission. The
+existing F1/F2/F-LOG/F3/D1 policies and the 900-second outer lane watchdog remain.
+
+Closed D2 cases receive work budget 15 seconds, poll 0.1 seconds, shared cleanup
+10 seconds and existing logging shutdown 10 seconds. The case watchdog is at
+most 75 seconds. There are no arbitrary timeout CLI flags. Hang acceptance
+requires the actual D2 parent deadline, cleanup requests and independent retained
+PID/OS settlement before any controller Job action. A negative cleanup case
+observes a live worker and preserves nonzero/UNKNOWN before test-only Job
+containment. External termination cannot upgrade D2 evidence. Legacy hang uses
+its own bounded baseline containment to demonstrate the old defect.
+
+Red-before validates original `upload.py` blob
+`dc1f12bc63eadebe589a666ffcb6a0a2bb908747` and its full literal bytes/hash. Four
+swallowed failures, ignored exit 23 and a real hang are tested using original
+baseline functions; baseline has no new receipt/helper requirements. Current
+cases cover both starts, partial/UNKNOWN outcomes, abnormal/bootstrap exits,
+checkpoint corruption and size boundary+1, listener/final ACK faults, same-run
+logging, native standard handles, foreign object effects and negative canaries.
+Checkpoint-reader cases independently prove actual reader closure before the
+positive replacement/new-bytes oracle. An open-destination conflict remains an
+expected refusal. READY readers close before GO; terminal reads require actual OS
+settlement. Live sibling leaf access is refused before metadata effects. Slot-local
+writer/reservation checks, leftover pending refusal and the final full inventory
+retain alias/reparse/hardlink/corruption checks. Exact native arguments,
+conversion/read failure cleanup and foreign caller/descriptor/path refusal remain.
+The two parent-finalization faults require both children to succeed and the
+intended pre-seal boundary to be observed. Raised-finalization fixture cleanup is
+separate from the application CLI/sink; the INCOMPLETE scenario uses the unchanged
+logger's actual report rather than a fabricated successful seal.
+Raw canary captures stay in harness memory; exported evidence contains safe
+observations. Literal Google columns/order/arguments, FTP destinations and
+fixture bytes/hashes remain independently checked.
+
+After changes, all five existing lanes and D2 plus the ten-pair read-only notebook
+inventory must run on the exact clean tested HEAD. Hosted D2 coverage is
+`NOT EXECUTED`: CI is unchanged. Windows native fixtures do not establish Ubuntu
+VPS/Linux/macOS operation, production publication/readback or issue closure.
+See [D2 contracts and remaining adoption](d2_supervision.md).
+
+Historical pre-amendment D2 stop: the fifth working-tree run was 174 PASS /
+2 FAIL (176 collected, exit 86). Live-reader replacement failed and the intended
+parent-finalization boundary was not reached. All five historical test sets and
+the BLOCKED handoff remain preserved; these results are not upgraded to PASS.
+The owner accepted R3.1a and resumed under the existing H/SETUP grants.
+`previous-failures` subsequently passed 2 tests (3.15 s, exit 0, run
+`98a26eefbb4b48e394d40bccdae004b4`); `r31a-contract` passed 57 tests (85.79 s,
+exit 0, run `fd336401949a4faf9e92336c60ad9530`). Those working-tree runs bind
+source digest `6e6cf094b1ba2e8aab555eb0946a9c25de97c711b15eaeadb3d1255bd54b7119`
+and precede subsequent guard/document refinements. Scoped repeat, full D2, prior
+lanes and exact-clean-HEAD checks are still required; no PR readiness is claimed.

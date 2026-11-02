@@ -1,0 +1,102 @@
+{
+  "direction": "D2_WINDOWS",
+  "status": "WIP_PRESERVED_NOT_ACCEPTED_NOT_EXECUTED",
+  "source_head": "42830d91b4c701b899cbadb5ebdf8829eec6b5cf",
+  "source_index_preserved": true,
+  "source_worktree_preserved": true,
+  "encoding_policy": "exact original worktree bytes in Git blobs; physical versus normalized identities remain distinct",
+  "files": [
+    {
+      "path": "docs/coordination.md",
+      "bytes": 51594,
+      "sha256": "e7f28b91bdbc83ca7a9fa5b07819d2f714e1ad0eb9f0d65357a1fd579ce69d66",
+      "blob": "b731bcb7f98307d181735f1746667db2952e64ec"
+    },
+    {
+      "path": "docs/testing.md",
+      "bytes": 16123,
+      "sha256": "c16bcc31b2a7cff9f364068cc07ff7f9380f86412974accedb3ace8874b85f02",
+      "blob": "bbe379dd6aaa275daf27d217d42e8e6f230fae7e"
+    },
+    {
+      "path": "main.py",
+      "bytes": 9910,
+      "sha256": "ac83dbbab37c758d6f9e231959035d7e1a1ac9822123a361f8847c419455822a",
+      "blob": "3a4f3c48e9e8d6022d8b60cea5663a5a46086b02"
+    },
+    {
+      "path": "tools/offline_guard.py",
+      "bytes": 295279,
+      "sha256": "c468737861175633180f89b0629d09490c9b1024ad4c23d19cc960c7a822c07b",
+      "blob": "b45d7f5b001a4e5196efd0742981c290516ae22e"
+    },
+    {
+      "path": "tools/offline_tests.py",
+      "bytes": 30158,
+      "sha256": "8ad562e43f9065a321855cd303838fde8d78002a9f334f5e5fbb082af0d48d55",
+      "blob": "a974a496ac644c1c8e046bc070aa05649949bc86"
+    },
+    {
+      "path": "upload.ipynb",
+      "bytes": 115458,
+      "sha256": "05e0ec1c440341eb7d4ffc4a34289c7d5fcba6d7dce133e47db976eba2d9aff3",
+      "blob": "088211e9a717b215ae0471a54e871aca0d0a5d38"
+    },
+    {
+      "path": "upload.py",
+      "bytes": 98072,
+      "sha256": "70c2b89bbc0543ce462c4ef5b650c8111af080cb2daabea3d8c018fc83b66c53",
+      "blob": "91479d5e80eeb5e14516dab2d3b7e9183ff26817"
+    },
+    {
+      "path": "docs/d2_supervision.md",
+      "bytes": 18005,
+      "sha256": "8246684f96b2ed02d003e90fc5c5bf58a3464a90896840b3917d19c0e9f0b6fa",
+      "blob": "2640a26772f5af88d4bca27aad40a28969ccb265"
+    },
+    {
+      "path": "tests/d2/conftest.py",
+      "bytes": 2060,
+      "sha256": "55b41c27ffa827a654c50f14a5a14127e37c0c214837858ea1ba0e39ac29ca60",
+      "blob": "d961a07714b1e2e2fc4d9941b32c0f871abf9734"
+    },
+    {
+      "path": "tests/d2/d2_worker.py",
+      "bytes": 43159,
+      "sha256": "f804ac5d9845cee3344d58081e1fbdf61a3a8183f28065ebf5d7b3febed5efe7",
+      "blob": "0e2b9f98ff4319a25135c018a7b996a46465e794"
+    },
+    {
+      "path": "tests/d2/test_guard_admission.py",
+      "bytes": 22119,
+      "sha256": "e972105de573cf74bfe30467ff7a23ab8f363001b15b5f2b105824b089f47cb0",
+      "blob": "1cdc01c2c8e1be8433203fad2844a87bc6cb0aff"
+    },
+    {
+      "path": "tests/d2/test_logging_contract.py",
+      "bytes": 8909,
+      "sha256": "8abcf072ce4e5d2287e9b27e0f5409d69803a46204a937bea0ccc8b2facea7ba",
+      "blob": "489e8d480f85815188c6893c876018adcdcf4f69"
+    },
+    {
+      "path": "tests/d2/test_supervision.py",
+      "bytes": 53022,
+      "sha256": "31792809517c39e380227c144c95a38901008ef93d66c4d784100385c144d5bb",
+      "blob": "146ec6a2472dfa60d8cd186b2fbea767ddea7f2e"
+    },
+    {
+      "path": "tests/d2/test_targets.py",
+      "bytes": 16167,
+      "sha256": "ec98d8430b01d42d0f3b39509332d40a8deeb69acfbdca68b36fcf216d7d1e57",
+      "blob": "97171f2a9140201d727804a95e52594367729d94"
+    },
+    {
+      "path": "tests/fixtures/d2/expected.json",
+      "bytes": 11717,
+      "sha256": "fb90b362303c9afb33b2594009d748b79a28cadddaed9303e62944a8822bc2d8",
+      "blob": "abb68d48b36237cfd6a51993bcfaf0a6ae919934"
+    }
+  ],
+  "execution_authority": false,
+  "notes": "Historical grants and test results remain scoped to their original source manifests. This snapshot grants no execution, implementation adoption, ownership release, CI, merge or production."
+}

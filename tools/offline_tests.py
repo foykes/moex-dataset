@@ -14,7 +14,56 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 LANE_TARGETS = {'f1': 'tests/environment', 'f2': 'tests/f2',
-                'flog': 'tests/logging', 'f3': 'tests/shared', 'd1': 'tests/d1'}
+                'flog': 'tests/logging', 'f3': 'tests/shared', 'd1': 'tests/d1', 'd2': 'tests/d2'}
+D2_SCOPES = {
+    'previous-failures': (
+        'tests/d2/test_guard_admission.py::test_checkpoint_reader_native_lifetime',
+        'tests/d2/test_supervision.py::test_native_case[parent_finalization_raises]',
+    ),
+    'r31a-contract': (
+        'tests/d2/test_guard_admission.py::test_checkpoint_reader_native_lifetime',
+        'tests/d2/test_guard_admission.py::test_checkpoint_reader_fd_reuse_does_not_close_foreign_owner',
+        'tests/d2/test_guard_admission.py::test_checkpoint_reader_foreign_callers_are_refused',
+        'tests/d2/test_guard_admission.py::test_checkpoint_reader_open_destination_conflict_is_negative',
+        *(f'tests/d2/test_guard_admission.py::test_checkpoint_reader_role_and_phase_denied_before_metadata[{fault}]'
+          for fault in ('worker_role', 'live_slot')),
+        *(f'tests/d2/test_guard_admission.py::test_worker_live_sibling_slot_refused_before_effect[{effect}]'
+          for effect in ('metadata', 'open', 'full_inventory')),
+        *(f'tests/d2/test_guard_admission.py::test_legacy_lane_refuses_d2_child_command[{lane}-{role}]'
+          for lane in ('f1', 'f2', 'flog', 'f3', 'd1') for role in ('worker', 'lane-worker')),
+        *(f'tests/d2/test_guard_admission.py::test_controller_role_requires_controller_slot[{worker}]'
+          for worker in ('google', 'ftp', 'holder', 'contender')),
+        *(f'tests/d2/test_guard_admission.py::test_d2_child_command_requires_pinned_interpreter[{role}-{fault}]'
+          for role in ('lane-worker', 'd2-controller') for fault in ('foreign', 'relative', 'empty')),
+        *(f'tests/d2/test_guard_admission.py::test_checkpoint_reader_failed_phase_closes_owner[{phase}]'
+          for phase in ('create', 'conversion', 'fdopen', 'fdopen_after_audit', 'read', 'foreign_fd', 'foreign_handle')),
+        *(f'tests/d2/test_guard_admission.py::test_checkpoint_reader_invalid_path_has_no_native_effect[{fault}]'
+          for fault in ('filename', 'root', 'alias')),
+        *(f'tests/d2/test_guard_admission.py::test_checkpoint_reader_parameters_are_closed[{value}]'
+          for value in ('1-1073741824', '2-3', '3-1', '4-2', '5-128', '6-1', '3-False', '6-False')),
+        *(f'tests/d2/test_supervision.py::test_slot_writer_preserves_own_checks_without_sibling_metadata[{fault}]'
+          for fault in ('none', 'own_oversize', 'own_hardlink', 'own_reparse')),
+        *(f'tests/d2/test_supervision.py::test_slot_writer_refuses_forged_reservation[{fault}]'
+          for fault in ('bounds', 'limits', 'identity')),
+        'tests/d2/test_supervision.py::test_slot_writer_refuses_existing_pending',
+        *(f'tests/d2/test_supervision.py::test_slot_reservation_enforces_reduced_limits[{field}]'
+          for field in ('max_checkpoint_bytes', 'max_result_bytes', 'max_run_bytes')),
+        'tests/d2/test_supervision.py::test_slot_reservation_bounds_full_transition_shapes',
+        'tests/d2/test_supervision.py::test_parent_reads_only_settled_checkpoint',
+        'tests/d2/test_supervision.py::test_go_visible_interruption_marks_unproven_outputs_unknown',
+        'tests/d2/test_supervision.py::test_unsettled_cleanup_skips_peer_metadata_and_result_write',
+        *(f'tests/d2/test_supervision.py::test_ready_reader_closed_before_go[{fault}]'
+          for fault in ('none', 'closure_error')),
+        *(f'tests/d2/test_supervision.py::test_full_inventory_requires_stable_phase[{fault}]'
+          for fault in ('clean', 'left_pending')),
+        *(f'tests/d2/test_supervision.py::test_native_case[{case}]' for case in (
+            'parent_finalization_raises', 'parent_finalization_incomplete',
+            'checkpoint_missing', 'checkpoint_corrupt', 'checkpoint_oversize',
+            'checkpoint_stale_run', 'checkpoint_stale_pid', 'checkpoint_stale_sequence',
+            'partial_ftp', 'partial_google')),
+        'tests/d2/test_supervision.py::test_total_run_byte_boundary_and_plus_one',
+    ),
+}
 PAIRS = ('1year', 'all', 'count_check', 'data_gathering', 'dividends',
          'dohodru_data', 'main_tests', 'tech', 'tests', 'upload')
 sys.modules.setdefault('mds_offline_tests', sys.modules[__name__])
@@ -89,6 +138,12 @@ class ReportPlugin:
             legacy = item.nodeid.startswith('main_tests.py::')
             item.add_marker(pytest.mark.live_read if legacy else pytest.mark.offline)
         self.collected = [item.nodeid for item in items]
+        scope = getattr(self.context, 'd2_scope', None)
+        if self.context.lane == 'd2' and scope is not None:
+            expected = D2_SCOPES[scope]
+            if (len(self.collected) != len(expected) or len(set(self.collected)) != len(self.collected)
+                    or set(self.collected) != set(expected)):
+                raise pytest.UsageError('D2_SCOPED_COLLECTION_MISMATCH')
 
     def pytest_runtest_setup(self, item):
         guard_module().set_node(item.nodeid)
@@ -123,6 +178,8 @@ class ReportPlugin:
         guard = guard_module()
         result = dict(guard.report_metadata(), exit_code=int(exitstatus),
                       collected=self.collected, reports=self.reports)
+        if self.context.lane == 'd2':
+            result['d2_scope'] = getattr(self.context, 'd2_scope', None)
         # Native conftests keep their original substantive report separately.
         name = _report_name(self.context) if self.context.lane == 'f3' else 'collection.json'
         guard.exclusive_json(self.context.report_dir / name, result)
@@ -195,17 +252,24 @@ def _native_bootstrap(lane):
     return guard_module().ensure_context(ROOT, lane=lane, install=False)
 
 
-def _execute_lane(lane, collect_only=False, legacy=False):
+def _execute_lane(lane, collect_only=False, legacy=False, d2_scope=None):
     guard = guard_module()
-    if lane == 'd1':
-        guard.d1_preload_console(ROOT)
+    if lane in {'d1', 'd2'}:
+        if lane == 'd1':
+            guard.d1_preload_console(ROOT)
+        else:
+            guard.d2_preload_console(ROOT)
         # Общая защита ставится до pytest, helper и logger. D1 не получает
         # расширенные разрешения старых native F2/F-LOG bootstrap.
-        context = guard.ensure_context(ROOT, lane='d1', install=True)
+        context = guard.ensure_context(ROOT, lane=lane, install=True)
     else:
         context = _native_bootstrap(lane) if lane != 'f3' else bootstrap_entry()
     if context.ticket is None or context.role != 'lane-worker' or context.lane != lane:
         raise ValueError('Internal lane entry requires its current one-use ticket')
+    if d2_scope is not None:
+        if lane != 'd2' or d2_scope not in D2_SCOPES or collect_only or legacy:
+            raise ValueError('D2_SCOPED_ARGUMENTS_REFUSED')
+        context.d2_scope = d2_scope
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     import pytest
@@ -215,6 +279,9 @@ def _execute_lane(lane, collect_only=False, legacy=False):
     arguments = ['-c', str(ROOT / 'pyproject.toml'), '--confcutdir', str(ROOT / LANE_TARGETS[lane]),
                  str(ROOT / LANE_TARGETS[lane]), '-q', '--tb=short', '--basetemp', str(basetemp),
                  '-o', 'cache_dir=' + str(cache)]
+    if d2_scope is not None:
+        arguments[4:5] = [str(ROOT / target.split('::', 1)[0]) + '::' + target.split('::', 1)[1]
+                          for target in D2_SCOPES[d2_scope]]
     plugin = ReportPlugin(context)
     if lane == 'f3':
         # The root conftest is intentionally included for the actual F3 boundary.
@@ -232,6 +299,11 @@ def _execute_lane(lane, collect_only=False, legacy=False):
 def run_d1_case(case):
     """Execute one closed D1 registry case; no caller-provided launch arguments."""
     return guard_module().run_d1_case(case)
+
+
+def run_d2_case(case):
+    """Execute one fixed D2 process regression, with no forwarded arguments."""
+    return guard_module().run_d2_case(case)
 
 
 COMMANDS = {
@@ -386,8 +458,11 @@ def main(argv=None):
     parser.add_argument('--collect-only', action='store_true')
     parser.add_argument('--legacy-collection', action='store_true')
     parser.add_argument('--ref')
+    parser.add_argument('--d2-scope', choices=D2_SCOPES)
     args = parser.parse_args(argv)
     lane = args.lane or args.execute_lane
+    if args.d2_scope and (lane != 'd2' or args.collect_only or args.legacy_collection or args.ref):
+        parser.error('--d2-scope is a fixed D2 run only')
     if args.legacy_collection and (lane != 'f3' or args.collect_only):
         parser.error('--legacy-collection is f3-only and already collection-only')
     if args.notebook_check:
@@ -399,7 +474,7 @@ def main(argv=None):
     if args.execute_lane:
         if not args.ticket or args.ticket != os.environ.get('MDS_OFFLINE_TICKET'):
             parser.error('Internal worker ticket mismatch')
-        return _execute_lane(lane, args.collect_only, args.legacy_collection)
+        return _execute_lane(lane, args.collect_only, args.legacy_collection, args.d2_scope)
     if args.ticket:
         parser.error('Tickets are internal-only')
     guard = guard_module()
@@ -411,6 +486,8 @@ def main(argv=None):
         command.append('--collect-only')
     if args.legacy_collection:
         command.append('--legacy-collection')
+    if args.d2_scope:
+        command.extend(['--d2-scope', args.d2_scope])
     # The issued command records the full exact argv, including the ticket path.
     # Environment carries the current ticket; the exact workload argv stays fixed.
     ticket = guard.issue_ticket('lane-worker', command, expected_exit=None)
@@ -421,9 +498,12 @@ def main(argv=None):
     guard.finish(result.returncode)
     issues = guard.validate_reports(context)
     outward = 86 if issues or result.report_errors else result.returncode
-    guard.exclusive_json(context.report_dir / 'run.json', dict(guard.report_metadata(),
+    run_record = dict(guard.report_metadata(),
         actual_exit=result.actual_exit, exit_code=outward, errors=issues,
-        collected_only=args.collect_only or args.legacy_collection))
+        collected_only=args.collect_only or args.legacy_collection)
+    if lane == 'd2':
+        run_record['d2_scope'] = args.d2_scope
+    guard.exclusive_json(context.report_dir / 'run.json', run_record)
     print('OFFLINE_RESULT ' + json.dumps({'lane': lane, 'mode': context.mode,
           'exit_code': outward, 'report_root': str(context.report_dir)}, sort_keys=True))
     return outward

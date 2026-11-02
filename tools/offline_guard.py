@@ -21,17 +21,19 @@ import subprocess
 import sys
 import threading
 import time
-from types import SimpleNamespace
+from types import CodeType, SimpleNamespace
 import uuid
 import weakref
 
 
 sys.modules.setdefault('mds_offline_guard', sys.modules[__name__])
-LANES = {'f1': '.f1', 'f2': '.f2', 'flog': '.f-log', 'f3': '.f3', 'd1': '.f3/d1'}
+LANES = {'f1': '.f1', 'f2': '.f2', 'flog': '.f-log', 'f3': '.f3', 'd1': '.f3/d1',
+         'd2': '.f3/d2'}
 ROLES = {'entry', 'worker', 'supervisor', 'lane-worker', 'notebook-check', 'f2-probe', 'f2-preflight',
          'f2-script', 'f2-notebook', 'f2-hook', 'f2-precommit',
          'f2-hook-check', 'f2-spawn', 'flog-probe', 'flog-worker',
-         'native-git', 'f3-control', 'command', 'd1-worker'}
+         'native-git', 'f3-control', 'command', 'd1-worker', 'd2-controller',
+         'd2-worker', 'd2-baseline-worker', 'd2-lock-worker'}
 _CONTEXT = None
 _ORIGINAL_SLEEP = time.sleep
 _ORIGINAL_POPEN = subprocess.Popen.__init__
@@ -39,6 +41,9 @@ _ORIGINAL_OPEN = open
 _ORIGINAL_OS_OPEN = os.open
 _ORIGINAL_FDOPEN = os.fdopen
 _ORIGINAL_OS_CLOSE = os.close
+_ORIGINAL_FSTAT = os.fstat
+_ORIGINAL_LSTAT = os.lstat
+_ORIGINAL_STAT = os.stat
 _ORIGINAL_WINDLL = getattr(ctypes, 'WinDLL', None)
 _OWN_FDS = {0, 1, 2}
 _WRITABLE_FDS = {}
@@ -49,6 +54,21 @@ _FIXTURE_SCRIPTS = {}
 _D1_NATIVE_HANDLES = {}
 _D1_MUTEX_NAMES = set()
 _D1_CONTROLLER_ACTIVE = False
+_D2_REQUESTS = {}
+_D2_PROCESS_TICKETS = weakref.WeakKeyDictionary()
+_D2_NATIVE_HANDLES = {}
+_D2_CASE_ACTIVE = None
+if sys.platform == 'win32':
+    import _winapi as _d2_winapi
+    import msvcrt as _d2_msvcrt
+    _D2_WINAPI_ORIGINAL = {name: getattr(_d2_winapi, name) for name in
+        ('CreateProcess', 'DuplicateHandle', 'WaitForSingleObject', 'GetExitCodeProcess', 'TerminateProcess')}
+    _D2_READER_ORIGINAL = dict(CreateFile=_d2_winapi.CreateFile,
+        CloseHandle=_d2_winapi.CloseHandle, open_osfhandle=_d2_msvcrt.open_osfhandle,
+        get_osfhandle=_d2_msvcrt.get_osfhandle)
+else:
+    _D2_WINAPI_ORIGINAL = {}
+    _D2_READER_ORIGINAL = {}
 
 
 class OfflineViolation(RuntimeError):
@@ -68,13 +88,15 @@ def _linked(info):
 def checked_path(value, boundary=None):
     """Check lexical components before resolve/open; never expand the scope."""
     path = _absolute(value)
+    if _CONTEXT is not None and _CONTEXT.lane == 'd2':
+        _d2_slot_access(path, 'METADATA')
     if boundary is not None and not path.is_relative_to(_absolute(boundary)):
         raise ValueError('OFFLINE_PATH_OUTSIDE_ROOT')
     current = Path(path.anchor)
     for part in path.parts[1:]:
         current /= part
         try:
-            info = current.lstat()
+            info = _ORIGINAL_LSTAT(current) if _CONTEXT is not None and _CONTEXT.lane == 'd2' else current.lstat()
         except FileNotFoundError:
             continue
         if _linked(info) or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
@@ -269,7 +291,7 @@ def _load_ticket(root, implicit=False):
         if (script.name != 'cold_converter_import.py'
                 or ticket.get('script_digest') != hashlib.sha256(script.read_bytes()).hexdigest()):
             raise ValueError('OFFLINE_FIXTURE_SCRIPT_CHANGED')
-    if ticket['role'] not in {'f2-spawn', 'flog-worker'} and not (implicit and ticket['role'] in {'native-git', 'f2-precommit'}):
+    if ticket['role'] not in {'f2-spawn', 'flog-worker', 'd2-worker', 'd2-baseline-worker', 'd2-lock-worker'} and not (implicit and ticket['role'] in {'native-git', 'f2-precommit'}):
         expected = _normal_argv(ticket['argv'])
         if ticket['role'] == 'f2-precommit':
             expected = _normal_argv([sys.executable, '-I', '-B', '-X', 'utf8', str(root / 'tools/offline_guard.py'), '--role', 'f2-precommit'])
@@ -312,10 +334,10 @@ def ensure_context(root, lane='f3', role='entry', mode='run', native_counts=None
         run_id = directory.name
         process_id, parent_id = uuid.uuid4().hex, None
         roots = [root / LANES[lane] / 'tmp', root / LANES[lane] / 'cache' / 'runs' / run_id, directory]
-        if lane == 'd1':
+        if lane in {'d1', 'd2'}:
             # Parent владеет только текущим D1 envelope. Каждый child далее
             # получает свой slot; чужие F-LOG runs не входят в writable roots.
-            roots.append(root / '.f-log/d1' / run_id)
+            roots.append(root / ('.f-log/' + lane) / run_id)
         expected_counts = {}
     directory.mkdir(parents=True, exist_ok=True)
     # Pytest's parent mkdir calls happen before fixture creation. Allocate only
@@ -342,7 +364,7 @@ def ensure_context(root, lane='f3', role='entry', mode='run', native_counts=None
     os.environ['MDS_OFFLINE_SOURCE_DIGEST'] = source_digest
     os.environ['MDS_OFFLINE_RUN_ID'] = run_id
     if install is None:
-        install = lane in {'f3', 'd1'}
+        install = lane in {'f3', 'd1', 'd2'}
     if install:
         install_guards()
         mark_guard_ready()
@@ -387,6 +409,8 @@ def native_notice(kind, role=None):
     c.counts[kind] = c.counts.get(kind, 0) + 1
     item = dict(report_metadata(), kind=kind, sequence=len(c.violations) + 1,
                 nodeid=os.environ.get('PYTEST_CURRENT_TEST', '').split(' (')[0])
+    if c.lane == 'd2' and kind == 'native':
+        item['native_origin'] = _d2_safe_native_origin()
     c.violations.append(item)
     try:
         exclusive_json(c.report_dir / 'processes' / (c.process_id + '.violation.' + str(item['sequence']) + '.json'), item)
@@ -415,6 +439,10 @@ def set_expected_counts(counts):
 
 
 def _fault_scope(node, delta):
+    if node in {
+            'tests/d2/test_guard_admission.py::test_alternative_native_loaders_refused[cdll]',
+            'tests/d2/test_guard_admission.py::test_alternative_native_loaders_refused[windll]'}:
+        return _CONTEXT.lane == 'd2' and delta == {'native': 1}
     if node in {
             'tests/d1/test_guard_admission.py::test_alternative_native_loaders_refused[cdll]',
             'tests/d1/test_guard_admission.py::test_alternative_native_loaders_refused[windll]'}:
@@ -445,7 +473,7 @@ def expect_fault(kind, count=1):
     """Test-only exact expectation; the operation is still refused and journaled."""
     before = _CONTEXT.counts.get(kind, 0)
     node = os.environ.get('PYTEST_CURRENT_TEST', '').split(' (')[0]
-    d1_native = kind == 'native' and _CONTEXT.lane == 'd1' and _fault_scope(node, {'native': 1})
+    d1_native = kind == 'native' and _CONTEXT.lane in {'d1', 'd2'} and _fault_scope(node, {'native': 1})
     if (not node.startswith('tests/shared/') and not d1_native) or count != 1:
         raise ValueError('OFFLINE_FAULT_SCOPE')
     yield
@@ -464,6 +492,9 @@ def finish(exit_code=0):
                expected_counts=dict(c.expected_counts),
                violations=len(c.violations), children=[t['ticket_id'] for t in c.children],
                report_error=c.report_error)
+    if c.lane == 'd2' and c.role == 'd2-worker':
+        obj['slot_effects'] = dict(getattr(c, 'd2_slot_effects', {}))
+        obj['slot_phase_witnesses'] = list(getattr(c, 'd2_phase_history', []))
     try:
         exclusive_json(c.report_dir / 'processes' / (c.process_id + '.final.json'), obj)
         c.finished = True
@@ -481,7 +512,22 @@ def _atexit_finish():
         sys.stderr.write('OFFLINE_FINAL_REPORT_FAILED\n')
     finally:
         for identifier in list(_CHILD_JOBS):
+            witness = None
+            if _CONTEXT is not None and _CONTEXT.lane == 'd2':
+                witness = next((handle for handle, record in _D2_NATIVE_HANDLES.items()
+                    if record.get('ticket_id') == identifier and record.get('retained')), None)
             _job_close(_CHILD_JOBS.pop(identifier), terminate=True)
+            if witness is not None:
+                try:
+                    settled = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](witness, 10000) == 0
+                    code = int(_D2_WINAPI_ORIGINAL['GetExitCodeProcess'](witness)) if settled else None
+                    proof = _D2_NATIVE_HANDLES[witness]
+                    exclusive_json(_CONTEXT.report_dir / 'tickets' / (identifier + '.d2-containment.json'),
+                        dict(ticket_id=identifier, run_id=_CONTEXT.run_id, pid=proof.get('pid'),
+                            actual_exit=-15 if code == 65536 else code, raw_windows_exit=code,
+                            settled=settled, witness='GUARD_RETAINED_HANDLE', purpose='GUARD_EXIT_CONTAINMENT'))
+                except (OSError, ValueError):
+                    pass
 
 
 def _owned(value):
@@ -553,7 +599,13 @@ def _audit(event, args):
         reject('network')
     if event == 'open':
         value, mode, flags = args
+        if _CONTEXT.lane == 'd2' and isinstance(value, (str, bytes, os.PathLike)):
+            _d2_slot_access(value, 'OPEN')
         if isinstance(value, int):
+            if _CONTEXT.lane == 'd2' and _d2_checkpoint_fdopen_grant(value, mode, flags):
+                return
+            if _CONTEXT.lane == 'd2' and _d2_bootstrap_read_grant(value, mode, flags):
+                return
             if getattr(_THREAD_STATE, 'launch', 0):
                 _OWN_FDS.add(value)
             if value not in _OWN_FDS:
@@ -562,7 +614,7 @@ def _audit(event, args):
         if not isinstance(value, (str, bytes, os.PathLike)):
             return
         path = _absolute(value)
-        if _secret(path):
+        if _secret(path) and not _d2_fake_secret(path):
             reject('secrets')
         writing = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
         null = os.path.normcase(str(path)) == os.path.normcase(os.path.abspath(os.devnull))
@@ -585,6 +637,20 @@ def _audit(event, args):
             p = _absolute(args[0])
             if p.name.endswith('current') and _owned(p.parent):
                 return
+            if (_CONTEXT.lane == 'd2' and getattr(_CONTEXT, 'nodeid', '') ==
+                    'tests/d2/test_targets.py::test_hardlink_source_alias_refused'
+                    and p.name == 'alias.csv' and _owned(p.parent)):
+                info, source = _ORIGINAL_LSTAT(p), _ORIGINAL_LSTAT(p.parent / 'README.md')
+                if (stat.S_ISREG(info.st_mode) and info.st_nlink == source.st_nlink == 2
+                        and (info.st_dev, info.st_ino) == (source.st_dev, source.st_ino)):
+                    return
+            if (_CONTEXT.lane == 'd2' and getattr(_CONTEXT, 'nodeid', '') ==
+                    'tests/d2/test_guard_admission.py::test_checkpoint_reader_invalid_path_has_no_native_effect[alias]'
+                    and p.name == 'alias.json' and _owned(p.parent)):
+                info, source = _ORIGINAL_LSTAT(p), _ORIGINAL_LSTAT(p.parent / 'google.json')
+                if (stat.S_ISREG(info.st_mode) and info.st_nlink == source.st_nlink == 2
+                        and (info.st_dev, info.st_ino) == (source.st_dev, source.st_ino)):
+                    return
         if not all(_owned(p) for p in paths):
             reject('writers')
     if event in {'os.listdir', 'os.scandir'} and args and isinstance(args[0], (str, bytes, os.PathLike)):
@@ -597,6 +663,21 @@ def _audit(event, args):
                  'os.fork', 'os.forkpty', '_winapi.CreateProcess', 'subprocess.Popen'}:
         if not getattr(_THREAD_STATE, 'launch', 0):
             reject('children')
+    if _CONTEXT.lane == 'd2' and event in {'ctypes.dlopen', 'ctypes.dlsym'}:
+        if not getattr(_THREAD_STATE, 'd2_binding', False):
+            reject('native')
+    if _CONTEXT.lane == 'd2' and event == '_winapi.CreateFile':
+        token = getattr(_THREAD_STATE, 'd2_reader', None)
+        # Existing pinned multiprocessing named-pipe creation has its own
+        # launch/bootstrap contract. This request validates only the new reader.
+        if token is not None and (not token.get('creating') or
+                tuple(args) != (str(token['path']), 0x80000000, 7, 3, 0x00200080)):
+            reject('native')
+    if _CONTEXT.lane == 'd2' and event == 'msvcrt.open_osfhandle':
+        token = getattr(_THREAD_STATE, 'd2_reader', None)
+        if token is not None and (not token.get('transferring') or
+                tuple(args) != (token['handle'], os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)):
+            reject('descriptors')
     if _CONTEXT.lane == 'd1' and event == 'ctypes.dlopen':
         if (not getattr(_THREAD_STATE, 'd1_binding', False) or not args
                 or type(args[0]) is not str or args[0].lower() not in {'kernel32', 'kernel32.dll'}):
@@ -623,13 +704,32 @@ def install_guards():
     def workload_sleep(seconds):
         if getattr(_THREAD_STATE, 'controller', 0):
             return _ORIGINAL_SLEEP(seconds)
+        caller = sys._getframe(1)
+        if (_CONTEXT.lane == 'd2' and _d2_fixture_profile_admitted()
+                and seconds == .1 and caller.f_code.co_name in {'_d2_supervise', '_d2_worker_entry'}
+                and _absolute(caller.f_code.co_filename) == _CONTEXT.root / 'upload.py'):
+            return _ORIGINAL_SLEEP(seconds)
         reject('sleep')
     time.sleep = workload_sleep
 
     def guarded_open(path, flags, mode=0o777, *, dir_fd=None):
         if dir_fd is not None:
             reject('descriptors')
+        if _CONTEXT.lane == 'd2' and isinstance(path, (str, bytes, os.PathLike)):
+            _d2_slot_access(path, 'OPEN')
+        request = getattr(_THREAD_STATE, 'd2_request', None)
+        if request is not None:
+            case = request['ticket']['d2_contract']['case']
+            null = os.path.normcase(os.path.abspath(os.fsdecode(path))) == os.path.normcase(os.path.abspath(os.devnull))
+            mode_name = 'read' if not flags & (os.O_WRONLY | os.O_RDWR) else 'write'
+            if null and case == 'native_nul_' + mode_name + '_fault':
+                d2_fault_witness(case, request=request)
+                raise OSError('D2_NATIVE_NUL_' + mode_name.upper() + '_FAILED')
         descriptor = _ORIGINAL_OS_OPEN(path, flags, mode, dir_fd=dir_fd)
+        request = getattr(_THREAD_STATE, 'd2_request', None)
+        if request is not None and os.path.normcase(os.path.abspath(os.fsdecode(path))) == os.path.normcase(os.path.abspath(os.devnull)):
+            import msvcrt
+            request['nul_sources'][int(msvcrt.get_osfhandle(descriptor))] = 'read' if not flags & (os.O_WRONLY | os.O_RDWR) else 'write'
         _OWN_FDS.add(descriptor)
         _WRITABLE_FDS.pop(descriptor, None)
         if flags & (os.O_WRONLY | os.O_RDWR) and _owned(path):
@@ -639,18 +739,50 @@ def install_guards():
         return descriptor
 
     def guarded_close(fd):
+        reader = getattr(_THREAD_STATE, 'd2_reader', None)
+        if reader is not None:
+            _d2_checkpoint_reader_frame(reader, sys._getframe(1))
+            if (fd != reader.get('fd') or reader.get('fd_closed')
+                    or _D2_READER_ORIGINAL['get_osfhandle'](fd) != reader.get('transferred_handle')):
+                raise ValueError('D2_READER_CLOSE_OWNER')
+            result = _ORIGINAL_OS_CLOSE(fd)
+            reader['fd_closed'] = True
+            reader['fd_close_calls'] += 1
+            return result
         _OWN_FDS.discard(fd)
         _WRITABLE_FDS.pop(fd, None)
         return _ORIGINAL_OS_CLOSE(fd)
     os.open = guarded_open
     os.close = guarded_close
     def guarded_fdopen(fd, *args, **kwargs):
-        stream = _ORIGINAL_FDOPEN(fd, *args, **kwargs)
+        reader = getattr(_THREAD_STATE, 'd2_reader', None)
+        if reader is not None:
+            _d2_checkpoint_reader_frame(reader, sys._getframe(1))
+            if fd != reader.get('fd') or args != ('rb',) or kwargs != {'closefd': False}:
+                raise ValueError('D2_READER_STREAM_OWNER')
+            reader['fdopening'] = True
+        try:
+            stream = _ORIGINAL_FDOPEN(fd, *args, **kwargs)
+        finally:
+            if reader is not None:
+                reader['fdopening'] = False
+        if reader is not None:
+            reader['stream'] = stream
         record = _WRITABLE_FDS.pop(fd, None)
         if record is not None and stream.writable():
             _WRITABLE_FDS[fd] = (record[0], record[1], weakref.ref(stream))
         return stream
     os.fdopen = guarded_fdopen
+    def guarded_stat(path, *arguments, **options):
+        if _CONTEXT.lane == 'd2' and isinstance(path, (str, bytes, os.PathLike)):
+            _d2_slot_access(path, 'METADATA')
+        return _ORIGINAL_STAT(path, *arguments, **options)
+    def guarded_lstat(path, *arguments, **options):
+        if _CONTEXT.lane == 'd2' and isinstance(path, (str, bytes, os.PathLike)):
+            _d2_slot_access(path, 'METADATA')
+        return _ORIGINAL_LSTAT(path, *arguments, **options)
+    if _CONTEXT.lane == 'd2':
+        os.stat, os.lstat = guarded_stat, guarded_lstat
     original_dup = os.dup
     def guarded_dup(fd):
         if fd not in _OWN_FDS:
@@ -682,10 +814,10 @@ def install_guards():
     def guarded_popen(self, argv, *args, **kwargs):
         if not getattr(_THREAD_STATE, 'launch', 0):
             reject('children')
-        if _CONTEXT.lane == 'd1':
+        if _CONTEXT.lane in {'d1', 'd2'}:
             # Один token относится только к одной полной launch-заявке. Даже
             # внутри controller нельзя заменить argv, env, cwd или pipes.
-            token = getattr(_THREAD_STATE, 'd1_launch_token', None)
+            token = getattr(_THREAD_STATE, 'd1_launch_token' if _CONTEXT.lane == 'd1' else 'd2_launch_token', None)
             if (token is None or token.get('used') or args
                     or [os.fsdecode(p) for p in argv] != token['argv']
                     or kwargs != token['kwargs']):
@@ -697,6 +829,18 @@ def install_guards():
         ctypes.WinDLL = _d1_windll
         # Colorama preload не оставляет cached DLL loader или raw native leaf
         # доступными workload. Console APIs не входят в D1 allowlist.
+        ctypes.windll = ctypes.LibraryLoader(_d1_reject_loader)
+        ctypes.cdll = ctypes.LibraryLoader(_d1_reject_loader)
+        console = sys.modules.get('colorama.win32')
+        if console is not None:
+            console.windll = ctypes.windll
+            for name in ('_GetStdHandle', '_GetConsoleScreenBufferInfo', '_SetConsoleTextAttribute',
+                    '_SetConsoleCursorPosition', '_FillConsoleOutputCharacterA', '_FillConsoleOutputAttribute',
+                    '_SetConsoleTitleW', '_GetConsoleMode', '_SetConsoleMode'):
+                setattr(console, name, _d1_reject_console_call)
+            sys.modules['colorama.ansitowin32'].windll = ctypes.windll
+    if _CONTEXT.lane == 'd2' and _ORIGINAL_WINDLL is not None:
+        ctypes.WinDLL = _d2_windll
         ctypes.windll = ctypes.LibraryLoader(_d1_reject_loader)
         ctypes.cdll = ctypes.LibraryLoader(_d1_reject_loader)
         console = sys.modules.get('colorama.win32')
@@ -721,18 +865,24 @@ expected_fault = expect_fault
 
 def issue_ticket(role, argv, roots=None, expected_counts=None, expected_exit=0,
                  parent_id=None, native=False, required_roles=None, gate=False, mode=None,
-                 d1_contract=None):
+                 d1_contract=None, d2_contract=None):
     if _CONTEXT is None or role not in ROLES:
         raise ValueError('OFFLINE_CHILD_ROLE')
     c = _CONTEXT
+    if c.lane == 'd2' and role not in _D2_ROLES | {'lane-worker'}:
+        raise ValueError('D2_ADMISSION_ROLE')
     if c.lane == 'd1' and c.role == 'd1-worker':
         reject('children')
     if role == 'd1-worker' and (c.lane != 'd1' or not _D1_CONTROLLER_ACTIVE
                                or not isinstance(d1_contract, dict)):
         raise ValueError('D1_ADMISSION_TICKET')
+    if role.startswith('d2-'):
+        _d2_validate_contract(role, d2_contract)
     command = [os.fsdecode(p) for p in argv]
     if not command:
         raise ValueError('OFFLINE_CHILD_ARGV')
+    if c.lane == 'd2' and role == 'lane-worker' and not _allowed_command(command, role):
+        raise ValueError('D2_CHILD_COMMAND_SCOPE')
     issued_roots = [checked_path(p) for p in (roots or c.roots)]
     for p in issued_roots:
         if not any(p.is_relative_to(base) for base in c.roots):
@@ -750,6 +900,8 @@ def issue_ticket(role, argv, roots=None, expected_counts=None, expected_exit=0,
                   nodeid=getattr(c, 'nodeid', os.environ.get('PYTEST_CURRENT_TEST', '').split(' (')[0]))
     if role == 'd1-worker':
         ticket['d1_contract'] = dict(d1_contract)
+    if role.startswith('d2-'):
+        ticket['d2_contract'] = dict(d2_contract)
     if gate or role in {'lane-worker', 'worker', 'f3-control', 'command'}:
         ticket['gate'] = str(c.report_dir / 'tickets' / (ticket_id + '.gate'))
     if role == 'f3-control' and command[-1] == 'dataset-read':
@@ -1235,7 +1387,7 @@ def _job_create():
         raise OSError('OFFLINE_JOB_CREATE_FAILED')
     limits = ExtendedLimit()
     limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; no breakaway.
-    if _CONTEXT is not None and _CONTEXT.lane == 'd1':
+    if _CONTEXT is not None and _CONTEXT.lane in {'d1', 'd2'}:
         _THREAD_STATE.d1_job_limits = ctypes.string_at(ctypes.byref(limits), ctypes.sizeof(limits))
     try:
         configured = kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits))
@@ -1303,6 +1455,18 @@ def native_create_process(original, args, kwargs):
         if _CONTEXT is not None and _CONTEXT.lane == 'd1':
             _D1_NATIVE_HANDLES[int(process_handle)] = dict(kind='process', ticket_id=ticket['ticket_id'])
             _D1_NATIVE_HANDLES[int(thread_handle)] = dict(kind='thread', ticket_id=ticket['ticket_id'])
+        if _CONTEXT is not None and _CONTEXT.lane == 'd2':
+            _D2_NATIVE_HANDLES[int(process_handle)] = dict(kind='process', ticket_id=ticket['ticket_id'], pid=int(result[2]))
+            _D2_NATIVE_HANDLES[int(thread_handle)] = dict(kind='thread', ticket_id=ticket['ticket_id'])
+            request = _D2_REQUESTS.get(ticket['ticket_id'])
+            if request is not None:
+                request['observed_pid'] = int(result[2])
+                request['original_process_handle'] = int(process_handle)
+                exclusive_json(_CONTEXT.report_dir / 'tickets' / (ticket['ticket_id'] + '.d2-native-created.json'),
+                    dict(version=1, ticket_id=ticket['ticket_id'], run_id=ticket['run_id'],
+                        nodeid=ticket['nodeid'], case=ticket['d2_contract']['case'],
+                        worker_id=ticket['d2_contract']['worker_id'], pid=int(result[2]),
+                        controller_pid=os.getpid(), native_calls=1, witness='GUARD_CREATEPROCESS'))
         if not job[0].AssignProcessToJobObject(job[1], int(process_handle)):
             raise OSError('OFFLINE_JOB_ASSIGNMENT_FAILED')
         _CHILD_JOBS[ticket['ticket_id']] = job
@@ -1315,6 +1479,9 @@ def native_create_process(original, args, kwargs):
         if result is not None:
             job[0].TerminateProcess(int(result[0]), 124)
             import _winapi
+            if _CONTEXT is not None and _CONTEXT.lane == 'd2':
+                if _winapi.WaitForSingleObject(int(result[0]), 10000) == 0:
+                    record_child_exit(ticket, int(_winapi.GetExitCodeProcess(int(result[0]))))
             _winapi.CloseHandle(result[1])
             _winapi.CloseHandle(result[0])
         _CHILD_JOBS.pop(ticket['ticket_id'], None)
@@ -1476,12 +1643,12 @@ def _d1_reject_console_call(*args, **kwargs):
     reject('native')
 
 
-def d1_preload_console(root):
+def _preload_console(root, lane):
     """Admit only the fixed pytest console import before workload guards."""
     if _CONTEXT is not None or sys.platform != 'win32':
         raise ValueError('D1_CONSOLE_BOOTSTRAP_SCOPE')
     ticket = _load_ticket(checked_path(root))
-    if ticket is None or ticket['lane'] != 'd1' or ticket['role'] != 'lane-worker':
+    if ticket is None or ticket['lane'] != lane or ticket['role'] != 'lane-worker':
         raise ValueError('D1_CONSOLE_BOOTSTRAP_TICKET')
     # Pytest импортирует colorama до capture. Проверяем точные package bytes
     # из разрешённого interpreter, не вызываем init()/console mutation. После
@@ -1504,6 +1671,14 @@ def d1_preload_console(root):
     import colorama
     if checked_path(colorama.__file__) != package / '__init__.py':
         raise ValueError('D1_CONSOLE_BOOTSTRAP_ORIGIN')
+
+
+def d1_preload_console(root):
+    return _preload_console(root, 'd1')
+
+
+def d2_preload_console(root):
+    return _preload_console(root, 'd2')
 
 
 @contextmanager
@@ -2468,12 +2643,28 @@ def _control_case(argv):
 
 def _allowed_command(argv, role):
     command = [os.fsdecode(a) for a in argv]
+    if _CONTEXT.lane == 'd2' and role in {'lane-worker', 'd2-controller'}:
+        if (not command or os.path.normcase(os.path.abspath(command[0]))
+                != os.path.normcase(os.path.abspath(sys.executable))):
+            return False
+    if role == 'd2-controller':
+        return (_CONTEXT.lane == 'd2' and _CONTEXT.role == 'lane-worker'
+                and len(command) == 8 and command[1:5] == ['-I', '-B', '-X', 'utf8']
+                and command[5] == str(_CONTEXT.root / 'tests/d2/d2_worker.py')
+                and command[6] == '--case' and command[7] in D2_CASES)
     if role == 'f3-control':
         return _control_case(command) is not None
     if role in {'worker', 'lane-worker'}:
+        if _CONTEXT.lane == 'd2':
+            return (_CONTEXT.role == 'supervisor' and role == 'lane-worker'
+                and len(command) >= 8 and command[1:5] == ['-I', '-B', '-X', 'utf8']
+                and command[5] == str(_CONTEXT.root / 'tools/offline_tests.py')
+                and command[6:8] == ['--execute-lane', 'd2']
+                and command[8:] in ([], ['--collect-only'],
+                    ['--d2-scope', 'previous-failures'], ['--d2-scope', 'r31a-contract']))
         return (len(command) >= 8 and command[1:5] == ['-I', '-B', '-X', 'utf8']
                 and command[5] == str(_CONTEXT.root / 'tools/offline_tests.py')
-                and command[6] == '--execute-lane' and command[7] in LANES)
+                and command[6] == '--execute-lane' and command[7] in {'f1', 'f2', 'flog', 'f3', 'd1'})
     if role == 'command':
         # The root launcher additionally chooses a named fixed command profile.
         if os.path.normcase(os.path.abspath(command[0])) == os.path.normcase(os.path.abspath(sys.executable)):
@@ -2524,6 +2715,8 @@ def run_child(argv, role='f3-control', roots=None, timeout=30, expected_counts=N
                                 run_id=ticket['run_id'], expected_kind=CONTROL_KINDS[case]))
     elif ticket.get('role') != role or ticket.get('argv_digest') != _digest([os.fsdecode(a) for a in argv]):
         raise ValueError('OFFLINE_CHILD_TICKET_MISMATCH')
+    if _CONTEXT.lane == 'd2' and not _allowed_command(argv, role):
+        raise ValueError('D2_CHILD_COMMAND_SCOPE')
     if role == 'native-git':
         detected, _, native, _ = _child_command(argv, cwd or _CONTEXT.root, dict(os.environ if env is None else env))
         if detected != role or not native or not ticket.get('native'):
@@ -2551,9 +2744,14 @@ def run_child(argv, role='f3-control', roots=None, timeout=30, expected_counts=N
                 if role != 'lane-worker' or _CONTEXT.role != 'supervisor':
                     raise ValueError('D1_SYNC_CHILD_REFUSED')
                 _THREAD_STATE.d1_launch_token = dict(argv=list(argv), kwargs=options, used=False)
+            if _CONTEXT.lane == 'd2':
+                if role not in {'lane-worker', 'd2-controller'}:
+                    raise ValueError('D2_SYNC_CHILD_REFUSED')
+                _THREAD_STATE.d2_launch_token = dict(argv=list(argv), kwargs=options, used=False)
             process = subprocess.Popen(argv, **options)
         finally:
             _THREAD_STATE.d1_launch_token = None
+            _THREAD_STATE.d2_launch_token = None
             if original_create is not None:
                 _winapi.CreateProcess = original_create
                 end_native_launch()
@@ -2751,6 +2949,8 @@ def _validate_ticket(ticket, require_exit=True):
 
 
 def _expected_control(ticket, errors, final):
+    if ticket.get('role') in _D2_ROLES:
+        return _expected_d2_control(ticket, errors, final)
     if ticket.get('role') == 'd1-worker':
         path = Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.exit.json')
         try:
@@ -2813,6 +3013,15 @@ def validate_reports(context=None):
                 errors.append('D1_CORRUPT_DECLARATION')
             continue
         if path.name.endswith(('.exit.json', '.control.json', '.command-control.json')):
+            continue
+        if c.lane == 'd2' and '.d2-' in path.name:
+            try:
+                declaration = _d2_read_declaration(path)
+                if path.name.endswith('.d2-controller-cleanup.json') and (
+                        declaration['settled'] is not True or declaration.get('error_code') is not None):
+                    errors.append('D2_CONTROLLER_CLEANUP_FAILED')
+            except (OSError, ValueError, KeyError, TypeError):
+                errors.append('D2_CORRUPT_DECLARATION')
             continue
         try:
             ticket = _read_json(path)
@@ -2953,6 +3162,2187 @@ def _control(case):
             pass
     finish(0)
     return 0
+
+
+# %% D2: закрытые disposable cases и собственные Windows witnesses
+D2_CASES = frozenset({
+    'baseline_google_swallowed', 'baseline_ftp_root_swallowed',
+    'baseline_ftp_dividends_swallowed', 'baseline_ftp_tickers_swallowed',
+    'baseline_exit23', 'baseline_hang', 'success', 'google_error', 'ftp_error',
+    'exit23', 'system_exit0', 'system_exit_string', 'abnormal_before_ready',
+    'abnormal_after_final', 'start_google_before', 'start_ftp_before',
+    'start_google_after_native', 'start_ftp_after_native', 'hang_google', 'hang_ftp',
+    'cleanup_unsettled', 'partial_ftp', 'partial_google', 'checkpoint_missing',
+    'checkpoint_corrupt', 'checkpoint_oversize', 'checkpoint_stale_run',
+    'checkpoint_stale_pid', 'checkpoint_stale_sequence', 'listener_failure',
+    'ack_failure', 'normal_without_final', 'final_then_exit23',
+    'bootstrap_replay_failure', 'bootstrap_import_failure', 'bootstrap_unpickle_failure',
+    'foreign_handle', 'canary_positive_control', 'native_nul_read_fault',
+    'native_nul_write_fault', 'native_dup_read_fault', 'native_dup_write_fault',
+    'native_create_fault', 'd1_killed_holder',
+    'parent_finalization_raises', 'parent_finalization_incomplete',
+})
+_D2_ROLES = {'d2-controller', 'd2-worker', 'd2-baseline-worker', 'd2-lock-worker'}
+_D2_PREFIX = ("import os,sys,importlib.util;"
+    "_s=importlib.util.spec_from_file_location('mds_offline_guard',os.path.join(os.environ['MDS_OFFLINE_ROOT'],'tools','offline_guard.py'));"
+    "_g=importlib.util.module_from_spec(_s);sys.modules[_s.name]=_g;_s.loader.exec_module(_g);"
+    "_g.d2_early_bootstrap();")
+_D2_QUIET_PREFIX = ("import os,sys;_d2_null=open(os.devnull,'w');"
+    "os.dup2(_d2_null.fileno(),1,inheritable=False);"
+    "os.dup2(_d2_null.fileno(),2,inheritable=False);"
+    "sys.stdout=sys.stderr=sys.__stdout__=sys.__stderr__=_d2_null;")
+_D2_CANARY_TEXT = ('D2_SYNTHETIC_CANARY_RAW D2_FAKE_PASSWORD D2_FAKE_PRIVATE_KEY '
+    'D2_SYNTHETIC_CANARY_URL=https://D2_SYNTHETIC_CANARY.invalid/private?token=D2_FAKE_PASSWORD '
+    'D2_SYNTHETIC_CANARY_PATH=C:/D2_SYNTHETIC_CANARY_PRIVATE/secret.json')
+_D2_FAULT_PHASES = {
+    'baseline_google_swallowed': ('google', 'legacy_google_clear'),
+    'baseline_ftp_root_swallowed': ('ftp', 'legacy_ftp_root'),
+    'baseline_ftp_dividends_swallowed': ('ftp', 'legacy_ftp_dividends'),
+    'baseline_ftp_tickers_swallowed': ('ftp', 'legacy_ftp_tickers'),
+    'baseline_exit23': ('google', 'legacy_exit23'),
+    'baseline_hang': ('google', 'legacy_hang'),
+    'google_error': ('google', 'target_error'), 'ftp_error': ('ftp', 'target_error'),
+    'exit23': ('google', 'target_exit23'), 'system_exit0': ('google', 'target_system_exit0'),
+    'system_exit_string': ('google', 'target_system_exit_string'),
+    'abnormal_before_ready': ('google', 'exit_before_ready'),
+    'abnormal_after_final': ('google', 'exit_after_worker_final'),
+    'normal_without_final': ('google', 'without_worker_final'),
+    'final_then_exit23': ('google', 'exit_after_checkpoint'),
+    'start_google_before': ('google', 'start_before_native'),
+    'start_ftp_before': ('ftp', 'start_before_native'),
+    'start_google_after_native': ('google', 'start_serialization_failure'),
+    'start_ftp_after_native': ('ftp', 'start_serialization_failure'),
+    'bootstrap_replay_failure': ('google', 'bootstrap_replay'),
+    'bootstrap_import_failure': ('google', 'bootstrap_dependency_import'),
+    'bootstrap_unpickle_failure': ('google', 'bootstrap_unpickle'),
+    'hang_google': ('google', 'target_hang'), 'hang_ftp': ('ftp', 'target_hang'),
+    'cleanup_unsettled': ('google', 'target_hang'),
+    'partial_google': ('google', 'partial_transfer'), 'partial_ftp': ('ftp', 'partial_transfer'),
+    'ack_failure': ('google', 'ack_closed'), 'listener_failure': ('controller', 'listener_stopped'),
+    'parent_finalization_raises': ('controller', 'finalization_raises'),
+    'parent_finalization_incomplete': ('controller', 'seal_inventory_failure'),
+    'd1_killed_holder': ('holder', 'lock_holder_ready'),
+}
+for _d2_case in D2_CASES:
+    if _d2_case.startswith('checkpoint_'):
+        _D2_FAULT_PHASES[_d2_case] = ('google', _d2_case)
+    elif _d2_case.startswith('native_'):
+        _D2_FAULT_PHASES[_d2_case] = ('google', _d2_case)
+
+
+def d2_fault_witness(phase, *, worker_id=None, request=None, attempted=None):
+    """Exclusive fixed-phase receipt, emitted at the actual fixture operation."""
+    c = _CONTEXT
+    if c is None or c.lane != 'd2' or c.role not in _D2_ROLES:
+        raise ValueError('D2_FAULT_SCOPE')
+    ticket = request['ticket'] if request is not None else c.ticket
+    contract = ticket['d2_contract']
+    selected = contract['worker_id'] if worker_id is None else worker_id
+    case = contract['case']
+    expected = _D2_FAULT_PHASES.get(case)
+    if phase == 'stdio_canary':
+        valid = selected in {'google', 'ftp'} and c.role == 'd2-worker' and attempted == 6
+    else:
+        valid = expected == (selected, phase)
+    if (not valid or request is not None and _D2_REQUESTS.get(ticket['ticket_id']) is not request
+            or request is None and selected != contract['worker_id'] and c.role != 'd2-controller'):
+        raise ValueError('D2_FAULT_PHASE')
+    source = 'native' if request is not None else 'controller' if c.role == 'd2-controller' else 'worker'
+    record = dict(version=1, case=case, worker_id=selected, phase=phase, count=1,
+        pid=os.getpid(), source=source, ticket_id=ticket['ticket_id'], run_id=ticket['run_id'], nodeid=ticket['nodeid'])
+    if phase == 'stdio_canary':
+        record['attempted'] = attempted
+    path = c.report_dir / 'tickets' / (ticket['ticket_id'] + '.d2-fault-' + selected + '-' + phase + '.json')
+    exclusive_json(path, record)
+    return record
+
+
+def d2_write_canary_streams():
+    if _CONTEXT.role != 'd2-worker' or not _d2_fixture_profile_admitted():
+        raise ValueError('D2_STDIO_CANARY_SCOPE')
+    raw = (_D2_CANARY_TEXT + '\n').encode('ascii')
+    attempted = 0
+    for fd in (1, 2):
+        os.write(fd, raw)
+        attempted += 1
+    for stream in (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__):
+        stream.write(_D2_CANARY_TEXT + '\n')
+        stream.flush()
+        attempted += 1
+    if attempted != 6:
+        raise ValueError('D2_STDIO_CANARY_COUNT')
+    record = d2_fault_witness('stdio_canary', attempted=attempted)
+    return record
+
+
+def d2_fault_witnesses():
+    c = _CONTEXT
+    if c.role != 'd2-controller':
+        raise ValueError('D2_FAULT_READ_SCOPE')
+    tickets = {ticket['ticket_id']: ticket for ticket in [c.ticket, *c.children]}
+    found = {}
+    for path in c.report_dir.glob('tickets/*.d2-fault-*.json'):
+        record = _d2_read_declaration(path)
+        ticket = tickets.get(record.get('ticket_id'))
+        if ticket is None:
+            continue
+        contract = ticket['d2_contract']
+        if (record.get('version') != 1 or record.get('count') != 1 or record.get('case') != contract['case']
+                or record.get('run_id') != ticket['run_id'] or record.get('nodeid') != ticket['nodeid']):
+            raise ValueError('D2_FAULT_WITNESS_IDENTITY')
+        found.setdefault(record['worker_id'], []).append(record)
+    return found
+
+
+def d2_atomic_fault(error):
+    """Fixed fixture diagnostic for the actual publication syscall failure."""
+    c = _CONTEXT
+    caller = sys._getframe(1)
+    if (c.role != 'd2-worker' or caller.f_code.co_name != 'atomic_checkpoint'
+            or _absolute(caller.f_code.co_filename) != c.root / 'tests/d2/d2_worker.py'):
+        raise ValueError('D2_ATOMIC_FAULT_SCOPE')
+    upload = sys.modules['upload']
+    with _ORIGINAL_OPEN(c.root / 'upload.py', encoding='utf-8-sig') as stream:
+        lines = stream.read().splitlines()
+    operation, errno, winerror = 'OTHER', None, None
+    current, seen = error, set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, OSError):
+            errno = current.errno if type(current.errno) is int and 0 <= current.errno <= 65535 else None
+            value = getattr(current, 'winerror', None)
+            winerror = value if type(value) is int and 0 <= value <= 65535 else None
+            trace = current.__traceback__
+            while trace is not None:
+                if (_absolute(trace.tb_frame.f_code.co_filename) == c.root / 'upload.py'
+                        and trace.tb_frame.f_code.co_name in {'_d2_atomic_json', '_d2_slot_atomic_json'}):
+                    line = lines[trace.tb_lineno - 1].strip()
+                    operation = ('REPLACE' if line == 'os.replace(pending, path)' else
+                        'OPEN_PENDING' if "with pending.open('xb')" in line else
+                        'INVENTORY' if 'child.lstat()' in line else 'OTHER')
+                trace = trace.tb_next
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    count = getattr(c, 'd2_atomic_fault_count', 0) + 1
+    c.d2_atomic_fault_count = count
+    contract = c.ticket['d2_contract']
+    code = upload._d2_code(error, fallback='D2_RESULT_WRITE_FAILED')
+    if code not in {'D2_RESULT_WRITE_FAILED', 'D2_RESULT_LIMIT', 'D2_CHECKPOINT_INVALID', 'D2_SOURCE_INVALID', 'D2_LIMITS_INVALID'}:
+        code = 'D2_RESULT_WRITE_FAILED'
+    record = dict(version=1, ticket_id=c.process_id, run_id=c.run_id, nodeid=c.ticket['nodeid'],
+        case=contract['case'], worker_id=contract['worker_id'], pid=os.getpid(), count=count,
+        operation=operation, error_code=code,
+        errno=errno, winerror=winerror)
+    exclusive_json(c.report_dir / 'tickets' / (c.process_id + '.d2-atomic-fault-' + str(count) + '.json'), record)
+
+
+def _d2_read_declaration(path):
+    """Validate every D2 side receipt against the immutable issued graph."""
+    c = _CONTEXT
+    identifier = path.name.split('.', 1)[0]
+    ticket = _read_json(path.parent / (identifier + '.json'))
+    record = _read_json(path)
+    contract = ticket.get('d2_contract', {})
+    case, worker = contract.get('case'), contract.get('worker_id')
+    if (c is None or c.lane != 'd2' or ticket.get('lane') != 'd2'
+            or ticket.get('role') not in _D2_ROLES or case not in D2_CASES
+            or ticket.get('ticket_id') != identifier or record.get('ticket_id') != identifier
+            or ticket.get('run_id') != c.run_id or record.get('run_id') != c.run_id
+            or ticket.get('tested_sha') != c.tested_sha or ticket.get('source_digest') != c.source_digest
+            or ticket.get('digest') != _digest({k: v for k, v in ticket.items() if k != 'digest'})
+            or ticket.get('nodeid') != _d2_node(case)):
+        raise ValueError('D2_DECLARATION_IDENTITY')
+    start_path = path.parent.parent / 'processes' / (identifier + '.start.json')
+    start = _read_json(start_path) if start_path.is_file() else None
+    if start is not None and (start.get('ticket_id') != identifier or start.get('run_id') != c.run_id
+            or start.get('tested_sha') != ticket['tested_sha'] or start.get('source_digest') != ticket['source_digest']):
+        raise ValueError('D2_DECLARATION_START')
+    suffix = path.name[len(identifier):]
+    if suffix == '.d2-native-created.json':
+        keys = {'version', 'ticket_id', 'run_id', 'nodeid', 'case', 'worker_id', 'pid',
+            'controller_pid', 'native_calls', 'witness'}
+        parent = _read_json(path.parent.parent / 'processes' / (ticket['parent_id'] + '.start.json'))
+        if (set(record) != keys or record.get('version') != 1 or record.get('case') != case
+                or record.get('nodeid') != ticket['nodeid'] or record.get('worker_id') != worker
+                or ticket['role'] == 'd2-controller' or type(record.get('pid')) is not int or record['pid'] <= 0
+                or type(record.get('native_calls')) is not int or record['native_calls'] != 1
+                or record.get('witness') != 'GUARD_CREATEPROCESS'
+                or parent.get('run_id') != c.run_id or parent.get('role') != 'd2-controller'
+                or record.get('controller_pid') != parent.get('pid')
+                or start is not None and start.get('pid') != record['pid']):
+            raise ValueError('D2_NATIVE_CREATED_DECLARATION')
+    elif suffix.startswith('.d2-atomic-fault-'):
+        keys = {'version', 'ticket_id', 'run_id', 'nodeid', 'case', 'worker_id', 'pid', 'count',
+            'operation', 'error_code', 'errno', 'winerror'}
+        if (set(record) != keys or record.get('version') != 1 or record.get('case') != case
+                or record.get('nodeid') != ticket['nodeid'] or record.get('worker_id') != worker
+                or ticket['role'] != 'd2-worker' or start is None or record.get('pid') != start.get('pid')
+                or type(record.get('count')) is not int or not 1 <= record['count'] <= 1036
+                or suffix != '.d2-atomic-fault-' + str(record['count']) + '.json'
+                or record.get('operation') not in {'REPLACE', 'OPEN_PENDING', 'INVENTORY', 'OTHER'}
+                or record.get('error_code') not in {'D2_RESULT_WRITE_FAILED', 'D2_RESULT_LIMIT',
+                    'D2_CHECKPOINT_INVALID', 'D2_SOURCE_INVALID', 'D2_LIMITS_INVALID'}
+                or any(record.get(key) is not None and (type(record[key]) is not int or not 0 <= record[key] <= 65535)
+                    for key in ('errno', 'winerror'))):
+            raise ValueError('D2_ATOMIC_FAULT_DECLARATION')
+    elif suffix.startswith('.d2-fault-'):
+        keys = {'version', 'case', 'worker_id', 'phase', 'count', 'pid', 'source', 'ticket_id', 'run_id', 'nodeid'}
+        selected, phase, source = record.get('worker_id'), record.get('phase'), record.get('source')
+        if phase == 'stdio_canary':
+            keys.add('attempted')
+            admitted = (ticket['role'] == 'd2-worker' and selected == worker and worker in {'google', 'ftp'}
+                and source == 'worker' and type(record.get('attempted')) is int and record['attempted'] == 6)
+        else:
+            admitted = _D2_FAULT_PHASES.get(case) == (selected, phase)
+        if (set(record) != keys or not admitted or record.get('version') != 1
+                or type(record.get('count')) is not int or record['count'] != 1
+                or record.get('case') != case or record.get('nodeid') != ticket['nodeid']
+                or suffix != '.d2-fault-' + selected + '-' + phase + '.json'
+                or type(record.get('pid')) is not int or record['pid'] <= 0):
+            raise ValueError('D2_FAULT_DECLARATION')
+        if source == 'worker':
+            owner = start
+            admitted = ticket['role'] != 'd2-controller' and selected == worker
+        elif source == 'controller':
+            owner = start
+            admitted = ticket['role'] == 'd2-controller'
+        elif source == 'native':
+            owner = _read_json(path.parent.parent / 'processes' / (ticket['parent_id'] + '.start.json'))
+            admitted = ticket['role'] == 'd2-worker' and selected == worker and owner.get('role') == 'd2-controller'
+        else:
+            owner, admitted = None, False
+        if (not admitted or owner is None or owner.get('pid') != record['pid']
+                or owner.get('run_id') != c.run_id):
+            raise ValueError('D2_FAULT_PID')
+    elif suffix == '.d2-observation.json':
+        keys = {'version', 'ticket_id', 'run_id', 'nodeid', 'case', 'worker_id', 'pid', 'actual_exit',
+            'not_started', 'fault_witnesses', 'worker_fence', 'deliberately_unsettled', 'cleanup_requests'}
+        if (set(record) != keys or record.get('version') != 1 or record.get('nodeid') != ticket['nodeid']
+                or record.get('case') != case or record.get('worker_id') != worker
+                or ticket['role'] == 'd2-controller' or type(record['not_started']) is not bool
+                or type(record['deliberately_unsettled']) is not bool or not isinstance(record['fault_witnesses'], dict)):
+            raise ValueError('D2_OBSERVATION_DECLARATION')
+        if record['not_started']:
+            if start is not None or record['pid'] is not None or record['actual_exit'] is not None:
+                raise ValueError('D2_OBSERVATION_NOT_STARTED')
+        elif (type(record['pid']) is not int or
+                start is not None and record['pid'] != start.get('pid') or
+                start is None and not _d2_before_bootstrap_pid(ticket, record['pid'])):
+            raise ValueError('D2_OBSERVATION_PID')
+        if record['deliberately_unsettled'] and (case != 'cleanup_unsettled' or worker != 'google'
+                or record['not_started'] or record['actual_exit'] is not None):
+            raise ValueError('D2_OBSERVATION_UNSETTLED')
+        if record['actual_exit'] is not None:
+            exit_record = _read_json(path.parent / (identifier + '.exit.json'))
+            if (type(record['actual_exit']) is not int or exit_record.get('ticket_id') != identifier
+                    or exit_record.get('run_id') != c.run_id or exit_record.get('actual_exit') != record['actual_exit']):
+                raise ValueError('D2_OBSERVATION_EXIT')
+        for selected, witnesses in record['fault_witnesses'].items():
+            if selected not in {'controller', 'google', 'ftp', 'holder', 'contender'} or not isinstance(witnesses, list):
+                raise ValueError('D2_OBSERVATION_FAULTS')
+            for witness in witnesses:
+                fault_path = path.parent / (witness['ticket_id'] + '.d2-fault-' + selected + '-' + witness['phase'] + '.json')
+                if _d2_read_declaration(fault_path) != witness or witness['case'] != case:
+                    raise ValueError('D2_OBSERVATION_FAULTS')
+        fence = record['worker_fence']
+        if fence is not None and (not isinstance(fence, dict) or set(fence) != {
+                'checkpoint_present', 'checkpoint_execution', 'normal_return', 'checkpoint_pid', 'checkpoint_sequence',
+                'checkpoint_diagnostics', 'checkpoint_error_code', 'checkpoint_output_states', 'flog_final'}):
+            raise ValueError('D2_OBSERVATION_FENCE')
+        if not isinstance(record['cleanup_requests'], list):
+            raise ValueError('D2_OBSERVATION_CLEANUP')
+        for request in record['cleanup_requests']:
+            request_path = path.parent / (request['ticket_id'] + '.d2-cleanup-request-' + request['phase'] + '.json')
+            if _d2_read_declaration(request_path) != request or request['case'] != case:
+                raise ValueError('D2_OBSERVATION_CLEANUP')
+    elif suffix.startswith('.d2-cleanup-request-'):
+        keys = {'version', 'ticket_id', 'run_id', 'case', 'nodeid', 'worker_id', 'pid', 'phase', 'alive',
+            'accepted', 'native_calls', 'requested_exit', 'settled_after', 'raw_windows_exit_after', 'witness'}
+        if (set(record) != keys or record.get('version') != 1 or record.get('case') != case
+                or record.get('worker_id') != worker or ticket['role'] != 'd2-worker'
+                or record.get('nodeid') != ticket['nodeid'] or record.get('phase') not in {'TERMINATE', 'KILL'}
+                or suffix != '.d2-cleanup-request-' + record['phase'] + '.json'
+                or start is not None and record.get('pid') != start.get('pid')
+                or start is None and not _d2_before_bootstrap_pid(ticket, record.get('pid'))
+                or any(type(record.get(key)) is not bool for key in ('alive', 'accepted', 'settled_after'))
+                or type(record.get('native_calls')) is not int or record['native_calls'] not in {0, 1}
+                or record['accepted'] and record['native_calls'] != 1 or record.get('requested_exit') != 65536
+                or record.get('witness') != 'GUARD_RETAINED_HANDLE'
+                or record['settled_after'] and type(record.get('raw_windows_exit_after')) is not int
+                or not record['settled_after'] and record.get('raw_windows_exit_after') is not None):
+            raise ValueError('D2_CLEANUP_REQUEST_DECLARATION')
+    elif suffix in {'.d2-containment.json', '.d2-controller-cleanup.json'}:
+        keys = {'ticket_id', 'run_id', 'pid', 'actual_exit', 'raw_windows_exit', 'settled', 'witness', 'purpose'}
+        cleanup = suffix == '.d2-controller-cleanup.json'
+        if cleanup:
+            keys.add('error_code')
+        if (set(record) != keys or type(record.get('settled')) is not bool
+                or record.get('witness') != 'GUARD_RETAINED_HANDLE'
+                or record.get('purpose') not in ({'CONTROLLER_EXCEPTION_CONTAINMENT'} if cleanup else
+                    {'AFTER_RESULT_CONTAINMENT', 'GUARD_EXIT_CONTAINMENT'})
+                or cleanup and record.get('error_code') not in {None, 'D2_CONTROLLER_CLEANUP_WITNESS',
+                    'D2_CONTROLLER_CLEANUP_UNSETTLED', 'D2_CONTROLLER_VENDOR_CLOSE_FAILED', 'D2_CONTROLLER_CLEANUP_FAILED'}):
+            raise ValueError('D2_CONTAINMENT_DECLARATION')
+        if (start is not None and record.get('pid') != start.get('pid')
+                or start is None and not _d2_before_bootstrap_pid(ticket, record.get('pid'))):
+            raise ValueError('D2_CONTAINMENT_PID')
+        raw = record['raw_windows_exit']
+        if (record['settled'] and (type(raw) is not int or record['actual_exit'] != (-15 if raw == 65536 else raw))
+                or not record['settled'] and (raw is not None or record['actual_exit'] is not None)):
+            raise ValueError('D2_CONTAINMENT_EXIT')
+    else:
+        raise ValueError('D2_DECLARATION_NAME')
+    return record
+
+
+def _d2_before_bootstrap_pid(ticket, pid):
+    """Native creation is distinct from entry into Python child bootstrap."""
+    contract = ticket['d2_contract']
+    if (contract['case'] != 'start_' + contract['worker_id'] + '_after_native'
+            or ticket['role'] != 'd2-worker' or type(pid) is not int or pid <= 0):
+        return False
+    directory = Path(ticket['report_dir']) / 'tickets'
+    try:
+        created = _d2_read_declaration(directory / (ticket['ticket_id'] + '.d2-native-created.json'))
+        phase = _d2_read_declaration(directory / (ticket['ticket_id'] + '.d2-fault-'
+            + contract['worker_id'] + '-start_serialization_failure.json'))
+        return (created['pid'] == pid and phase['source'] == 'native'
+            and phase['pid'] == created['controller_pid'] and phase['count'] == 1)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _d2_node(case):
+    return 'tests/d2/test_supervision.py::test_native_case[' + case + ']'
+
+
+def _d2_validate_contract(role, contract):
+    c = _CONTEXT
+    if (c is None or c.lane != 'd2' or not isinstance(contract, dict)
+            or set(contract) != {'case', 'worker_id', 'result_root', 'log_root'}
+            or contract['case'] not in D2_CASES
+            or contract['worker_id'] not in {'controller', 'google', 'ftp', 'holder', 'contender'}):
+        raise ValueError('D2_ADMISSION_CONTRACT')
+    case = contract['case']
+    if role == 'd2-controller':
+        if contract['worker_id'] != 'controller':
+            raise ValueError('D2_ADMISSION_ROLE_CASE')
+        if c.role != 'lane-worker' or getattr(c, 'nodeid', '') != _d2_node(case):
+            raise ValueError('D2_ADMISSION_NODE')
+    elif (role == 'd2-baseline-worker' and (not case.startswith('baseline_') or contract['worker_id'] not in {'google', 'ftp'})
+          or role == 'd2-lock-worker' and (case != 'd1_killed_holder' or contract['worker_id'] not in {'holder', 'contender'})
+          or role == 'd2-worker' and (case.startswith('baseline_') or case == 'd1_killed_holder' or contract['worker_id'] not in {'google', 'ftp'})):
+        raise ValueError('D2_ADMISSION_ROLE_CASE')
+    elif (c.role != 'd2-controller' or c.ticket['d2_contract']['case'] != case
+          or getattr(c, 'nodeid', '') != c.ticket['nodeid']):
+        raise ValueError('D2_ADMISSION_OWNER')
+    if not _owned(contract['result_root']) or not _owned(contract['log_root']):
+        raise ValueError('D2_ADMISSION_ROOT')
+    if any(ticket['role'] == role and ticket.get('d2_contract', {}).get('case') == case
+           and ticket['d2_contract']['worker_id'] == contract['worker_id'] for ticket in c.children):
+        raise ValueError('D2_ADMISSION_DUPLICATE')
+
+
+def _d2_fake_secret(path):
+    c = _CONTEXT
+    if c is None or c.lane != 'd2' or c.role not in _D2_ROLES or not c.ticket:
+        return False
+    root = Path(c.ticket['d2_contract']['result_root'])
+    return path in {root / 'secrets/moex.foykes.com.json',
+                   root / 'secrets/python-304621-1e403209f05f.json'} and _owned(path)
+
+
+def _d2_fixture_profile_admitted(case=None):
+    c = _CONTEXT
+    if c is None or c.lane != 'd2' or c.role not in _D2_ROLES or c.ticket is None:
+        return False
+    contract = c.ticket.get('d2_contract', {})
+    return contract.get('case') in D2_CASES and (case is None or contract['case'] == case)
+
+
+def d2_early_bootstrap():
+    """Runs in the fixed quiet -c prefix, before prepare/replay/unpickling."""
+    root = checked_path(os.environ['MDS_OFFLINE_ROOT'])
+    ticket = _load_ticket(root)
+    if ticket is None or ticket['lane'] != 'd2' or ticket['role'] not in _D2_ROLES - {'d2-controller'}:
+        raise ValueError('D2_BOOTSTRAP_TICKET')
+    argv = list(sys.orig_argv)
+    pattern = re.escape(_D2_QUIET_PREFIX + _D2_PREFIX) + r'from multiprocessing.spawn import spawn_main; spawn_main\(parent_pid=(\d+), pipe_handle=(\d+)\)'
+    matched = re.fullmatch(pattern, argv[7]) if len(argv) == 9 else None
+    if not (len(argv) == 9 and argv[1:7] == ['-I', '-S', '-B', '-X', 'utf8', '-c']
+            and matched and argv[8] == '--multiprocessing-fork'):
+        raise ValueError('D2_BOOTSTRAP_COMMAND')
+    c = ensure_context(root, lane='d2', install=True)
+    c.nodeid = ticket['nodeid']
+    c.d2_contract = dict(ticket['d2_contract'])
+    parent = _read_json(c.report_dir / 'processes' / (ticket['parent_id'] + '.start.json'))
+    parent_pid, pipe_handle = map(int, matched.groups())
+    if (parent.get('ticket_id') != ticket['parent_id'] or parent.get('run_id') != ticket['run_id']
+            or parent.get('role') != 'd2-controller' or parent.get('pid') != parent_pid or pipe_handle <= 0):
+        raise ValueError('D2_BOOTSTRAP_PARENT')
+    import multiprocessing.spawn as spawn
+    c.d2_bootstrap = dict(parent_pid=parent_pid, pipe_handle=pipe_handle, consumed=False,
+        main_code=spawn._main.__code__, spawn_code=spawn.spawn_main.__code__)
+    return c
+
+
+def _d2_bootstrap_read_grant(descriptor, mode, flags):
+    """One pinned vendor fdopen event; the numeric FD gets no enduring grant."""
+    c = _CONTEXT
+    proof = getattr(c, 'd2_bootstrap', None)
+    if (c.role not in _D2_ROLES - {'d2-controller'} or proof is None or proof['consumed']
+            or mode not in {'r', 'rb'} or flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)):
+        return False
+    frame = sys._getframe(2)
+    if frame.f_code is not _ORIGINAL_FDOPEN.__code__ or frame.f_locals.get('fd') != descriptor or frame.f_locals.get('mode') != 'rb':
+        return False
+    frame = frame.f_back
+    if frame is None or frame.f_code.co_name != 'guarded_fdopen' or _absolute(frame.f_code.co_filename) != c.root / 'tools/offline_guard.py':
+        return False
+    main = frame.f_back
+    vendor = main.f_back if main else None
+    if (main is None or main.f_code is not proof['main_code'] or main.f_locals.get('fd') != descriptor
+            or vendor is None or vendor.f_code is not proof['spawn_code'] or vendor.f_locals.get('fd') != descriptor
+            or vendor.f_locals.get('parent_pid') != proof['parent_pid']
+            or vendor.f_locals.get('pipe_handle') != proof['pipe_handle'] or vendor.f_locals.get('source_process') is None):
+        return False
+    import msvcrt
+    if msvcrt.get_osfhandle(descriptor) != vendor.f_locals.get('new_handle'):
+        return False
+    proof['consumed'] = True
+    return True
+
+
+def d2_worker_context(case, worker_id):
+    c = _CONTEXT
+    if (not _d2_fixture_profile_admitted(case) or c.role not in _D2_ROLES - {'d2-controller'}
+            or c.ticket['d2_contract']['worker_id'] != worker_id):
+        raise ValueError('D2_WORKER_TICKET')
+    import d2_worker
+    d2_worker.worker_setup(case, worker_id)
+    return c
+
+
+def _d2_prepare_upload_start(process, worker_id, case):
+    if not _d2_fixture_profile_admitted(case) or _CONTEXT.role != 'd2-controller':
+        raise ValueError('D2_UPLOAD_START_SCOPE')
+    target = getattr(process, '_target', None)
+    args = getattr(process, '_args', ())
+    if (getattr(target, '__module__', '') != 'upload'
+            or getattr(target, '__name__', '') != '_d2_worker_entry'
+            or target is not getattr(sys.modules.get('upload'), '_d2_worker_entry', None)
+            or getattr(process, '_kwargs', None) != {}
+            or len(args) != 12 or args[1] != worker_id or worker_id not in {'google', 'ftp'}
+            or args[9] != case or not isinstance(args[0], dict)
+            or not _owned(args[3])):
+        raise ValueError('D2_UPLOAD_START_TARGET')
+    fixture = args[8]
+    if fixture is not getattr(sys.modules.get('d2_worker'), worker_id + '_target', None):
+        raise ValueError('D2_UPLOAD_FIXTURE_TARGET')
+    _d2_validate_upload_arguments(process, worker_id, case)
+    if case == 'start_' + worker_id + '_before':
+        d2_fault_witness('start_before_native', worker_id=worker_id)
+        raise RuntimeError('D2_START_FAILED')
+    if case == 'start_' + worker_id + '_after_native' or case == 'bootstrap_unpickle_failure' and worker_id == 'google':
+        import d2_worker
+        args[0]['_d2_fixture_fault'] = d2_worker.SpawnFault('pickle' if case.endswith('after_native') else 'unpickle')
+    if case == 'bootstrap_import_failure' and worker_id == 'google':
+        args[0]['_d2_fixture_fault'] = sys.modules['d2_import_fault'].fixed_import_target
+    parent = _CONTEXT.ticket['d2_contract']
+    contract = dict(case=case, worker_id=worker_id, result_root=str(args[3]), log_root=parent['log_root'])
+    ticket = issue_ticket('d2-worker', ['multiprocessing.spawn', worker_id],
+        roots=_CONTEXT.roots, expected_exit=None, d2_contract=contract, gate=True)
+    _D2_PROCESS_TICKETS[process] = ticket
+    return ticket
+
+
+def _d2_validate_fixture_process(process, role, worker_id, case, parent):
+    target = getattr(process, '_target', None)
+    expected = {'d2-baseline-worker': 'baseline_worker_entry', 'd2-lock-worker': 'lock_worker_entry'}
+    if (role not in expected or target is not getattr(sys.modules.get('d2_worker'), expected.get(role, ''), None)
+            or target is None or getattr(process, '_kwargs', None) != {}
+            or getattr(process, '_args', None) != (worker_id, case, parent['result_root'])
+            or worker_id not in ({'google', 'ftp'} if role == 'd2-baseline-worker' else {'holder', 'contender'})
+            or (role == 'd2-baseline-worker') != case.startswith('baseline_')
+            or role == 'd2-lock-worker' and case != 'd1_killed_holder'):
+        raise ValueError('D2_FIXTURE_START_TARGET')
+
+
+def _d2_validate_upload_arguments(process, worker_id, case):
+    import upload
+    caller = sys._getframe(2)
+    pinned = getattr(_CONTEXT, 'd2_supervise_code', None)
+    while caller is not None and caller.f_code is not pinned:
+        caller = caller.f_back
+    if caller is None:
+        raise ValueError('D2_UPLOAD_START_ARGUMENTS')
+    values = caller.f_locals
+    args = process._args
+    session, plan = values['logging_context'], values['source_plan']
+    bootstrap = args[0]
+    root = Path(_CONTEXT.ticket['d2_contract']['result_root'])
+    if (args[2] is not plan[worker_id] or args[3] != str(root / 'results')
+            or args[4] != values['attempt_id'] or not re.fullmatch('[0-9a-f]{32}', args[4])
+            or args[5] is not values['limits'] or args[6] != str(root / 'project')
+            or args[7] != 'D2_FAKE_GOOGLE_DESTINATION' or args[10] is not values['go']
+            or args[11] is not values['reservation']
+            or values['fixture_case'] != case or values['run_id'] != session['run_id']
+            or bootstrap.get('run_id') != session['run_id'] or bootstrap.get('producer_sha') != _CONTEXT.tested_sha
+            or bootstrap.get('worker_id') != worker_id or bootstrap.get('_queue') is not session['_queue']
+            or bootstrap.get('_token') != session['_expected'][worker_id]
+            or bootstrap.get('_run_failed') is not session['_run_failed']
+            or bootstrap.get('config') is not session['config']
+            or bootstrap.get('_run_root') != session['_run_root']
+            or bootstrap.get('_ack') not in session['_receivers'] or not _owned(root / 'results')):
+        raise ValueError('D2_UPLOAD_START_ARGUMENTS')
+    deadline = values.get('deadline')
+    if type(deadline) is not float:
+        raise ValueError('D2_UPLOAD_START_DEADLINE')
+    if hasattr(_CONTEXT, 'd2_work_deadline') and _CONTEXT.d2_work_deadline != deadline:
+        raise ValueError('D2_UPLOAD_START_DEADLINE_CHANGED')
+    _CONTEXT.d2_work_deadline = deadline
+    proof = upload._d2_validate_reservation(args[11], args[5])
+    if (proof['run_id'] != session['run_id'] or proof['attempt_id'] != args[4]
+            or proof['producer_sha'] != _CONTEXT.tested_sha
+            or any(tuple((item['output_id'], item['group']) for item in plan[name])
+                != args[11][3 if name == 'google' else 4] for name in ('google', 'ftp'))):
+        raise ValueError('D2_UPLOAD_START_RESERVATION')
+    _CONTEXT.d2_go = args[10]
+    _CONTEXT.d2_reservation = args[11]
+
+
+def d2_bind_controller_source(upload):
+    c = _CONTEXT
+    caller = sys._getframe(1)
+    if (c.role != 'd2-controller' or upload is not sys.modules.get('upload')
+            or _absolute(caller.f_code.co_filename) != c.root / 'tests/d2/d2_worker.py'
+            or caller.f_code.co_name != 'controller' or hasattr(c, 'd2_supervise_code')):
+        raise ValueError('D2_CONTROLLER_SOURCE_BINDING')
+    target = upload._d2_supervise
+    if target.__globals__ is not upload.__dict__ or _absolute(target.__code__.co_filename) != c.root / 'upload.py':
+        raise ValueError('D2_CONTROLLER_SOURCE_IDENTITY')
+    c.d2_supervise_code = target.__code__
+    c.d2_terminate = upload._d2_native_terminate
+
+
+_D2_READER_UNIT_BASES = {
+    'tests/d2/test_supervision.py::test_checkpoint_schema_identity_and_corruption_fail_closed',
+    'tests/d2/test_supervision.py::test_worker_sequence_cannot_rewind',
+    'tests/d2/test_supervision.py::test_checkpoint_lifecycle_and_content_cannot_regress',
+    'tests/d2/test_supervision.py::test_checkpoint_skipped_polls_and_identical_reread_are_valid',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_native_lifetime',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_failed_phase_closes_owner',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_invalid_path_has_no_native_effect',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_parameters_are_closed',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_foreign_callers_are_refused',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_fd_reuse_does_not_close_foreign_owner',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_open_destination_conflict_is_negative',
+    'tests/d2/test_guard_admission.py::test_checkpoint_reader_role_and_phase_denied_before_metadata',
+    'tests/d2/test_supervision.py::test_parent_reads_only_settled_checkpoint',
+    'tests/d2/test_supervision.py::test_ready_reader_closed_before_go',
+}
+_D2_SLOT_UNIT_BASES = {
+    'tests/d2/test_supervision.py::test_slot_writer_preserves_own_checks_without_sibling_metadata',
+    'tests/d2/test_supervision.py::test_slot_writer_refuses_forged_reservation',
+    'tests/d2/test_supervision.py::test_slot_writer_refuses_existing_pending',
+}
+_D2_INVENTORY_UNIT_BASES = _D2_READER_UNIT_BASES | {
+    'tests/d2/test_supervision.py::test_checkpoint_full_512_rows_all_transitions_fit_64k',
+    'tests/d2/test_supervision.py::test_serialized_byte_boundary_exact_and_plus_one',
+    'tests/d2/test_supervision.py::test_valid_full_serialization_limit_and_minus_one',
+    'tests/d2/test_supervision.py::test_parent_result_byte_boundary_and_plus_one',
+    'tests/d2/test_supervision.py::test_total_run_byte_boundary_and_plus_one',
+    'tests/d2/test_supervision.py::test_deadline_rechecked_at_release_and_settlement',
+    'tests/d2/test_supervision.py::test_parent_reads_only_settled_checkpoint',
+    'tests/d2/test_supervision.py::test_unsettled_cleanup_skips_peer_metadata_and_result_write',
+    'tests/d2/test_supervision.py::test_go_visible_interruption_marks_unproven_outputs_unknown',
+    'tests/d2/test_supervision.py::test_ready_reader_closed_before_go',
+    'tests/d2/test_supervision.py::test_full_inventory_requires_stable_phase',
+}
+_D2_SLOT_NAMES = {'google.json', 'google.pending', 'ftp.json', 'ftp.pending', 'result.json', 'result.pending'}
+
+
+def _d2_source_frame(name, caller):
+    """Bind a private hook to the actual checked-in function, before effects."""
+    c, upload = _CONTEXT, sys.modules.get('upload')
+    function = getattr(upload, name, None)
+    if (c is None or c.lane != 'd2' or function is None or function.__globals__ is not upload.__dict__
+            or caller.f_code is not function.__code__ or caller.f_globals is not upload.__dict__
+            or _absolute(caller.f_code.co_filename) != c.root / 'upload.py'):
+        raise ValueError('D2_PRIVATE_SOURCE_CALLER')
+    codes = getattr(c, 'd2_private_codes', None)
+    if codes is None:
+        codes = c.d2_private_codes = {}
+    if name not in codes:
+        with _ORIGINAL_OPEN(c.root / 'upload.py', 'rb') as stream:
+            compiled = compile(stream.read(), str(c.root / 'upload.py'), 'exec', dont_inherit=True)
+        expected = next((part for part in compiled.co_consts if isinstance(part, CodeType) and part.co_name == name), None)
+        if expected != function.__code__:
+            raise ValueError('D2_PRIVATE_SOURCE_IDENTITY')
+        codes[name] = function.__code__
+    elif codes[name] is not function.__code__:
+        raise ValueError('D2_PRIVATE_SOURCE_IDENTITY')
+    return upload
+
+
+def _d2_phase_record(kind, phase, worker_id, **fields):
+    c = _CONTEXT
+    history = getattr(c, 'd2_phase_history', None)
+    if history is None:
+        history = c.d2_phase_history = []
+    row = dict(kind=kind, phase=phase, worker_id=worker_id,
+        go_released=bool(getattr(c, 'd2_go', None) is not None and c.d2_go.value == 1), **fields)
+    history.append(row)
+    del history[:-128]
+    return row
+
+
+def _d2_settled_slot(worker_id):
+    rows = d2_actual_pid_settlement()
+    selected = [row for row in rows if row['worker_id'] == worker_id]
+    if (len(selected) != 1 or selected[0]['settled'] is not True
+            or selected[0].get('exit_receipt_verified') is not True):
+        raise ValueError('D2_SLOT_UNSETTLED')
+    return selected[0]
+
+
+def _d2_graph_quiescent():
+    c = _CONTEXT
+    rows = d2_actual_pid_settlement()
+    created = [request for ticket in c.children
+        if ticket['role'] in _D2_ROLES - {'d2-controller'}
+        for request in [_D2_REQUESTS.get(ticket['ticket_id'])]
+        if request is not None and request.get('observed_pid') is not None]
+    absent = [request for ticket in c.children if ticket['role'] in _D2_ROLES - {'d2-controller'}
+        for request in [_D2_REQUESTS.get(ticket['ticket_id'])]
+        if request is None or request.get('observed_pid') is None]
+    no_unknown_birth = all(request is not None and (not request['entered'] or request['rejected_before_create'])
+        for request in absent)
+    return (no_unknown_birth and len(rows) == len(created)
+        and all(row['settled'] and row['exit_receipt_verified'] for row in rows))
+
+
+def _d2_slot_access(value, operation):
+    """Reject a live peer leaf before stat/open can create a native handle."""
+    c = _CONTEXT
+    if c is None or c.lane != 'd2' or c.role not in {'d2-worker', 'd2-controller'}:
+        return
+    contract = c.ticket.get('d2_contract', {}) if c.ticket else {}
+    root = contract.get('result_root')
+    if root is None:
+        return
+    root = _absolute(root) / 'results' if c.role == 'd2-controller' else _absolute(root)
+    selected = _absolute(value)
+    if selected.parent != root or selected.name not in _D2_SLOT_NAMES:
+        return
+    effects = getattr(c, 'd2_slot_effects', None)
+    if effects is None:
+        effects = c.d2_slot_effects = dict(own_metadata=0, own_opens=0, peer_slot_attempts=0, admitted_writes=0)
+    worker_id = selected.name.split('.', 1)[0]
+    if c.role == 'd2-worker':
+        if worker_id != contract.get('worker_id'):
+            effects['peer_slot_attempts'] += 1
+            raise ValueError('D2_PEER_SLOT_EFFECT_REFUSED')
+        effects['own_metadata' if operation == 'METADATA' else 'own_opens'] += 1
+    elif getattr(c, 'd2_go', None) is not None and c.d2_go.value == 1:
+        if worker_id in {'google', 'ftp'}:
+            _d2_settled_slot(worker_id)
+        elif not _d2_graph_quiescent():
+            raise ValueError('D2_PARENT_RESULT_UNSETTLED')
+
+
+def _d2_reader_admission(path):
+    c = _CONTEXT
+    selected = _absolute(path)
+    if Path(path) != selected or selected.name not in {'google.json', 'ftp.json', 'result.json'}:
+        raise ValueError('D2_READER_PATH')
+    if c.role == 'd2-worker':
+        raise ValueError('D2_READER_SCOPE')
+    if c.role == 'd2-controller':
+        contract = c.ticket['d2_contract']
+        if (not _d2_fixture_profile_admitted(contract['case'])
+                or selected.parent != _absolute(contract['result_root']) / 'results'):
+            raise ValueError('D2_READER_ROOT')
+        _d2_slot_access(selected, 'READ')
+        worker_id = selected.name.split('.', 1)[0]
+        if getattr(c, 'd2_go', None) is not None and c.d2_go.value == 1:
+            if worker_id == 'result':
+                if not _d2_graph_quiescent():
+                    raise ValueError('D2_READER_PHASE')
+                return selected, 'OS_SETTLED', worker_id, {}
+            row = _d2_settled_slot(worker_id)
+            return selected, 'OS_SETTLED', worker_id, {key: row[key] for key in
+                ('ticket_id', 'pid', 'actual_exit', 'settled', 'exit_receipt_verified', 'witness')}
+        if worker_id == 'result' and c.children and not _d2_graph_quiescent():
+            raise ValueError('D2_READER_PHASE')
+        return selected, 'READY_BARRIER', worker_id, {}
+    if c.role != 'lane-worker' or getattr(c, 'nodeid', '').split('[', 1)[0] not in _D2_READER_UNIT_BASES:
+        raise ValueError('D2_READER_SCOPE')
+    return selected, 'UNIT', selected.name.split('.', 1)[0], {}
+
+
+def d2_admit_checkpoint_path(path):
+    try:
+        _d2_source_frame('_d2_read_json_bytes', sys._getframe(1))
+        selected, phase, worker_id, fields = _d2_reader_admission(path)
+        _d2_phase_record('CHECKPOINT_READ', phase, worker_id, **fields)
+    except (ValueError, KeyError):
+        raise RuntimeError('D2_CHECKPOINT_INVALID') from None
+
+
+def d2_admit_slot_write(root, name, document, limit, limits, reservation):
+    """An independently regenerated reservation grants only this worker's slot."""
+    c = _CONTEXT
+    try:
+        upload = _d2_source_frame('_d2_slot_atomic_json', sys._getframe(1))
+        node = getattr(c, 'nodeid', '').split('[', 1)[0]
+        if (c.role != 'd2-worker' and (c.role != 'lane-worker' or node not in _D2_SLOT_UNIT_BASES)):
+            raise ValueError('D2_SLOT_WRITE_ROLE')
+        worker_id = name.removesuffix('.json') if type(name) is str else None
+        if worker_id not in {'google', 'ftp'}:
+            raise ValueError('D2_SLOT_WRITE_NAME')
+        proof = upload._d2_validate_reservation(reservation, limits)
+        outputs = upload._d2_outputs(proof['plan'][worker_id])
+        upload._d2_validate_checkpoint_record(document, worker_id, run_id=proof['run_id'],
+            attempt_id=proof['attempt_id'], producer_sha=proof['producer_sha'], pid=os.getpid(), outputs=outputs)
+        if type(limit) is not int or limit != limits['max_checkpoint_bytes']:
+            raise ValueError('D2_SLOT_WRITE_LIMIT')
+        if c.role == 'd2-worker':
+            contract = c.ticket['d2_contract']
+            entry = sys._getframe(1)
+            while entry is not None and entry.f_code.co_name != '_d2_worker_entry':
+                entry = entry.f_back
+            if (not _d2_fixture_profile_admitted(contract['case']) or worker_id != contract['worker_id']
+                    or _absolute(root) != _absolute(contract['result_root']) or entry is None
+                    or entry.f_code is not upload._d2_worker_entry.__code__
+                    or entry.f_locals.get('reservation') is not reservation
+                    or entry.f_locals['bootstrap']['run_id'] != proof['run_id']
+                    or entry.f_locals['bootstrap']['producer_sha'] != proof['producer_sha']
+                    or entry.f_locals['attempt_id'] != proof['attempt_id']
+                    or tuple((item['output_id'], item['group']) for item in entry.f_locals['channel_plan'])
+                        != reservation[3 if worker_id == 'google' else 4]):
+                raise ValueError('D2_SLOT_WRITE_RESERVATION')
+            c.d2_go = entry.f_locals['go']
+            effects = getattr(c, 'd2_slot_effects', None)
+            if effects is None:
+                effects = c.d2_slot_effects = dict(own_metadata=0, own_opens=0, peer_slot_attempts=0, admitted_writes=0)
+            effects['admitted_writes'] += 1
+        _d2_phase_record('SLOT_WRITE', 'OWN_SLOT', worker_id,
+            reserved_peak_bytes=reservation[6][3], reserved_slot_bytes=reservation[6][0 if worker_id == 'google' else 1])
+    except (ValueError, KeyError):
+        raise RuntimeError('D2_CHECKPOINT_INVALID') from None
+
+
+def d2_admit_full_inventory(root):
+    c, caller = _CONTEXT, sys._getframe(1)
+    _d2_source_frame('_d2_run_inventory', caller)
+    if c.role == 'd2-worker':
+        raise RuntimeError('D2_FULL_INVENTORY_PHASE')
+    if c.role == 'd2-controller':
+        if _absolute(root) != _absolute(c.ticket['d2_contract']['result_root']) / 'results':
+            raise RuntimeError('D2_FULL_INVENTORY_ROOT')
+        go = getattr(c, 'd2_go', None)
+        if go is not None and go.value == 1:
+            if not _d2_graph_quiescent():
+                raise RuntimeError('D2_FULL_INVENTORY_PHASE')
+            phase = 'OS_SETTLED'
+        elif c.children:
+            frame = caller.f_back
+            while frame is not None and frame.f_code is not getattr(c, 'd2_supervise_code', None):
+                frame = frame.f_back
+            if (frame is None or frame.f_locals.get('ready') != {'google', 'ftp'}
+                    or getattr(_THREAD_STATE, 'd2_reader', None) is not None):
+                if not _d2_graph_quiescent():
+                    raise RuntimeError('D2_FULL_INVENTORY_PHASE')
+                phase = 'OS_SETTLED'
+            else:
+                if set(getattr(c, 'd2_closed_ready', {})) != {'google', 'ftp'}:
+                    raise RuntimeError('D2_FULL_INVENTORY_READY_READERS')
+                phase = 'READY_BARRIER'
+        else:
+            phase = 'PREFLIGHT'
+    elif c.role == 'lane-worker' and getattr(c, 'nodeid', '').split('[', 1)[0] in _D2_INVENTORY_UNIT_BASES:
+        phase = 'UNIT'
+    else:
+        raise RuntimeError('D2_FULL_INVENTORY_SCOPE')
+    # Metadata is inspected only after the independent phase fence above.
+    total, files = 0, 0
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if entry.name not in _D2_SLOT_NAMES:
+                raise RuntimeError('D2_RESULT_WRITE_FAILED')
+            info = _ORIGINAL_LSTAT(entry.path)
+            if _linked(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RuntimeError('D2_RESULT_WRITE_FAILED')
+            total += info.st_size
+            files += 1
+    _d2_phase_record('FULL_INVENTORY', phase, 'parent', existing_total_bytes=total,
+        file_count=files, single_link_regular=True, graph_quiescent=phase in {'OS_SETTLED', 'PREFLIGHT'},
+        reader_active=getattr(_THREAD_STATE, 'd2_reader', None) is not None,
+        ready_workers_verified=len(getattr(c, 'd2_closed_ready', {})) if phase == 'READY_BARRIER' else 0)
+
+
+def _d2_checkpoint_reader_frame(token, frame):
+    if (getattr(_THREAD_STATE, 'd2_reader', None) is not token or token.get('ended')
+            or frame is not token.get('frame') or frame.f_code is not token.get('code')):
+        raise ValueError('D2_READER_CALLER')
+
+
+def d2_begin_checkpoint_read(path, limit, bindings):
+    """A synchronous read owns one native HANDLE, then one CRT descriptor."""
+    c, caller = _CONTEXT, sys._getframe(1)
+    upload = sys.modules.get('upload')
+    function = getattr(upload, '_d2_read_json_bytes', None)
+    if (c is None or c.lane != 'd2' or sys.platform != 'win32'
+            or function is None or function.__globals__ is not upload.__dict__
+            or caller.f_code is not function.__code__ or caller.f_globals is not upload.__dict__
+            or _absolute(caller.f_code.co_filename) != c.root / 'upload.py'
+            or getattr(_THREAD_STATE, 'd2_reader', None) is not None):
+        raise ValueError('D2_READER_CALLER')
+    known_code = getattr(c, 'd2_reader_code', None)
+    if known_code is None:
+        with _ORIGINAL_OPEN(c.root / 'upload.py', 'rb') as stream:
+            compiled = compile(stream.read(), str(c.root / 'upload.py'), 'exec', dont_inherit=True)
+        expected = next((part for part in compiled.co_consts
+            if isinstance(part, CodeType) and part.co_name == '_d2_read_json_bytes'), None)
+        if expected != function.__code__:
+            raise ValueError('D2_READER_SOURCE')
+        c.d2_reader_code = function.__code__
+    elif known_code is not function.__code__:
+        raise ValueError('D2_READER_SOURCE')
+    if (type(bindings) is not dict or set(bindings) != {'CreateFile', 'CloseHandle', 'open_osfhandle'}
+            or any(bindings[name] is not _D2_READER_ORIGINAL[name] for name in bindings)
+            or type(limit) is not int or not 0 < limit <= 131072):
+        raise ValueError('D2_READER_BINDINGS')
+    selected, phase, worker_id, fields = _d2_reader_admission(path)
+    selected = checked_path(selected)
+    if not _owned(selected):
+        raise ValueError('D2_READER_ROOT')
+    token = dict(frame=caller, code=caller.f_code, path=selected, limit=limit,
+        phase=phase, worker_id=worker_id,
+        handle=None, fd=None, creating=False, transferring=False, fdopening=False, audit_consumed=False,
+        native_close_calls=0, fd_close_calls=0, fd_closed=False, stream_closed=False, ended=False)
+    _THREAD_STATE.d2_reader = token
+    return token
+
+
+def _d2_checkpoint_parameters(token, parameters):
+    expected = (str(token['path']), 0x80000000, 7, 0, 3, 0x00200080, 0)
+    if (type(parameters) is not tuple or len(parameters) != 7 or parameters != expected
+            or any(type(value) is not int for value in parameters[1:])
+            or type(parameters[0]) is not str):
+        raise ValueError('D2_READER_PARAMETERS')
+
+
+def d2_checkpoint_create_file(token, *parameters):
+    _d2_checkpoint_reader_frame(token, sys._getframe(1))
+    _d2_checkpoint_parameters(token, parameters)
+    if token['handle'] is not None or token['fd'] is not None:
+        raise ValueError('D2_READER_HANDLE_OWNER')
+    token['creating'] = True
+    try:
+        handle = _D2_READER_ORIGINAL['CreateFile'](*parameters)
+    finally:
+        token['creating'] = False
+    token['handle'] = handle
+    token['created'] = True
+    return handle
+
+
+def d2_checkpoint_open_osfhandle(token, handle, flags):
+    _d2_checkpoint_reader_frame(token, sys._getframe(1))
+    if (type(handle) is not int or handle != token['handle'] or token['fd'] is not None
+            or type(flags) is not int or flags != os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT):
+        raise ValueError('D2_READER_TRANSFER_OWNER')
+    token['transferring'] = True
+    try:
+        descriptor = _D2_READER_ORIGINAL['open_osfhandle'](handle, flags)
+    finally:
+        token['transferring'] = False
+    # The native API has transferred ownership; no fallible check follows it.
+    token['fd'], token['handle'], token['transferred_handle'] = descriptor, None, handle
+    return descriptor
+
+
+def d2_checkpoint_close_handle(token, handle):
+    _d2_checkpoint_reader_frame(token, sys._getframe(1))
+    if type(handle) is not int or handle != token['handle'] or token['fd'] is not None:
+        raise ValueError('D2_READER_CLOSE_OWNER')
+    result = _D2_READER_ORIGINAL['CloseHandle'](handle)
+    token['native_close_calls'] += 1
+    token['handle'] = None
+    return result
+
+
+def _d2_checkpoint_fdopen_grant(descriptor, mode, flags):
+    token = getattr(_THREAD_STATE, 'd2_reader', None)
+    if token is None:
+        return False
+    caller = sys._getframe(1)
+    while caller is not None and caller is not token['frame']:
+        caller = caller.f_back
+    if (caller is None or not token['fdopening'] or token['fd'] != descriptor or token['audit_consumed']
+            or mode not in {'r', 'rb'} or token['fd_closed'] or flags & (os.O_WRONLY | os.O_RDWR)
+            or caller.f_locals.get('descriptor') != descriptor
+            or _D2_READER_ORIGINAL['get_osfhandle'](descriptor) is None
+            or os.get_inheritable(descriptor)):
+        raise ValueError('D2_READER_DESCRIPTOR')
+    # fd owns exactly the HANDLE just transferred by open_osfhandle.
+    if _D2_READER_ORIGINAL['get_osfhandle'](descriptor) != token.get('transferred_handle'):
+        raise ValueError('D2_READER_DESCRIPTOR')
+    token['audit_consumed'] = True
+    return True
+
+
+def d2_checkpoint_stream_closed(token, stream):
+    _d2_checkpoint_reader_frame(token, sys._getframe(1))
+    if (stream is not token.get('stream') or stream is not token['frame'].f_locals.get('stream') or not stream.closed
+            or not token['audit_consumed'] or token['fd_closed']):
+        raise ValueError('D2_READER_STREAM_OWNER')
+    token['stream_closed'] = True
+
+
+def d2_end_checkpoint_read(token):
+    _d2_checkpoint_reader_frame(token, sys._getframe(1))
+    descriptor_closed = token['fd'] is None
+    post_close = 'NOT_TRANSFERRED'
+    if token['fd'] is not None and token['fd_closed'] and token['fd_close_calls'] == 1:
+        # The exact owner binding was checked immediately before accepted close.
+        # A listener can already own a reused numerical fd when this returns.
+        descriptor_closed = True
+        try:
+            _ORIGINAL_FSTAT(token['fd'])
+            post_close = 'REUSED_OPEN'
+        except OSError as error:
+            post_close = 'EBADF' if error.errno == 9 else 'OS_ERROR'
+    stream = token['frame'].f_locals.get('stream')
+    complete = (token['handle'] is None and descriptor_closed
+        and (stream is None or stream.closed and token['stream_closed']))
+    row = dict(handle_created=token.get('created', False), descriptor_transferred=token['fd'] is not None,
+        native_close_calls=token['native_close_calls'], fd_close_calls=token['fd_close_calls'],
+        descriptor_closed=descriptor_closed, stream_closed=stream is None or stream.closed,
+        fdopen_events=int(token['audit_consumed']), lifetime_complete=complete,
+        post_close_observation=post_close)
+    history = getattr(_CONTEXT, 'd2_reader_history', None)
+    if history is None:
+        history = _CONTEXT.d2_reader_history = []
+    history.append(row)
+    del history[:-128]
+    counts = getattr(_CONTEXT, 'd2_reader_counts', None)
+    if counts is None:
+        counts = _CONTEXT.d2_reader_counts = dict(reads=0, lifetime_complete=0, native_closes=0, fd_closes=0)
+    counts['reads'] += 1
+    counts['lifetime_complete'] += int(complete)
+    counts['native_closes'] += row['native_close_calls']
+    counts['fd_closes'] += row['fd_close_calls']
+    if (complete and _CONTEXT.role == 'd2-controller' and token['phase'] == 'READY_BARRIER'
+            and token['worker_id'] in {'google', 'ftp'}):
+        data = token['frame'].f_locals.get('data')
+        reservation = getattr(_CONTEXT, 'd2_reservation', None)
+        if isinstance(data, bytes) and len(data) <= 65536 and reservation is not None:
+            try:
+                record = json.loads(data)
+            except (ValueError, UnicodeError):
+                record = None
+            worker_id = token['worker_id']
+            births = [request['observed_pid'] for request in _D2_REQUESTS.values()
+                if request['ticket']['d2_contract']['worker_id'] == worker_id and request.get('observed_pid') is not None]
+            if (isinstance(record, dict) and record.get('kind') == 'D2_WORKER_CHECKPOINT'
+                    and record.get('receipt_version') == 1 and record.get('run_id') == reservation[0]
+                    and record.get('attempt_id') == reservation[1] and record.get('producer_sha') == reservation[2]
+                    and record.get('worker_id') == worker_id and births == [record.get('pid')]
+                    and record.get('execution_state') == 'READY' and record.get('normal_return_observed') is False
+                    and record.get('diagnostics_state') == 'ACTIVE' and record.get('error_code') is None):
+                ready = getattr(_CONTEXT, 'd2_closed_ready', None)
+                if ready is None:
+                    ready = _CONTEXT.d2_closed_ready = {}
+                ready[worker_id] = dict(pid=record['pid'], fd_close_calls=row['fd_close_calls'],
+                    native_close_calls=row['native_close_calls'], stream_closed=row['stream_closed'],
+                    lifetime_complete=row['lifetime_complete'])
+    token['ended'] = True
+    token.pop('frame')
+    _THREAD_STATE.d2_reader = None
+    if not complete:
+        raise ValueError('D2_READER_LIFETIME')
+
+
+def d2_site_positive_control(path):
+    c = _CONTEXT
+    root = Path(c.ticket['d2_contract']['result_root'])
+    if (c.role != 'd2-controller' or not _d2_fixture_profile_admitted('success')
+            or Path(path) != root / 'issued-site/site-packages' or not _owned(path)):
+        raise ValueError('D2_SITE_CONTROL_SCOPE')
+    import site
+    marker = root / 'pth-executed'
+    if marker.exists():
+        raise ValueError('D2_SITE_CONTROL_PREEXECUTED')
+    site.addsitedir(str(path))
+    return marker.read_bytes() == b'BAD'
+
+
+def _d2_prepare_fixture_start(process, role, worker_id, case):
+    if not _d2_fixture_profile_admitted(case) or _CONTEXT.role != 'd2-controller':
+        raise ValueError('D2_FIXTURE_START_SCOPE')
+    parent = _CONTEXT.ticket['d2_contract']
+    _d2_validate_fixture_process(process, role, worker_id, case, parent)
+    if not _owned(parent['result_root']) or not _owned(parent['log_root']):
+        raise ValueError('D2_FIXTURE_START_ROOT')
+    ticket = issue_ticket(role, ['multiprocessing.spawn', worker_id], expected_exit=None,
+        d2_contract=dict(parent, worker_id=worker_id), gate=True)
+    _D2_PROCESS_TICKETS[process] = ticket
+    return ticket
+
+
+def d2_begin_native_launch(process):
+    import _winapi
+    ticket = _D2_PROCESS_TICKETS.get(process)
+    if (not isinstance(ticket, dict) or ticket not in _CONTEXT.children
+            or ticket['role'] not in _D2_ROLES - {'d2-controller'}
+            or getattr(_THREAD_STATE, 'd2_request', None) is not None):
+        raise ValueError('D2_NATIVE_LAUNCH_SCOPE')
+    original, duplicate = _winapi.CreateProcess, _winapi.DuplicateHandle
+    if original is not _D2_WINAPI_ORIGINAL['CreateProcess'] or duplicate is not _D2_WINAPI_ORIGINAL['DuplicateHandle']:
+        raise ValueError('D2_NATIVE_FOREIGN_BINDING')
+    token = dict(ticket=ticket, original=original, duplicate=duplicate, owner=threading.get_ident(),
+        process=process, nul_sources={}, nul_duplicates={}, stdio=None, observed_pid=None,
+        original_process_handle=None, entered=False, rejected_before_create=False)
+    caller = sys._getframe(1)
+    import upload
+    if (caller.f_code is not upload._d2_start_worker.__code__ or caller.f_locals.get('process') is not process
+            or not isinstance(caller.f_locals.get('state'), dict)):
+        raise ValueError('D2_NATIVE_ADAPTER_CALLER')
+    token['state'] = caller.f_locals['state']
+    arguments = getattr(process, '_args', ())
+    bootstrap = arguments[0] if arguments and isinstance(arguments[0], dict) else {}
+    channel = bootstrap.get('_queue')
+    connections = [bootstrap.get('_ack')]
+    if channel is not None:
+        connections.extend([channel._reader, channel._writer])
+    token['connection_handles'] = {value.fileno() for value in connections if value is not None}
+    token['semlock_handles'] = {value._semlock.handle for value in
+        (getattr(channel, '_rlock', None), getattr(channel, '_wlock', None), getattr(channel, '_sem', None))
+        if value is not None}
+    def create(*args, **kwargs):
+        if threading.get_ident() != token['owner']:
+            return original(*args, **kwargs)
+        if getattr(_THREAD_STATE, 'd2_request', None) is not token or token['entered']:
+            reject('children')
+        token['entered'] = True
+        if ticket['d2_contract']['case'] == 'native_create_fault':
+            token['rejected_before_create'] = True
+            d2_fault_witness('native_create_fault', request=token)
+            raise OSError('D2_NATIVE_CREATE_FAILED')
+        if len(args) != 9 or kwargs or token['stdio'] is None:
+            reject('native')
+        startup = args[8]
+        read, write = token['stdio']
+        handle_list = getattr(startup, 'lpAttributeList', {}).get('handle_list')
+        if (not args[4] or startup.hStdInput != read or startup.hStdOutput != write
+                or startup.hStdError != write or handle_list != [read, write]
+                or not startup.dwFlags & 0x100):
+            reject('native')
+        return native_create_process(original, args, kwargs)
+    def dup(*args, **kwargs):
+        if threading.get_ident() != token['owner']:
+            return duplicate(*args, **kwargs)
+        if kwargs or len(args) != 6:
+            reject('native')
+        source = int(args[1])
+        if source in token['nul_sources']:
+            if args[0] != _winapi.GetCurrentProcess() or args[2] != args[0] or args[3:] != (0, True, 2):
+                reject('native')
+            if ticket['d2_contract']['case'] == 'native_dup_' + token['nul_sources'][source] + '_fault':
+                d2_fault_witness(ticket['d2_contract']['case'], request=token)
+                raise OSError('D2_NATIVE_DUP_FAILED')
+            value = duplicate(*args)
+            token['nul_duplicates'][int(value)] = token['nul_sources'][source]
+            return value
+        record = _D2_NATIVE_HANDLES.get(source)
+        if record is not None and record['kind'] == 'process' and record['ticket_id'] == ticket['ticket_id']:
+            if args[0] != _winapi.GetCurrentProcess() or args[2] != args[0] or args[3:] != (0, False, 2):
+                reject('native')
+            value = duplicate(*args)
+            _D2_NATIVE_HANDLES[int(value)] = dict(record, retained=True)
+            return value
+        # Queue/Pipe reduction is the pinned stdlib producer bootstrap. It
+        # never grants adapter stdio or an arbitrary workload native handle.
+        import multiprocessing.reduction as reduction
+        caller = sys._getframe(1)
+        from multiprocessing.popen_spawn_win32 import Popen
+        from multiprocessing.synchronize import SemLock
+        spawning = __import__('multiprocessing.context', fromlist=['get_spawning_popen']).get_spawning_popen()
+        lock_reduction = (caller.f_code is reduction.duplicate.__code__
+            and caller.f_back.f_code is Popen.duplicate_for_child.__code__
+            and spawning is caller.f_back.f_locals.get('self')
+            and getattr(spawning, 'pid', None) == token['observed_pid']
+            and int(args[2]) == token['original_process_handle'] and args[3:] == (0, False, 2)
+            and source in token['semlock_handles'] and caller.f_back.f_back.f_code is SemLock.__getstate__.__code__
+            and caller.f_back.f_back.f_locals['self']._semlock.handle == source)
+        from multiprocessing.connection import reduce_pipe_connection
+        pipe_reduction = (caller.f_code is reduction.DupHandle.__init__.__code__
+            and caller.f_back.f_code is reduce_pipe_connection.__code__
+            and source in token['connection_handles'] and caller.f_back.f_locals['conn'].fileno() == source)
+        if not pipe_reduction and not lock_reduction:
+            reject('native')
+        return duplicate(*args)
+    create._mds_d2_native_guard = True
+    create._mds_d2_native_original = original
+    token['wrapper'], token['duplicate_wrapper'] = create, dup
+    _D2_REQUESTS[ticket['ticket_id']] = token
+    _THREAD_STATE.d2_request = token
+    _THREAD_STATE.launch = getattr(_THREAD_STATE, 'launch', 0) + 1
+    begin_native_launch(ticket)
+    _winapi.CreateProcess, _winapi.DuplicateHandle = create, dup
+    return token
+
+
+def d2_native_identity(current, token):
+    return (isinstance(token, dict) and getattr(_THREAD_STATE, 'd2_request', None) is token
+        and current is token['wrapper'] and current._mds_d2_native_original is token['original']
+        and _D2_REQUESTS.get(token['ticket']['ticket_id']) is token)
+
+
+def d2_register_native_stdio(token, read_handle, write_handle):
+    if (getattr(_THREAD_STATE, 'd2_request', None) is not token
+            or token['nul_duplicates'].get(int(read_handle)) != 'read'
+            or token['nul_duplicates'].get(int(write_handle)) != 'write'
+            or read_handle == write_handle or len(token['nul_duplicates']) != 2):
+        raise ValueError('D2_NATIVE_STDIO_OWNERSHIP')
+    token['stdio'] = (int(read_handle), int(write_handle))
+
+
+def d2_child_environment(token, environment):
+    if getattr(_THREAD_STATE, 'd2_request', None) is not token:
+        raise ValueError('D2_NATIVE_ENV_SCOPE')
+    return child_env(token['ticket'], environment)
+
+
+def d2_bootstrap_prefix(token):
+    if getattr(_THREAD_STATE, 'd2_request', None) is not token:
+        raise ValueError('D2_NATIVE_PREFIX_SCOPE')
+    return _D2_PREFIX
+
+
+def d2_end_native_launch(token):
+    import _winapi
+    if getattr(_THREAD_STATE, 'd2_request', None) is not token or _winapi.CreateProcess is not token['wrapper']:
+        raise ValueError('D2_NATIVE_RESTORE_IDENTITY')
+    _winapi.CreateProcess = token['original']
+    if _winapi.DuplicateHandle is not token['duplicate_wrapper']:
+        raise ValueError('D2_NATIVE_DUP_RESTORE_IDENTITY')
+    _winapi.DuplicateHandle = token['duplicate']
+    end_native_launch()
+    _THREAD_STATE.launch -= 1
+    _THREAD_STATE.d2_request = None
+
+
+def _d2_complete_upload_start(process, state, worker_id, case):
+    ticket = _D2_PROCESS_TICKETS.get(process)
+    if ticket is None and case == 'start_' + worker_id + '_before':
+        return dict(ticket_id=None, pid=None, native_entered=False)
+    if ticket is None or ticket['d2_contract']['case'] != case or ticket['d2_contract']['worker_id'] != worker_id:
+        raise ValueError('D2_START_COMPLETION_SCOPE')
+    request = _D2_REQUESTS.get(ticket['ticket_id'])
+    if request is not None:
+        request['state'] = state
+    pid = request.get('observed_pid') if request is not None else None
+    process._mds_d2_observed_pid = pid
+    if process.pid is not None:
+        if process.pid != pid:
+            raise ValueError('D2_START_PID_MISMATCH')
+        attach_spawn(process, ticket)
+    return dict(ticket_id=ticket['ticket_id'], pid=pid,
+                native_entered=bool(request and request['entered']))
+
+
+def d2_record_fixture_exit(process, *, containment=False):
+    ticket = _D2_PROCESS_TICKETS.get(process)
+    if ticket is None:
+        raise ValueError('D2_EXIT_SCOPE')
+    code = process.exitcode
+    if code is not None:
+        record_child_exit(ticket, code)
+        _close_child_job(ticket, terminate=containment)
+    return code
+
+
+def d2_baseline_containment(process):
+    ticket = _D2_PROCESS_TICKETS.get(process)
+    if (not _d2_fixture_profile_admitted('baseline_hang') or _CONTEXT.role != 'd2-controller'
+            or ticket is None or ticket['role'] != 'd2-baseline-worker'
+            or ticket['d2_contract']['worker_id'] != 'google'):
+        raise ValueError('D2_BASELINE_CONTAINMENT_SCOPE')
+    if ticket['ticket_id'] not in _CHILD_JOBS:
+        raise ValueError('D2_BASELINE_CONTAINMENT_JOB')
+    _close_child_job(ticket, terminate=True)
+    return True
+
+
+def d2_observe_native_state(state, observation):
+    """Record actual retained-handle exit, including a failed Process.start."""
+    if state.get('_closed'):
+        return
+    pid = state.get('_native_pid')
+    request = next((request for request in _D2_REQUESTS.values() if request.get('observed_pid') == pid), None) if pid is not None else None
+    if request is None:
+        return
+    ticket = request['ticket']
+    if request.get('after_result_containment'):
+        return
+    handle = state.get('_native_handle')
+    record = _D2_NATIVE_HANDLES.get(int(handle)) if handle is not None else None
+    owned_original = handle == request.get('original_process_handle') and not state.get('_vendor_transferred')
+    if record is None or record.get('ticket_id') != ticket['ticket_id'] or not (record.get('retained') or owned_original):
+        return
+    wait = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 0)
+    if wait not in {0, 258}:
+        raise ValueError('D2_GUARD_NATIVE_WAIT')
+    raw = int(_D2_WINAPI_ORIGINAL['GetExitCodeProcess'](handle)) if wait == 0 else None
+    code = -15 if raw == 65536 else raw
+    request['state'] = state
+    request['os_observation'] = dict(worker_id=ticket['d2_contract']['worker_id'],
+        ticket_id=ticket['ticket_id'], pid=pid, actual_exit=code, raw_windows_exit=raw,
+        settled=wait == 0, alive=wait == 258, witness='GUARD_RETAINED_HANDLE')
+    if wait == 0:
+        record_child_exit(ticket, code)
+        _close_child_job(ticket)
+
+
+def d2_actual_pid_settlement():
+    c = _CONTEXT
+    if c.role != 'd2-controller':
+        raise ValueError('D2_OS_ORACLE_SCOPE')
+    found = []
+    for ticket in c.children:
+        request = _D2_REQUESTS.get(ticket['ticket_id'])
+        if request is None or request.get('observed_pid') is None:
+            continue
+        state = request.get('state')
+        if state is not None:
+            d2_observe_native_state(state, None)
+        observed = request.get('os_observation')
+        if observed is None or observed['pid'] != request['observed_pid']:
+            raise ValueError('D2_OS_ORACLE_MISSING')
+        row = dict(observed)
+        exit_path = c.report_dir / 'tickets' / (ticket['ticket_id'] + '.exit.json')
+        if row['settled']:
+            receipt = _read_json(exit_path)
+            if (receipt.get('ticket_id') != ticket['ticket_id'] or receipt.get('run_id') != ticket['run_id']
+                    or receipt.get('actual_exit') != row['actual_exit']):
+                raise ValueError('D2_OS_ORACLE_EXIT')
+            row['exit_receipt_verified'] = True
+        else:
+            if exit_path.exists():
+                raise ValueError('D2_OS_ORACLE_LIVE_EXIT')
+            row['exit_receipt_verified'] = False
+        found.append(row)
+    return found
+
+
+def d2_slot_write_witnesses():
+    """Read only settled children's actual guard finals, outside slot storage."""
+    c = _CONTEXT
+    if c.role != 'd2-controller':
+        raise ValueError('D2_SLOT_WITNESS_SCOPE')
+    workers = {}
+    for observed in d2_actual_pid_settlement():
+        if not observed['settled'] or observed['worker_id'] not in {'google', 'ftp'}:
+            continue
+        identifier = observed['ticket_id']
+        path = c.report_dir / 'processes' / (identifier + '.final.json')
+        if not path.is_file():
+            continue
+        final = _read_json(path)
+        if (final.get('ticket_id') != identifier or final.get('run_id') != c.run_id
+                or final.get('pid') != observed['pid'] or final.get('tested_sha') != c.tested_sha):
+            raise ValueError('D2_SLOT_WITNESS_IDENTITY')
+        effects = final.get('slot_effects')
+        if effects is None:
+            continue
+        keys = {'own_metadata', 'own_opens', 'peer_slot_attempts', 'admitted_writes'}
+        if set(effects) != keys or any(type(value) is not int or value < 0 for value in effects.values()):
+            raise ValueError('D2_SLOT_WITNESS_FORMAT')
+        phases = final.get('slot_phase_witnesses')
+        if (not isinstance(phases, list) or len(phases) > 128 or any(
+                not isinstance(row, dict) or set(row) != {'kind', 'phase', 'worker_id', 'go_released',
+                    'reserved_peak_bytes', 'reserved_slot_bytes'} or row['kind'] != 'SLOT_WRITE'
+                or row['phase'] != 'OWN_SLOT' or row['worker_id'] != observed['worker_id']
+                or type(row['go_released']) is not bool
+                or any(type(row[key]) is not int or row[key] <= 0 for key in ('reserved_peak_bytes', 'reserved_slot_bytes'))
+                for row in phases)):
+            raise ValueError('D2_SLOT_PHASE_WITNESS_FORMAT')
+        workers[observed['worker_id']] = dict(effects, ticket_id=identifier, pid=observed['pid'],
+            actual_exit=observed['actual_exit'], exit_receipt_verified=True,
+            witness='GUARD_WORKER_FINAL', phase_witnesses=phases)
+    return dict(workers=workers)
+
+
+def d2_request_worker_cleanup(state, callback):
+    """Observe the actual native termination request using retained OS APIs."""
+    c = _CONTEXT
+    caller = sys._getframe(1)
+    pid = state.get('_native_pid')
+    request = next((value for value in _D2_REQUESTS.values() if value.get('observed_pid') == pid), None)
+    phase = state.get('_cleanup_phase')
+    disabled = c.ticket['d2_contract']['case'] == 'cleanup_unsettled'
+    if (c.role != 'd2-controller' or caller.f_code.co_name != 'terminate'
+            or _absolute(caller.f_code.co_filename) != c.root / 'tests/d2/d2_worker.py'
+            or callback is not c.d2_terminate or request is None or request.get('state') is not state
+            or phase not in {'TERMINATE', 'KILL'}):
+        raise ValueError('D2_CLEANUP_REQUEST_SCOPE')
+    import _winapi
+    original = _D2_WINAPI_ORIGINAL['TerminateProcess']
+    if _winapi.TerminateProcess is not original:
+        raise ValueError('D2_CLEANUP_REQUEST_BINDING')
+    ticket = request['ticket']
+    handle = state.get('_native_handle')
+    proof = _D2_NATIVE_HANDLES.get(int(handle)) if handle is not None else None
+    if proof is None or proof.get('ticket_id') != ticket['ticket_id'] or not proof.get('retained'):
+        raise ValueError('D2_CLEANUP_REQUEST_HANDLE')
+    before = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 0)
+    if before not in {0, 258}:
+        raise ValueError('D2_CLEANUP_REQUEST_WAIT')
+    accepted, calls = False, 0
+    owner = threading.get_ident()
+    def observe_native(actual_handle, exit_code):
+        nonlocal accepted, calls
+        if threading.get_ident() != owner:
+            return original(actual_handle, exit_code)
+        frame = sys._getframe(1)
+        if (frame.f_code is not callback.__code__ or frame.f_locals.get('state') is not state
+                or actual_handle != handle or exit_code != 65536 or calls):
+            raise ValueError('D2_CLEANUP_REQUEST_ARGUMENTS')
+        calls += 1
+        result = original(actual_handle, exit_code)
+        accepted = True
+        return result
+    _winapi.TerminateProcess = observe_native
+    try:
+        result = False if disabled else callback(state)
+    finally:
+        if _winapi.TerminateProcess is not observe_native:
+            raise ValueError('D2_CLEANUP_REQUEST_RESTORE')
+        _winapi.TerminateProcess = original
+    after = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 0)
+    if after not in {0, 258}:
+        raise ValueError('D2_CLEANUP_REQUEST_WAIT')
+    raw = int(_D2_WINAPI_ORIGINAL['GetExitCodeProcess'](handle)) if after == 0 else None
+    row = dict(version=1, ticket_id=ticket['ticket_id'], run_id=c.run_id, case=ticket['d2_contract']['case'],
+        nodeid=ticket['nodeid'], worker_id=ticket['d2_contract']['worker_id'], pid=pid, phase=phase,
+        alive=before == 258, accepted=accepted, native_calls=calls, requested_exit=65536,
+        settled_after=after == 0, raw_windows_exit_after=raw, witness='GUARD_RETAINED_HANDLE')
+    exclusive_json(c.report_dir / 'tickets' / (ticket['ticket_id'] + '.d2-cleanup-request-' + phase + '.json'), row)
+    return result, row
+
+
+def _d2_foreign_kernel32():
+    c = _CONTEXT
+    if c.role not in {'d2-controller', 'd2-worker'} or not _d2_fixture_profile_admitted('foreign_handle'):
+        raise ValueError('D2_FOREIGN_NATIVE_SCOPE')
+    if hasattr(c, 'd2_foreign_kernel'):
+        return c.d2_foreign_kernel
+    _THREAD_STATE.d2_binding = True
+    try:
+        kernel = _ORIGINAL_WINDLL('kernel32', use_last_error=True)
+        create, signal, wait, close = kernel.CreateEventW, kernel.SetEvent, kernel.WaitForSingleObject, kernel.CloseHandle
+        create.argtypes, create.restype = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p], ctypes.c_void_p
+        signal.argtypes, signal.restype = [ctypes.c_void_p], ctypes.c_int
+        wait.argtypes, wait.restype = [ctypes.c_void_p, ctypes.c_uint32], ctypes.c_uint32
+        close.argtypes, close.restype = [ctypes.c_void_p], ctypes.c_int
+    finally:
+        _THREAD_STATE.d2_binding = False
+    def call(name, function, args):
+        caller = sys._getframe(2).f_code
+        own = getattr(c, 'd2_foreign_fixture', {})
+        if name == 'create':
+            valid = (c.role == 'd2-controller' and caller is d2_create_foreign_fixture.__code__
+                and args == (None, True, False, None) and not own)
+        elif name == 'signal':
+            probe = getattr(c, 'd2_foreign_probe_payload', {})
+            valid = (c.role == 'd2-worker' and caller is d2_foreign_inheritance_probe.__code__
+                and args == (probe.get('event'),) and probe.get('fd') == 200)
+        elif name == 'wait':
+            valid = (c.role == 'd2-controller' and caller is d2_finish_foreign_fixture.__code__
+                and args == (own.get('event'), 0))
+        else:
+            valid = (c.role == 'd2-controller' and caller in {
+                d2_create_foreign_fixture.__code__, d2_finish_foreign_fixture.__code__}
+                and args == (own.get('event'),))
+        if not valid:
+            reject('native')
+        return function(*args)
+    def owned_create(*args):
+        return call('create', create, args)
+    def owned_signal(*args):
+        return call('signal', signal, args)
+    def owned_wait(*args):
+        return call('wait', wait, args)
+    def owned_close(*args):
+        return call('close', close, args)
+    c.d2_foreign_kernel = (owned_create, owned_signal, owned_wait, owned_close)
+    return c.d2_foreign_kernel
+
+
+def d2_create_foreign_fixture(descriptor):
+    c = _CONTEXT
+    if c.role != 'd2-controller' or not _d2_fixture_profile_admitted('foreign_handle') or descriptor != 200:
+        raise ValueError('D2_FOREIGN_FIXTURE_SCOPE')
+    import _winapi
+    import msvcrt
+    _writable_descriptor(descriptor)
+    handle = int(msvcrt.get_osfhandle(descriptor))
+    event = _d2_foreign_kernel32()[0](None, True, False, None)
+    if not event:
+        raise OSError('D2_FOREIGN_EVENT_CREATE_FAILED')
+    event = int(event)
+    os.set_handle_inheritable(event, True)
+    c.d2_foreign_fixture = dict(fd=descriptor, handle=handle, event=event,
+        file_inheritable=os.get_handle_inheritable(handle), event_inheritable=os.get_handle_inheritable(event))
+    if c.d2_foreign_fixture['file_inheritable'] is not True or c.d2_foreign_fixture['event_inheritable'] is not True:
+        _d2_foreign_kernel32()[3](event)
+        raise ValueError('D2_FOREIGN_FIXTURE_INHERITABILITY')
+    return dict(c.d2_foreign_fixture)
+
+
+def d2_foreign_inheritance_probe(payload):
+    if (_CONTEXT.role != 'd2-worker' or not _d2_fixture_profile_admitted('foreign_handle')
+            or _CONTEXT.ticket['d2_contract']['worker_id'] != 'google'
+            or set(payload) != {'fd', 'handle', 'event', 'file_inheritable', 'event_inheritable'}
+            or payload['fd'] != 200):
+        raise ValueError('D2_FOREIGN_PROBE_SCOPE')
+    import _winapi
+    file_visible, file_written, event_set = False, False, False
+    declared = _read_json(Path(_CONTEXT.ticket['d2_contract']['result_root']).parent / 'foreign.json')
+    if declared != payload:
+        raise ValueError('D2_FOREIGN_PAYLOAD_IDENTITY')
+    _CONTEXT.d2_foreign_probe_payload = dict(payload)
+    try:
+        if _winapi.GetFileType(payload['handle']) == 1:
+            data, error = _winapi.ReadFile(payload['handle'], len(b'D2_FOREIGN_UNCHANGED'))
+            file_visible = error == 0 and data == b'D2_FOREIGN_UNCHANGED'
+            if file_visible:
+                _winapi.WriteFile(payload['handle'], b'D2_SYNTHETIC_CANARY_FOREIGN_EFFECT')
+                file_written = True
+    except OSError:
+        pass
+    try:
+        event_set = bool(_d2_foreign_kernel32()[1](payload['event']))
+    except OSError:
+        pass
+    return dict(file_handle_visible=file_visible, file_write_succeeded=file_written, event_set_succeeded=event_set)
+
+
+def d2_finish_foreign_fixture(payload):
+    import _winapi
+    if getattr(_CONTEXT, 'd2_foreign_fixture', None) != payload:
+        raise ValueError('D2_FOREIGN_FINISH_SCOPE')
+    unchanged = _d2_foreign_kernel32()[2](payload['event'], 0) == 258
+    unchanged = unchanged and os.get_handle_inheritable(payload['handle']) is True and os.get_handle_inheritable(payload['event']) is True
+    if not _d2_foreign_kernel32()[3](payload['event']):
+        raise OSError('D2_FOREIGN_EVENT_CLOSE_FAILED')
+    return unchanged
+
+
+def d2_declare_completed_case(bundle):
+    c = _CONTEXT
+    if c.role != 'd2-controller' or bundle.get('case') != c.ticket['d2_contract']['case']:
+        raise ValueError('D2_DECLARATION_OWNER')
+    for ticket in c.children:
+        if ticket['role'] not in _D2_ROLES - {'d2-controller'}:
+            continue
+        request = _D2_REQUESTS.get(ticket['ticket_id'])
+        created = request.get('observed_pid') if request else None
+        exit_path = c.report_dir / 'tickets' / (ticket['ticket_id'] + '.exit.json')
+        actual = _read_json(exit_path).get('actual_exit') if exit_path.exists() else None
+        not_started = (request is not None and created is None
+            and (not request['entered'] or request['rejected_before_create']))
+        record = dict(version=1, ticket_id=ticket['ticket_id'], run_id=ticket['run_id'],
+            nodeid=ticket['nodeid'], case=ticket['d2_contract']['case'],
+            worker_id=ticket['d2_contract']['worker_id'], pid=created,
+            actual_exit=actual, not_started=not_started,
+            fault_witnesses=bundle.get('fault_witnesses', {}),
+            worker_fence=bundle.get('worker_fences', {}).get(ticket['d2_contract']['worker_id']),
+            cleanup_requests=bundle.get('cleanup_requests', []),
+            deliberately_unsettled=bundle['case'] == 'cleanup_unsettled' and created is not None and actual is None)
+        exclusive_json(c.report_dir / 'tickets' / (ticket['ticket_id'] + '.d2-observation.json'), record)
+
+
+def d2_contain_after_result(case):
+    """Negative oracle is immutable before the fixture Job kills its worker."""
+    c = _CONTEXT
+    if case != 'cleanup_unsettled' or c.role != 'd2-controller' or not _d2_fixture_profile_admitted(case):
+        raise ValueError('D2_AFTER_RESULT_CONTAINMENT_SCOPE')
+    result_path = Path(c.ticket['d2_contract']['result_root']) / 'controller-result.json'
+    bundle = _read_json(result_path)
+    if bundle.get('case') != case or bundle['result']['diagnostic_success_allowed'] is not False:
+        raise ValueError('D2_AFTER_RESULT_NEGATIVE_ORACLE')
+    import upload
+    for ticket in c.children:
+        request = _D2_REQUESTS.get(ticket['ticket_id'])
+        if request is None or request.get('state') is None or ticket['ticket_id'] not in _CHILD_JOBS:
+            continue
+        state = request['state']
+        handle = state.get('_native_handle')
+        record = _D2_NATIVE_HANDLES.get(int(handle)) if handle is not None else None
+        if (record is None or record.get('retained') is not True
+                or record.get('ticket_id') != ticket['ticket_id'] or state.get('_native_pid') != request['observed_pid']):
+            raise ValueError('D2_AFTER_RESULT_NATIVE_WITNESS')
+        if _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 0) == 0:
+            continue
+        request['after_result_containment'] = True
+        _close_child_job(ticket, terminate=True)
+        deadline = time.monotonic() + 10
+        wait = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 0)
+        while wait == 258 and time.monotonic() < deadline:
+            wait = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 100)
+        if wait not in {0, 258}:
+            raise ValueError('D2_AFTER_RESULT_NATIVE_WAIT')
+        raw = int(_D2_WINAPI_ORIGINAL['GetExitCodeProcess'](handle)) if wait == 0 else None
+        code = -15 if raw == 65536 else raw
+        request['containment_os_observation'] = dict(pid=request['observed_pid'], actual_exit=code,
+            raw_windows_exit=raw, settled=wait == 0, witness='GUARD_RETAINED_HANDLE')
+        exclusive_json(c.report_dir / 'tickets' / (ticket['ticket_id'] + '.d2-containment.json'),
+            dict(ticket_id=ticket['ticket_id'], run_id=c.run_id, pid=request['observed_pid'],
+                actual_exit=code, raw_windows_exit=raw, settled=wait == 0,
+                witness='GUARD_RETAINED_HANDLE', purpose='AFTER_RESULT_CONTAINMENT'))
+        if wait != 0:
+            raise RuntimeError('D2_AFTER_RESULT_CONTAINMENT_FAILED')
+        record_child_exit(ticket, code)
+        if not upload._d2_close_launch_state(state):
+            raise RuntimeError('D2_AFTER_RESULT_VENDOR_CLOSE_FAILED')
+        if state.get('_start_returned'):
+            request['process'].join(0)
+
+
+def d2_controller_error(error):
+    c = _CONTEXT
+    if c is None or c.role != 'd2-controller':
+        return
+    caller = sys._getframe(1)
+    if _absolute(caller.f_code.co_filename) != c.root / 'tests/d2/d2_worker.py' or caller.f_code.co_name != '<module>':
+        raise ValueError('D2_CONTROLLER_ERROR_CALLER')
+    kind = ('RUNTIME' if type(error) is RuntimeError else 'VALUE' if type(error) is ValueError
+        else 'OS' if isinstance(error, OSError) else 'IMPORT' if isinstance(error, ImportError) else 'OTHER')
+    upload = sys.modules.get('upload')
+    code = upload._d2_code(error, fallback='D2_CONTROLLER_FAILED') if upload is not None else 'D2_CONTROLLER_FAILED'
+    if upload is None or code not in upload._D2_CODES:
+        code = 'D2_CONTROLLER_FAILED'
+    stages = {'FIXTURE_SEED', 'IMPORT_UPLOAD', 'BASELINE_EXECUTION', 'LOCK_EXECUTION',
+        'LOGGER_SETUP', 'SOURCE_PLAN', 'PREWRAPPER_SETUP', 'NATIVE_SUPERVISION',
+        'PARENT_FINALIZATION', 'RESULT_EXPORT', 'DECLARATION', 'AFTER_RESULT_CONTAINMENT', 'GUARD_FINALIZATION'}
+    stage = getattr(c, 'd2_controller_stage', None)
+    stage = stage if stage in stages else 'UNKNOWN'
+    exclusive_json(Path(c.ticket['d2_contract']['result_root']) / 'controller-error.json',
+        dict(version=1, case=c.ticket['d2_contract']['case'], controller_pid=os.getpid(),
+            ticket_id=c.ticket['ticket_id'], run_id=c.run_id, stage=stage,
+            exception_kind=kind, error_code=code, declared_status=1))
+
+
+def d2_controller_exception_cleanup():
+    """Bounded fixture containment on a failed controller, never a PASS oracle."""
+    c = _CONTEXT
+    if c is None or c.role != 'd2-controller':
+        return
+    caller = sys._getframe(1)
+    if _absolute(caller.f_code.co_filename) != c.root / 'tests/d2/d2_worker.py' or caller.f_code.co_name != '<module>':
+        raise ValueError('D2_CONTROLLER_CLEANUP_CALLER')
+    import upload
+    deadline = time.monotonic() + 10
+    pending = []
+    failed = False
+    # Contain every owned sibling before one bad observation can abort cleanup.
+    for ticket in c.children:
+        request = _D2_REQUESTS.get(ticket['ticket_id'])
+        if request is None or ticket['ticket_id'] not in _CHILD_JOBS:
+            continue
+        state = request.get('state') or {}
+        handle = state.get('_native_handle')
+        if handle is None:
+            handle = next((value for value, proof in _D2_NATIVE_HANDLES.items()
+                if proof.get('ticket_id') == ticket['ticket_id'] and proof.get('kind') == 'process'
+                and proof.get('retained')), request.get('original_process_handle'))
+        try:
+            _close_child_job(ticket, terminate=True)
+        except BaseException:
+            failed = True
+        pending.append((ticket, request, state, handle))
+    for ticket, request, state, handle in pending:
+        error_code, raw, settled = None, None, False
+        try:
+            proof = _D2_NATIVE_HANDLES.get(int(handle)) if handle is not None else None
+            if proof is None or proof.get('ticket_id') != ticket['ticket_id'] or proof.get('kind') != 'process':
+                error_code = 'D2_CONTROLLER_CLEANUP_WITNESS'
+            else:
+                wait = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 0)
+                while wait == 258 and time.monotonic() < deadline:
+                    wait = _D2_WINAPI_ORIGINAL['WaitForSingleObject'](handle, 100)
+                settled = wait == 0
+                if settled:
+                    raw = int(_D2_WINAPI_ORIGINAL['GetExitCodeProcess'](handle))
+                    record_child_exit(ticket, -15 if raw == 65536 else raw)
+                    if state.get('_native_handle') is not None and not state.get('_closed'):
+                        if not upload._d2_close_launch_state(state):
+                            error_code = 'D2_CONTROLLER_VENDOR_CLOSE_FAILED'
+                        elif state.get('_start_returned'):
+                            request['process'].join(0)
+                else:
+                    error_code = 'D2_CONTROLLER_CLEANUP_UNSETTLED'
+        except BaseException:
+            error_code = 'D2_CONTROLLER_CLEANUP_FAILED'
+        code = -15 if raw == 65536 else raw
+        exclusive_json(c.report_dir / 'tickets' / (ticket['ticket_id'] + '.d2-controller-cleanup.json'),
+            dict(ticket_id=ticket['ticket_id'], run_id=c.run_id, pid=request['observed_pid'],
+                actual_exit=code, raw_windows_exit=raw, settled=settled, error_code=error_code,
+                witness='GUARD_RETAINED_HANDLE', purpose='CONTROLLER_EXCEPTION_CONTAINMENT'))
+        failed = failed or error_code is not None
+    if failed:
+        raise RuntimeError('D2_CONTROLLER_CLEANUP_FAILED')
+
+
+def _expected_d2_control(ticket, errors, final):
+    if ticket['role'] == 'd2-controller':
+        return False
+    try:
+        record = _d2_read_declaration(Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.d2-observation.json'))
+        contract = ticket['d2_contract']
+        if (record.get('version') != 1 or record.get('ticket_id') != ticket['ticket_id']
+                or record.get('run_id') != ticket['run_id'] or record.get('nodeid') != _d2_node(contract['case'])
+                or record.get('case') != contract['case'] or record.get('worker_id') != contract['worker_id']):
+            return False
+        counts = {key: value for key, value in (final or {}).get('counters', {}).items() if value}
+        if counts:
+            return False
+        phase_spec = _D2_FAULT_PHASES.get(contract['case'])
+        witnesses = record.get('fault_witnesses', {})
+        phase = next((row for row in witnesses.get(phase_spec[0], [])
+            if row.get('phase') == phase_spec[1]), None) if phase_spec else None
+        if (phase is None or phase.get('count') != 1 or phase.get('case') != contract['case']
+                or phase.get('run_id') != ticket['run_id'] or phase.get('nodeid') != ticket['nodeid']):
+            return False
+        fault_ticket = _read_json(Path(ticket['report_dir']) / 'tickets' / (phase['ticket_id'] + '.json'))
+        fault_path = Path(ticket['report_dir']) / 'tickets' / (phase['ticket_id'] + '.d2-fault-'
+            + phase['worker_id'] + '-' + phase['phase'] + '.json')
+        if (_read_json(fault_path) != phase or fault_ticket['run_id'] != ticket['run_id']
+                or fault_ticket['d2_contract']['case'] != contract['case']):
+            return False
+        if phase['source'] == 'worker':
+            fault_start = _read_json(Path(ticket['report_dir']) / 'processes' / (phase['ticket_id'] + '.start.json'))
+            if (fault_start.get('pid') != phase['pid']
+                    or fault_ticket['d2_contract']['worker_id'] != phase['worker_id']):
+                return False
+        elif phase['source'] in {'native', 'controller'}:
+            parent_id = fault_ticket['parent_id'] if phase['source'] == 'native' else fault_ticket['ticket_id']
+            if phase['pid'] != _read_json(Path(ticket['report_dir']) / 'processes' / (parent_id + '.start.json')).get('pid'):
+                return False
+        else:
+            return False
+        if record['not_started']:
+            return (record['pid'] is None and record['actual_exit'] is None
+                and contract['worker_id'] == 'google' and phase['source'] == 'native'
+                and phase['ticket_id'] == ticket['ticket_id'] and phase['phase'] == contract['case']
+                and contract['case'] in {'native_nul_read_fault', 'native_nul_write_fault',
+                    'native_dup_read_fault', 'native_dup_write_fault', 'native_create_fault'}
+                and set(errors) == {'MISSING_START_REPORT', 'MISSING_FINAL_REPORT', 'MISSING_CHILD_EXIT'})
+        if record['deliberately_unsettled']:
+            if (contract['case'] != 'cleanup_unsettled' or contract['worker_id'] != 'google'
+                    or type(record['pid']) is not int or record['actual_exit'] is not None):
+                return False
+            if set(errors) == {'MISSING_FINAL_REPORT', 'MISSING_CHILD_EXIT'}:
+                return True
+            containment = _read_json(Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.d2-containment.json'))
+            actual = _read_json(Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.exit.json'))
+            return (set(errors) == {'MISSING_FINAL_REPORT'} and containment.get('purpose') == 'AFTER_RESULT_CONTAINMENT'
+                and containment.get('settled') is True and containment.get('pid') == record['pid']
+                and containment.get('run_id') == ticket['run_id'] and containment.get('ticket_id') == ticket['ticket_id']
+                and containment.get('actual_exit') == actual.get('actual_exit') == 124)
+        expected = {
+            ('baseline_exit23', 'google'): 23, ('baseline_hang', 'google'): 124,
+            ('exit23', 'google'): 23, ('abnormal_before_ready', 'google'): 23,
+            ('abnormal_after_final', 'google'): 23, ('final_then_exit23', 'google'): 23,
+            ('hang_google', 'google'): -15, ('hang_ftp', 'ftp'): -15,
+            ('start_google_after_native', 'google'): 1, ('start_ftp_after_native', 'ftp'): 1,
+            ('start_ftp_before', 'google'): -15, ('start_ftp_after_native', 'google'): -15,
+            ('d1_killed_holder', 'holder'): -15,
+        }
+        # Exact sibling cancellation: it can be absent only when the primary
+        # fixed fault was actually witnessed and this owned sibling was killed.
+        for case in ('google_error', 'exit23', 'system_exit0', 'system_exit_string',
+                'abnormal_before_ready', 'abnormal_after_final', 'final_then_exit23',
+                'normal_without_final', 'partial_google', 'ack_failure',
+                'bootstrap_replay_failure', 'bootstrap_import_failure', 'bootstrap_unpickle_failure'):
+            expected[(case, 'ftp')] = -15
+        for case in ('ftp_error', 'partial_ftp'):
+            expected[(case, 'google')] = -15
+        for case in D2_CASES:
+            if case.startswith('checkpoint_'):
+                expected[(case, 'google')] = -15
+                expected[(case, 'ftp')] = -15
+        wanted = expected.get((contract['case'], contract['worker_id']))
+        primary_worker = {'system_exit0': 'google', 'system_exit_string': 'google',
+            'google_error': 'google', 'ftp_error': 'ftp', 'normal_without_final': 'google'}
+        primary_cancellation = (contract['worker_id'] == primary_worker.get(contract['case'])
+            and record['actual_exit'] == -15)
+        if primary_cancellation:
+            fence = record.get('worker_fence') or {}
+            terminal = fence.get('flog_final') or {}
+            cleanup = next((row for row in record.get('cleanup_requests', [])
+                if row.get('ticket_id') == ticket['ticket_id'] and row.get('pid') == record['pid']
+                and row.get('alive') is True and row.get('accepted') is True
+                and row.get('native_calls') == 1 and row.get('requested_exit') == 65536
+                and row.get('phase') in {'TERMINATE', 'KILL'} and row.get('witness') == 'GUARD_RETAINED_HANDLE'), None)
+            if contract['case'] in {'system_exit0', 'system_exit_string'}:
+                final_fence = terminal == {'execution_outcome': 'INTERRUPTED', 'exit_status': 1}
+            elif contract['case'] == 'normal_without_final':
+                final_fence = (fence.get('flog_final') is None and fence.get('checkpoint_execution') == 'RETURNED'
+                    and fence.get('normal_return') is True and fence.get('checkpoint_diagnostics') == 'INCOMPLETE'
+                    and fence.get('checkpoint_error_code') == 'D2_DIAGNOSTICS_INCOMPLETE'
+                    and fence.get('checkpoint_output_states') == ['ACKNOWLEDGED'])
+            else:
+                final_fence = terminal == {'execution_outcome': 'FAILED', 'exit_status': 1}
+            if cleanup is None or not final_fence:
+                return False
+            cleanup_path = Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.d2-cleanup-request-' + cleanup['phase'] + '.json')
+            actual = _read_json(Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.exit.json'))
+            if _d2_read_declaration(cleanup_path) != cleanup or actual.get('actual_exit') != -15:
+                return False
+            wanted = -15
+        permitted_errors = {'MISSING_FINAL_REPORT'}
+        partial_start = (contract['case'] == 'start_' + contract['worker_id'] + '_after_native'
+            and phase['source'] == 'native' and phase['phase'] == 'start_serialization_failure'
+            and phase['ticket_id'] == ticket['ticket_id'] and record['actual_exit'] in {1, -15})
+        if partial_start:
+            actual = _read_json(Path(ticket['report_dir']) / 'tickets' / (ticket['ticket_id'] + '.exit.json'))
+            if actual.get('actual_exit') != record['actual_exit']:
+                return False
+            if record['actual_exit'] == -15:
+                cleanup = next((row for row in record.get('cleanup_requests', [])
+                    if row.get('ticket_id') == ticket['ticket_id'] and row.get('pid') == record['pid']
+                    and row.get('alive') is True and row.get('accepted') is True
+                    and row.get('native_calls') == 1 and row.get('requested_exit') == 65536), None)
+                if cleanup is None:
+                    return False
+            start_path = Path(ticket['report_dir']) / 'processes' / (ticket['ticket_id'] + '.start.json')
+            if not start_path.is_file():
+                if not _d2_before_bootstrap_pid(ticket, record['pid']):
+                    return False
+                permitted_errors.add('MISSING_START_REPORT')
+            wanted = record['actual_exit']
+        if (wanted is None or type(record['pid']) is not int or record['actual_exit'] != wanted
+                or set(errors) != permitted_errors):
+            return False
+        if phase['source'] == 'worker' and phase['worker_id'] == contract['worker_id']:
+            if phase['pid'] != record['pid'] or phase['ticket_id'] != ticket['ticket_id']:
+                return False
+        fence = record.get('worker_fence') or {}
+        terminal = fence.get('flog_final') or {}
+        if contract['case'] == 'abnormal_before_ready' and contract['worker_id'] == 'google':
+            return fence.get('checkpoint_present') is False and fence.get('flog_final') is None
+        if contract['case'] == 'abnormal_after_final' and contract['worker_id'] == 'google':
+            return (fence.get('checkpoint_execution') == 'RUNNING'
+                and terminal.get('execution_outcome') == 'COMPLETED' and terminal.get('exit_status') == 0)
+        if contract['case'] == 'final_then_exit23' and contract['worker_id'] == 'google':
+            return (fence.get('checkpoint_execution') == 'RETURNED' and fence.get('normal_return') is True
+                and terminal.get('execution_outcome') == 'COMPLETED' and terminal.get('exit_status') == 0)
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _d2_windll(name, *args, **kwargs):
+    c = _CONTEXT
+    dependency = _d2_dateutil_resource_loader(name, args, kwargs)
+    if dependency is not None:
+        return dependency
+    pending = getattr(_THREAD_STATE, 'pending', [])
+    if (c is None or c.lane != 'd2' or str(name).lower() not in {'kernel32', 'kernel32.dll'}
+            or args or kwargs != {'use_last_error': True}
+            or not (pending or c.role == 'd2-lock-worker' or getattr(_THREAD_STATE, 'd1_closing_job', None))):
+        reject('native')
+    _THREAD_STATE.d2_binding = True
+    try:
+        actual = _ORIGINAL_WINDLL(name, **kwargs)
+    finally:
+        _THREAD_STATE.d2_binding = False
+    functions = {}
+    class Bindings:
+        def __getattr__(self, symbol):
+            permitted = _D1_NATIVE_FUNCTIONS if c.role == 'd2-lock-worker' else _D1_JOB_FUNCTIONS | {'CloseHandle'}
+            if symbol not in permitted:
+                reject('native')
+            if symbol not in functions:
+                _THREAD_STATE.d2_binding = True
+                try:
+                    leaf = getattr(actual, symbol)
+                finally:
+                    _THREAD_STATE.d2_binding = False
+                def bound(*values):
+                    if hasattr(bound, 'argtypes'):
+                        leaf.argtypes = bound.argtypes
+                    if hasattr(bound, 'restype'):
+                        leaf.restype = bound.restype
+                    return _d2_native_call(symbol, leaf, values)
+                functions[symbol] = bound
+            return functions[symbol]
+    return Bindings()
+
+
+def _d2_dateutil_resource_loader(name, args, kwargs):
+    """Pinned pandas import reads only Windows timezone string resources."""
+    c = _CONTEXT
+    unit_nodes = {'tests/d2/test_targets.py::test_google_projection_and_write_arguments_are_literal',
+        'tests/d2/test_targets.py::test_google_partial_mutation_stays_unknown[clear]',
+        'tests/d2/test_targets.py::test_google_partial_mutation_stays_unknown[write]'}
+    eligible = (c is not None and c.lane == 'd2' and (c.role == 'lane-worker' and getattr(c, 'nodeid', '') in unit_nodes
+        or c.role == 'd2-worker' and c.ticket['d2_contract']['case'] == 'success'
+        and c.ticket['d2_contract']['worker_id'] == 'google'))
+    if not eligible or type(name) is not str or name not in {'user32', 'tzres.dll'} or args or kwargs:
+        return None
+    module = sys.modules.get('dateutil.tz.win')
+    path = c.root / '.f1/venv-dev/Lib/site-packages/dateutil/tz/win.py'
+    if module is None or _absolute(getattr(module, '__file__', '')) != path:
+        return None
+    with _ORIGINAL_OPEN(checked_path(path), 'rb') as stream:
+        source = stream.read()
+    if hashlib.sha256(source).hexdigest() != 'c49b335a04b0135c4fc7f1c98f86647a9cae902fe1372d35e9631c5e16d1681f':
+        raise ValueError('D2_DEPENDENCY_SOURCE_CHANGED')
+    def code_at(parent, selected):
+        return next(value for value in parent.co_consts if isinstance(value, CodeType) and value.co_name == selected)
+    compiled = compile(source, str(path), 'exec', dont_inherit=True)
+    resource_code = code_at(compiled, 'tzres')
+    expected = {name: code_at(resource_code, name) for name in ('__init__', 'load_name', 'name_from_string')}
+    dictionary_code = code_at(compiled, 'valuestodict')
+    constructors = [code_at(code_at(compiled, selected), '__init__') for selected in ('tzwin', 'tzwinlocal')]
+    resource_type = module.tzres
+    if (any(getattr(resource_type, selected).__code__ != value for selected, value in expected.items())
+            or module.valuestodict.__code__ != dictionary_code
+            or any(getattr(module, selected).__init__.__code__ != value
+                for selected, value in zip(('tzwin', 'tzwinlocal'), constructors))):
+        raise ValueError('D2_DEPENDENCY_CODE_CHANGED')
+    frame = sys._getframe(2)
+    dictionary = frame.f_back
+    constructor = dictionary.f_back if dictionary is not None else None
+    instance = frame.f_locals.get('self')
+    if (frame.f_code is not resource_type.__init__.__code__ or type(instance) is not resource_type
+            or frame.f_locals.get('tzres_loc') != 'tzres.dll' or dictionary is None
+            or dictionary.f_code is not module.valuestodict.__code__ or constructor is None
+            or constructor.f_code not in {module.tzwin.__init__.__code__, module.tzwinlocal.__init__.__code__}
+            or dictionary.f_locals.get('dtype') != module.winreg.REG_SZ
+            or type(dictionary.f_locals.get('value')) is not str
+            or re.fullmatch(r'@tzres\.dll,-[0-9]+', dictionary.f_locals['value']) is None):
+        return None
+    import_frame = constructor.f_back
+    while import_frame is not None:
+        filename = _absolute(import_frame.f_code.co_filename)
+        if (import_frame.f_code.co_name == '<module>'
+                and filename.is_relative_to(c.root / '.f1/venv-dev/Lib/site-packages/pandas')):
+            break
+        import_frame = import_frame.f_back
+    if import_frame is None:
+        return None
+    records = getattr(c, 'd2_dateutil_resources', None)
+    if records is None:
+        records = c.d2_dateutil_resources = {}
+    record = records.setdefault(id(instance), dict(instance=weakref.ref(instance)))
+    if record['instance']() is not instance or name in record:
+        raise ValueError('D2_DEPENDENCY_RESOURCE_IDENTITY')
+    # Fixed system search prevents current-directory DLL selection.
+    _THREAD_STATE.d2_binding = True
+    try:
+        actual = _ORIGINAL_WINDLL(name, winmode=0x800)
+        leaf = actual.LoadStringW if name == 'user32' else None
+    finally:
+        _THREAD_STATE.d2_binding = False
+    record[name] = actual
+    if name == 'tzres.dll':
+        class Resource:
+            def __getattr__(self, symbol):
+                caller = sys._getframe(1)
+                if (symbol != '_handle' or caller.f_code is not resource_type.load_name.__code__
+                        or caller.f_locals.get('self') is not record['instance']()):
+                    reject('native')
+                return actual._handle
+        return Resource()
+    def load_string(handle, offset, buffer, size):
+        caller = sys._getframe(1)
+        parser = caller.f_back
+        dictionary = parser.f_back if parser is not None else None
+        resource = caller.f_locals.get('resource')
+        value = parser.f_locals.get('tzname_str') if parser is not None else None
+        if (caller.f_code is not resource_type.load_name.__code__ or caller.f_locals.get('self') is not instance
+                or parser is None or parser.f_code is not resource_type.name_from_string.__code__
+                or parser.f_locals.get('self') is not instance or dictionary is None
+                or dictionary.f_code is not module.valuestodict.__code__ or dictionary.f_locals.get('tz_res') is not instance
+                or type(value) is not str or re.fullmatch(r'@tzres\.dll,-[0-9]+', value) is None
+                or dictionary.f_locals.get('value') != value or type(offset) is not int
+                or not 1 <= offset <= 65535 or offset != int(value.split(',-')[1])
+                or handle != record.get('tzres.dll')._handle or size != 0
+                or type(resource) is not resource_type.p_wchar
+                or ctypes.cast(buffer, ctypes.c_void_p).value != ctypes.addressof(resource)
+                or getattr(load_string, 'argtypes', None) != (module.wintypes.HINSTANCE,
+                    module.wintypes.UINT, module.wintypes.LPWSTR, ctypes.c_int)):
+            reject('native')
+        leaf.argtypes = load_string.argtypes
+        return leaf(handle, offset, buffer, size)
+    class UserStrings:
+        def __getattr__(self, symbol):
+            if symbol != 'LoadStringW':
+                reject('native')
+            return load_string
+    return UserStrings()
+
+
+def _d2_safe_native_origin():
+    """Closed rejection location only; never exception text or caller args."""
+    owner, effect, library, symbol = 'OTHER', 'OTHER', 'OTHER', 'OTHER'
+    frame = sys._getframe(1)
+    known = {'numpy': 'NUMPY', 'pandas': 'PANDAS', 'dateutil': 'DATEUTIL',
+        'google': 'GOOGLE', 'pygsheets': 'PYGSHEETS', 'cffi': 'CFFI', 'colorama': 'COLORAMA'}
+    for _ in range(12):
+        if frame is None:
+            break
+        name = frame.f_code.co_name
+        if name == '_audit':
+            event = frame.f_locals.get('event')
+            effect = {'ctypes.dlopen': 'DLOPEN', 'ctypes.dlsym': 'DLSYM'}.get(event, 'OTHER')
+            values = frame.f_locals.get('args', ())
+            if event == 'ctypes.dlsym' and len(values) >= 2 and type(values[1]) is str:
+                symbol = values[1] if values[1] in {'PyCapsule_New', 'PyCapsule_GetPointer', 'PyCapsule_IsValid',
+                    'Py_IncRef', 'Py_DecRef', 'GetCurrentProcess', 'GetModuleFileNameW'} else 'OTHER'
+            candidate = values[0] if event == 'ctypes.dlopen' and values else None
+            if type(candidate) is str:
+                library = {'kernel32': 'KERNEL32', 'kernel32.dll': 'KERNEL32', 'user32': 'USER32',
+                    'tzres.dll': 'TZRES', 'ntdll': 'NTDLL', 'psapi': 'PSAPI', 'msvcrt': 'MSVCRT'}.get(candidate.lower(), 'OTHER')
+        elif name == '_d2_windll':
+            effect = 'WINDLL'
+            candidate = frame.f_locals.get('name')
+            if type(candidate) is str:
+                library = {'kernel32': 'KERNEL32', 'kernel32.dll': 'KERNEL32', 'user32': 'USER32',
+                    'tzres.dll': 'TZRES', 'ntdll': 'NTDLL', 'psapi': 'PSAPI'}.get(candidate.lower(), 'OTHER')
+        elif name == '_d1_reject_loader':
+            effect = 'CACHED_LOADER'
+        filename = _absolute(frame.f_code.co_filename)
+        site = _CONTEXT.root / '.f1/venv-dev/Lib/site-packages'
+        if filename.is_relative_to(site):
+            owner = known.get(filename.relative_to(site).parts[0].lower(), 'OTHER')
+            break
+        if filename == _CONTEXT.root / '.f1/python/Lib/ctypes/util.py':
+            owner = 'CTYPES_UTIL'
+            break
+        frame = frame.f_back
+    return dict(owner=owner, effect=effect, library=library, symbol=symbol)
+
+
+def _d2_native_call(name, original, args):
+    c = _CONTEXT
+    pending = getattr(_THREAD_STATE, 'pending', [])
+    record = _D2_NATIVE_HANDLES.get(_d1_handle(args[0])) if args and name not in {
+        'CreateFileW', 'CreateMutexW', 'OpenMutexW', 'GetDriveTypeW', 'CreateJobObjectW'} else None
+    if name == 'CreateJobObjectW':
+        if not pending or tuple(args) != (None, None):
+            reject('native')
+    elif name in {'SetInformationJobObject', 'AssignProcessToJobObject', 'TerminateJobObject'}:
+        if record is None or record['kind'] != 'job':
+            reject('native')
+        if name == 'SetInformationJobObject':
+            limits = getattr(_THREAD_STATE, 'd1_job_limits', None)
+            if (not pending or args[1] != 9 or limits is None or args[3] != len(limits)
+                    or ctypes.string_at(args[2], args[3]) != limits):
+                reject('native')
+        if name == 'AssignProcessToJobObject' and _D2_NATIVE_HANDLES.get(_d1_handle(args[1]), {}).get('ticket_id') != record['ticket_id']:
+            reject('native')
+        if name == 'TerminateJobObject':
+            closing = getattr(_THREAD_STATE, 'd1_closing_job', None) == _d1_handle(args[0])
+            caller = sys._getframe(2)
+            current_job = caller.f_locals.get('job')
+            issued = caller.f_locals.get('ticket')
+            timeout_branch = (caller.f_code is run_child.__code__ and c.lane == 'd2'
+                and c.role in {'supervisor', 'lane-worker'} and isinstance(issued, dict)
+                and issued.get('role') in {'lane-worker', 'd2-controller'}
+                and issued in c.children and record.get('ticket_id') == issued['ticket_id']
+                and current_job is not None and _d1_handle(current_job[1]) == _d1_handle(args[0])
+                and caller.f_locals.get('process') is not None and getattr(_THREAD_STATE, 'controller', 0))
+            if args[1] != 124 or not (closing or timeout_branch):
+                reject('native')
+    elif name in {'ResumeThread', 'TerminateProcess'}:
+        if (record is None or not pending or record.get('ticket_id') != pending[-1]['ticket_id']
+                or record['kind'] != ('thread' if name == 'ResumeThread' else 'process')
+                or name == 'TerminateProcess' and args[1] != 124):
+            reject('native')
+    elif name == 'CloseHandle':
+        if record is None:
+            reject('native')
+    elif c.role != 'd2-lock-worker':
+        reject('native')
+    elif name == 'CreateFileW':
+        path = checked_path(args[0])
+        if not _owned(path) or args[1:] != (0x80, 7, None, 3, 0x02200000, None):
+            reject('native')
+    elif name == 'GetDriveTypeW':
+        if str(_absolute(args[0])) != _absolute(args[0]).anchor:
+            reject('native')
+    elif name in {'GetFileInformationByHandleEx', 'GetFileInformationByHandle'}:
+        if record is None or record['kind'] != 'directory' or name == 'GetFileInformationByHandleEx' and (args[1] != 18 or args[3] != 24):
+            reject('native')
+    elif name in {'CreateMutexW', 'OpenMutexW'}:
+        if args[2] not in _D1_MUTEX_NAMES or args[1] not in {False, 0} or name == 'CreateMutexW' and args[0] is not None:
+            reject('native')
+    elif name == 'WaitForSingleObject':
+        if record is None or record['kind'] != 'mutex' or type(args[1]) is not int or not 0 <= args[1] <= 100:
+            reject('native')
+    elif name == 'ReleaseMutex':
+        if record is None or record['kind'] != 'mutex' or not record.get('owned'):
+            reject('native')
+    result = original(*args)
+    handle = _d1_handle(result)
+    if name == 'CreateJobObjectW' and handle:
+        _D2_NATIVE_HANDLES[handle] = dict(kind='job', ticket_id=pending[-1]['ticket_id'])
+    elif name == 'CreateFileW' and handle not in {0, ctypes.c_void_p(-1).value}:
+        _D2_NATIVE_HANDLES[handle] = dict(kind='directory', path=path)
+    elif name in {'CreateMutexW', 'OpenMutexW'} and handle:
+        _D2_NATIVE_HANDLES[handle] = dict(kind='mutex', owned=False)
+    elif name == 'GetFileInformationByHandleEx' and result:
+        _D1_MUTEX_NAMES.add('Global\\MDS-D1-v1-' + hashlib.sha256(b'MDS-D1-v1\0' + ctypes.string_at(args[2], 24)).hexdigest())
+    elif name == 'WaitForSingleObject' and result in {0, 0x80}:
+        record['owned'] = True
+    elif name == 'ReleaseMutex' and result:
+        record['owned'] = False
+    elif name == 'CloseHandle' and result:
+        _D2_NATIVE_HANDLES.pop(_d1_handle(args[0]), None)
+    return result
+
+
+def _d2_canary_detected(data):
+    markers = (b'D2_SYNTHETIC_CANARY', b'D2_SYNTHETIC_CANARY_URL', b'D2_SYNTHETIC_CANARY_PATH',
+        b'D2_FAKE_PASSWORD', b'D2_FAKE_PRIVATE_KEY', b'D2_FAKE_USERNAME')
+    return any(marker in data for marker in markers)
+
+
+def _d2_physical_graph_quiescence(controller_ticket):
+    """No slot metadata is inspected before native birth/exit reconciliation."""
+    c = _CONTEXT
+    rows = []
+    for path in (c.report_dir / 'tickets').glob('*.json'):
+        if re.fullmatch(r'[0-9a-f]{32}\.json', path.name) is None:
+            continue
+        ticket = _read_json(path)
+        if ticket.get('parent_id') != controller_ticket['ticket_id']:
+            continue
+        if (ticket.get('role') not in _D2_ROLES - {'d2-controller'}
+                or ticket.get('run_id') != c.run_id or ticket.get('tested_sha') != c.tested_sha
+                or ticket.get('source_digest') != c.source_digest
+                or ticket.get('digest') != _digest({key: value for key, value in ticket.items() if key != 'digest'})):
+            raise ValueError('D2_PHYSICAL_GRAPH_IDENTITY')
+        identifier = ticket['ticket_id']
+        birth_path = c.report_dir / 'tickets' / (identifier + '.d2-native-created.json')
+        declaration_path = c.report_dir / 'tickets' / (identifier + '.d2-observation.json')
+        if not birth_path.is_file():
+            declared = _d2_read_declaration(declaration_path)
+            if not declared['not_started'] or declared['pid'] is not None:
+                return False, rows
+            rows.append(dict(ticket_id=identifier, worker_id=ticket['d2_contract']['worker_id'],
+                pid=None, settled=True, witness='GUARD_NOT_STARTED_DECLARATION'))
+            continue
+        birth = _d2_read_declaration(birth_path)
+        exit_path = c.report_dir / 'tickets' / (identifier + '.exit.json')
+        if not exit_path.is_file():
+            return False, rows
+        exited = _read_json(exit_path)
+        if (exited.get('ticket_id') != identifier or exited.get('run_id') != c.run_id
+                or type(exited.get('actual_exit')) is not int or exited.get('timed_out') is not False):
+            return False, rows
+        declared = _d2_read_declaration(declaration_path)
+        if declared['deliberately_unsettled']:
+            containment = _d2_read_declaration(c.report_dir / 'tickets' / (identifier + '.d2-containment.json'))
+            if not containment['settled'] or containment['pid'] != birth['pid'] or containment['actual_exit'] != exited['actual_exit']:
+                return False, rows
+        elif declared['actual_exit'] != exited['actual_exit'] or declared['pid'] != birth['pid']:
+            return False, rows
+        rows.append(dict(ticket_id=identifier, worker_id=ticket['d2_contract']['worker_id'],
+            pid=birth['pid'], actual_exit=exited['actual_exit'], settled=True,
+            witness='GUARD_NATIVE_BIRTH_AND_EXIT'))
+    return True, rows
+
+
+def _d2_scan_diagnostics(case_root, log_root, report_root):
+    counts = dict(results=0, flog=0, guard=0)
+    detected = False
+    paths = [('results', case_root / name) for name in ('controller-result.json', 'controller-error.json')]
+    result_root = case_root / 'results'
+    for name in ('google.json', 'google.pending', 'ftp.json', 'ftp.pending', 'result.json', 'result.pending'):
+        paths.append(('results', result_root / name))
+    for path in log_root.rglob('*'):
+        if path.is_file():
+            paths.append(('flog', path))
+    for path in report_root.rglob('*'):
+        if path.is_file() and path.suffix in {'.json', '.jsonl'}:
+            paths.append(('guard', path))
+    for kind, path in paths:
+        if path.is_file():
+            data = path.read_bytes()
+            detected = detected or _d2_canary_detected(data)
+            counts[kind] += 1
+    # This literal exists only in RAM, and exercises exactly the same detector
+    # used on real result/checkpoint/F-LOG/guard bytes above.
+    positive = _d2_canary_detected(_D2_CANARY_TEXT.encode('ascii'))
+    return not detected, positive, counts
+
+
+def run_d2_case(case):
+    """One immutable registry case; raw child streams stay in controller RAM."""
+    c = _CONTEXT
+    if (c is None or c.lane != 'd2' or c.role != 'lane-worker' or case not in D2_CASES
+            or getattr(c, 'nodeid', '') != _d2_node(case) or sys.platform != 'win32'):
+        raise ValueError('D2_ADMISSION_CASE')
+    case_root = checked_path(c.root / '.f3/d2/tmp' / ('case-' + uuid.uuid4().hex))
+    case_root.mkdir(parents=True)
+    log_root = checked_path(c.root / '.f-log/d2' / c.run_id / case_root.name)
+    log_root.mkdir(parents=True)
+    command = [sys.executable, '-I', '-B', '-X', 'utf8', str(c.root / 'tests/d2/d2_worker.py'), '--case', case]
+    contract = dict(case=case, worker_id='controller', result_root=str(case_root), log_root=str(log_root))
+    ticket = issue_ticket('d2-controller', command, roots=[case_root, log_root, c.report_dir],
+        expected_exit=None, d2_contract=contract, gate=True)
+    result = run_child(command, role='d2-controller', ticket=ticket, timeout=75,
+        env={'PYTHONDONTWRITEBYTECODE': '1', **dict(os.environ)})
+    raw = result.stdout + result.stderr
+    console_absent = not _d2_canary_detected(raw)
+    path = case_root / 'controller-result.json'
+    bundle = _read_json(path) if path.is_file() else {}
+    legacy_completed = 'Скрипт загрузки данных закончил работу.'.encode('utf-8') in result.stdout
+    if case.startswith('baseline_'):
+        bundle['legacy_false_completion_observed'] = legacy_completed
+    containment = []
+    for observed_path in c.report_dir.glob('tickets/*.d2-containment.json'):
+        observed = _read_json(observed_path)
+        issued = _read_json(c.report_dir / 'tickets' / (observed['ticket_id'] + '.json'))
+        if issued.get('parent_id') == ticket['ticket_id']:
+            containment.append(observed)
+    if containment:
+        bundle['job_used_for_settlement'] = all(row['settled'] for row in containment)
+        bundle['after_result_containment'] = containment
+    try:
+        physically_quiescent, physical_rows = _d2_physical_graph_quiescence(ticket)
+    except (OSError, ValueError, KeyError, TypeError):
+        physically_quiescent, physical_rows = False, []
+    if physically_quiescent:
+        evidence_absent, evidence_positive, scan_counts = _d2_scan_diagnostics(case_root, log_root, c.report_dir)
+    else:
+        evidence_absent, evidence_positive, scan_counts = False, _d2_canary_detected(_D2_CANARY_TEXT.encode('ascii')), {}
+        result.report_errors.append('D2_DIAGNOSTIC_SCAN_UNSETTLED')
+    bundle['diagnostic_scan_quiescent'] = physically_quiescent
+    bundle['diagnostic_scan_physical_graph'] = physical_rows
+    if (bundle.get('case') != case or bundle.get('version') != 1 or result.report is None
+            or bundle.get('controller_pid') != result.report.get('pid')):
+        result.report_errors.append('D2_CONTROLLER_RESULT_IDENTITY')
+    return dict(case=case, bundle=bundle, baseline_red=bundle.get('baseline_red', False),
+        actual_exit=result.actual_exit, actual_pid_settlement=bundle.get('actual_pid_settlement', []),
+        watchdog_timed_out=result.timed_out, job_used_for_settlement=bundle.get('job_used_for_settlement', False),
+        baseline_false_completion_observed=legacy_completed,
+        console_canary_absent=console_absent, evidence_canary_absent=evidence_absent,
+        evidence_capture_positive_control=evidence_positive, diagnostic_files_scanned=scan_counts,
+        canary_absent=console_absent and evidence_absent,
+        capture_positive_control=not console_absent if case == 'canary_positive_control' else False,
+        report_errors=list(result.report_errors))
 
 
 def main():

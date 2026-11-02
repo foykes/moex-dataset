@@ -605,3 +605,122 @@ results stay NOT AVAILABLE. Readiness is READY_FOR_INDEPENDENT_CODE_REVIEW only
 after all required gates pass; no merge, issue closure, production or next slice
 is authorized. Rollback is a separately reviewed revert of this helper-only PR,
 preserving outputs, foreign/orphan temps, environments, worktrees and evidence.
+
+## D2-01 owner handoff and isolated implementation
+
+The repository owner explicitly granted `OWNER_HANDOFF_GRANTED` and separately
+`ISOLATED_SETUP_APPROVED` in the D2 chat on 2026-10-11, then authorized resumption.
+This releases the corresponding historical F/coordinator, F3/coordinator and
+completed D1 reservations for this slice only. It is the explicit condition-H
+transfer; historical entries above remain preserved.
+
+Approved R3 digest (human-supplied):
+`10aac6c50f5b30eb8a1b65e102184efd3a6aa3bdd5e1c1e3aa892389e3c3fa99`.
+Actual implementation base: `42830d91b4c701b899cbadb5ebdf8829eec6b5cf`, tree
+`0ffb53a271a64da0eeac2b3779a508aee1817636`. Branch/worktree:
+`codex/mds-d2-01` / `.worktrees/mds-d2-01`. Before first write, live base, all
+13 registered worktrees and active A2/B1/C2-02 scopes were inspected: no
+conflicting D2 writer or target-path changes were found. D2 now owns the exact
+fifteen-path reservation:
+
+```text
+upload.py
+upload.ipynb
+main.py
+tools/offline_guard.py
+tools/offline_tests.py
+tests/d2/conftest.py
+tests/d2/d2_worker.py
+tests/d2/test_supervision.py
+tests/d2/test_targets.py
+tests/d2/test_logging_contract.py
+tests/d2/test_guard_admission.py
+tests/fixtures/d2/expected.json
+docs/d2_supervision.md
+docs/testing.md
+docs/coordination.md
+```
+
+The upload pair is one indivisible zone. `main.py` changes only upload handoff
+and completion gating. Shared tools/testing changes admit the closed D2 lane
+without weakening F1/F2/F-LOG/F3/D1. Coordination changes only append this section.
+Other writers must not edit these zones concurrently until explicit D2 release.
+All other reservations and integration responsibilities remain unchanged.
+
+SETUP owns only the new worktree's `.f1/python`, `.f1/venv-dev`, wheelhouse and
+evidence. Official CPython 3.14.8 Windows x64 GIL full ZIP SHA-256 is
+`4873947a8afc037846b180312b83c744a4146a851cfd316a75c3125a4d8299da`;
+bundled pip is 26.2.1. The unchanged dev lock blob is
+`1af650cbc7463a17dcfead1495e3f9093149dc36`.
+Verified immutable archive/wheels were copied and rehashed, then freshly
+extracted/installed offline with `--no-index --only-binary=:all: --require-hashes`.
+No borrowed installed environment, credentials, network installation, lock/pip
+upgrade or global PATH/registry change was used. Interpreter/profile, 84 pinned
+packages, third-party imports, pip check and the initial file fingerprint passed;
+native D2 behavior still requires exact-head regression evidence.
+
+See [D2 supervision](d2_supervision.md) for truthfulness, prefinal receipt,
+platform, deadline, source inventory and privacy contracts. D4/D5/D6, A8/B3,
+D1 production callers, #47/#78 global/hosted integration and #66 staging remain
+open. The Ubuntu production VPS and macOS/Linux adoption are not established by
+Windows fixtures. Refs #39, #41, #78; this slice does not close these issues.
+
+The final local handoff must contain exact clean HEAD, scope, commands/exits,
+baseline red/current green, notebook parity, environment fingerprints,
+independent bytes/hashes, AC evidence, self-review and redacted artifacts. A
+test-only Job is containment, not production protection. Readiness is
+`READY_FOR_INDEPENDENT_CODE_REVIEW` only after all required checks pass. Stop at
+one PR and handoff: no merge, issue closure, production/staging publication,
+deployment or next package. Rollback needs a separate controlled revert while
+publication is stopped; it restores old D2 defects and is not production recovery.
+
+Local implementation STOP on 2026-10-11: BLOCKED on the Windows checkpoint
+protocol. Fifth working-tree D2 run: 176 collected, 174 passed, two failed, exit
+86. `FILE_SHARE_DELETE` does not establish replacement of a live-open destination
+through legacy `os.replace`; the current live-reader oracle remains red and FTP
+has an actual `REPLACE` / `winerror=5` observation. A separate writer/control-flow
+plan decision is needed. H and isolated SETUP succeeded; they are not reopened.
+Live main still equals the approved base and all 13 foreign worktrees had no D2
+intersection at the 10:02:40-10:02:57 UTC gate. Own environment fingerprint is
+unchanged after testing. Zero own Python survivors were observed after the run.
+The exact 15-path reservation and local work remain preserved pending disposition.
+No commit/push/PR or final exact-head all-lane acceptance has occurred. See the
+local redacted BLOCKED handoff; no production or issue state changed.
+
+## D2-01 R3.1a accepted checkpoint amendment and resume
+
+On 2026-10-11 the owner accepted R3.1a as a supplement to R3/R3.1 and explicitly
+resumed the preserved `codex/mds-d2-01` worktree. Existing H and isolated SETUP
+grants remain valid; the immutable environment is not reinstalled. The approved
+base/tree and exact fifteen-path reservation above remain unchanged. Historical
+coordination entries, all five prior test sets and the BLOCKED handoff are retained.
+The historical checkpoint STOP is superseded by this accepted resumption, without
+reclassifying its failed observations.
+
+Workers write/validate only their own slots. Parent validates immutable READY
+before GO, closes owned readers and checks the remaining source/logging/deadline
+gates. After GO, checkpoint leaf reads require that worker's actual OS settlement;
+full inventory and parent persistence require settlement of all started workers.
+Frozen reservations preserve the existing byte caps without sibling leaf metadata
+access. Unknown/partial evidence and unsettled cleanup remain fail-closed.
+`os.replace` remains standard; no native rename adapter or foreign-reader bypass
+is introduced. Parent finalization faults occur before successful seal, with
+independent worker-success/injection witnesses and separate genuine test cleanup.
+`run_logging.py`, receipt schemas and prior lane policies remain unchanged.
+
+Read-only refresh at 14:29-14:30 UTC checked all fifteen registered worktrees:
+fourteen foreign worktrees had no uncommitted/untracked D2-path intersection.
+Active C2-02 work was outside D2; A2/B1 were idle. This is a conflicts snapshot,
+not a lock on future writers. Own HEAD/tree remained the approved identities.
+
+Initial resumed working-tree evidence: `previous-failures`, 2 passed in 3.15 s,
+exit 0, run `98a26eefbb4b48e394d40bccdae004b4`; `r31a-contract`, 57 passed in
+85.79 s, exit 0, run `fd336401949a4faf9e92336c60ad9530`. Both bind tested base
+`42830d91b4c701b899cbadb5ebdf8829eec6b5cf` and source digest
+`6e6cf094b1ba2e8aab555eb0946a9c25de97c711b15eaeadb3d1255bd54b7119`.
+They precede subsequent guard/document refinements. The resumed pre-collection
+launcher-format failure is preserved separately, without a behavioral PASS claim.
+Scoped repeat, full D2, F1/F2/F-LOG/F3/D1 and exact-clean-HEAD notebook/environment
+acceptance remain required. No final HEAD acceptance, PR readiness, merge or
+production/staging authorization is inferred from these intermediate results.
+Open hookups and the controlled-revert boundary above remain unchanged.
