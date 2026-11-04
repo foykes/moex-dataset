@@ -80,3 +80,13 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
 4. VPS: Linux, 400 GB disk, small RAM (to confirm) → keep memory use low in `tech.py`.
 5. Notebooks stay the source. Sync `.py` with jupytext (pre-commit hook already exists) instead of
    `nbconvert` inside `main.py`, so the VPS just runs the committed `.py` files.
+
+## 5. Progress
+- Phase 0 ✅ `27faa27` — clean base, tag `codex-archive-2026-11`.
+- Phase 1 ✅ `38f93cf` — pagination, https, session, `request_sleep`, `datasets/exception_list.csv`.
+- Phase 2+3 ✅ — `MOEX_CONFIG` switch (default 1 year), short periods cut from long ones,
+  dedupe by `(ticker, begin)` keep last, new tickers get full period, files trimmed to their period,
+  safe CSV/XLSX writes, fixed ISO date parsing bug (day/month swap).
+- Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
+  `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);
+  default `MOEX_CONFIG` → switch to full config in Phase 6 for the VPS cron.
