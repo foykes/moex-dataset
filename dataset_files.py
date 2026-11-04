@@ -63,10 +63,12 @@ def iter_ticker_groups(csv_path, columns=None, chunksize=CHUNK_ROWS):
         yield ticker, rest.reset_index(drop=True)
 
 
-### Дописать DataFrame в CSV (с заголовком, если файла ещё нет или он пустой)
-def append_csv(df, csv_path):
+### Дописать DataFrame в CSV (с заголовком, если файла ещё нет или он пустой).
+### float_format — формат всех дробных колонок (например '%.6g'), по умолчанию как есть
+def append_csv(df, csv_path, float_format=None):
     first = not os.path.isfile(csv_path) or os.path.getsize(csv_path) == 0
-    df.to_csv(csv_path, mode='w' if first else 'a', header=first, index=False, date_format=DATE_FORMAT)
+    df.to_csv(csv_path, mode='w' if first else 'a', header=first, index=False, date_format=DATE_FORMAT,
+              float_format=float_format)
     return len(df)
 
 

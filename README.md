@@ -15,7 +15,7 @@
 | `settings/datasets_config_1_year.json` | 1 год × свечи 1 день, 1 час, 10 минут, 1 минута |
 
 Файлы: `datasets/<период>_data_<интервал>_interval.csv` + `.xlsx`, если влезает в лист Excel; большие файлы — только сжатые `.csv.gz`.
-Колонки: `open, close, high, low, value, volume, begin, end, ticker`, затем индикаторы (RSI14, MACD, STOCH, ADX, ATR и др.).
+Колонки: `open, close, high, low, value, volume, begin, end, ticker` (как отдаёт MOEX), затем индикаторы (RSI14, MACD, STOCH, ADX, ATR и др., 6 значащих цифр).
 
 Также: списки тикеров (`datasets/ticker_lists/`), дивиденды с доход.ру (`datasets/dividends/dohodru/`).
 

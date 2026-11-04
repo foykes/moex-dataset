@@ -162,6 +162,21 @@ def ticker_indicators(df_ticker):
 ### (датасет 30 лет x 1 час с индикаторами целиком в память не влезает).
 ### Индикаторы считаются по каждому тикеру отдельно, чтобы не смешивать строки разных тикеров.
 ### Рядом сохраняется XLSX из того же результата (если влезает в лист Excel) или сжатая копия .csv.gz
+### Индикаторы в файле округляются до indicator_digits значащих цифр: файл в 2 раза меньше,
+### а сжатый .csv.gz — примерно в 5 раз меньше, чем с полной точностью (17 цифр).
+### Свечи (open, close, value и т.д.) пишутся как есть, без округления
+indicator_digits = 6
+
+
+def candles_as_text(df_ticker, keep_columns):
+    # дробные колонки свечей превращаем в текст так же, как их пишет pandas (repr, пусто для NaN),
+    # чтобы общий float_format в to_csv применился только к индикаторам
+    for column in keep_columns:
+        if pd.api.types.is_float_dtype(df_ticker[column]):
+            df_ticker[column] = df_ticker[column].astype(str).where(df_ticker[column].notna(), '')
+    return df_ticker
+
+
 def write_with_indicators(path, tmp_path, keep_columns):
     if tmp_path.is_file():
         tmp_path.unlink()
@@ -171,7 +186,8 @@ def write_with_indicators(path, tmp_path, keep_columns):
         # индикаторы считаются по порядку свечей, поэтому сортируем по времени
         df_ticker = df_ticker.sort_values(by='begin', kind='stable').reset_index(drop=True)
         df_ticker = df_ticker.join(ticker_indicators(df_ticker))
-        rows = rows + append_csv(df_ticker, tmp_path)
+        df_ticker = candles_as_text(df_ticker, keep_columns)
+        rows = rows + append_csv(df_ticker, tmp_path, float_format='%.{}g'.format(indicator_digits))
     return rows
 
 

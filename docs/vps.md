@@ -86,8 +86,8 @@ Missing dataset files are downloaded from scratch automatically. `./run.sh --ful
 If the run stops (reboot, crash), just start `./run.sh` again: the full load continues from the last finished ticker
 (`datasets/*.partial.csv` + `*.partial.progress`).
 
-Expected size: ~40–50 GB of CSV/XLSX in total (10y hourly ≈ 8–9 GB, 1y 1-minute ≈ 20 GB). FTP uploads all of it
-on every run, so the daily upload time depends on the VPS bandwidth. To make the 1-minute file smaller, set
+Expected size on disk: ~20–25 GB of CSV (10y hourly ≈ 4–5 GB, 1y 1-minute ≈ 10 GB) plus `.csv.gz` copies of the big
+files. FTP gets only the `.csv.gz` of big files: ~8–10 GB per run. To make the 1-minute file even smaller, set
 `"tech": false` for it in `settings/datasets_config.json` (no indicators, ~10× smaller).
 
 ## 6. Daily update (cron)

@@ -111,3 +111,27 @@ def test_write_xlsx_types(tmp_path):
     # строки не превращаются в формулы
     assert back['c'].tolist() == ['=1+1', 'text']
     assert back['d'].iloc[0] == pd.Timestamp('2026-11-03 10:00:00') and pd.isna(back['d'].iloc[1])
+
+
+def test_indicators_rounded_candles_exact(tmp_path):
+    import csv
+    candles = make_candles('SBER', 300, 6)
+    # «неудобные» значения: большой оборот, длинная дробь, пустое значение
+    candles.loc[0, 'value'] = 5119080832.0
+    candles.loc[1, 'open'] = 0.1 + 0.2
+    candles.loc[2, 'open'] = np.nan
+    path = write_dataset(tmp_path, candles)
+    original_rows = list(csv.reader(open(path, encoding='utf-8')))
+
+    tech.calculator('test.csv', tmp_path)
+    result_rows = list(csv.reader(open(path, encoding='utf-8')))
+
+    # свечи в файле — те же строки, что были, символ в символ
+    assert [row[:9] for row in result_rows] == original_rows
+
+    # индикаторы — не больше 6 значащих цифр и совпадают с точными с точностью округления
+    header = result_rows[0]
+    rsi_values = [row[header.index('RSI14')] for row in result_rows[1:] if row[header.index('RSI14')] != '']
+    assert all(len(v.replace('-', '').replace('.', '').lstrip('0').split('e')[0]) <= 6 for v in rsi_values)
+    exact = talib.RSI(candles['close'], timeperiod=14).dropna().to_numpy()
+    assert np.allclose(np.array(rsi_values, dtype=float), exact, rtol=5e-6, atol=0)

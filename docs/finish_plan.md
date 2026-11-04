@@ -121,7 +121,10 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
   (indicators are 93% of the size and compress poorly), ~26 MB/s. `dividends/dohodru/` now uploaded.
   Site: FTP root = `moex.foykes.com/datasets/`; the hand-written root page had broken links and data from
   2025-04-06. Pipeline now writes `datasets/index.html` (files, sizes, rows, period, "updated on").
-- Next ideas: round indicator floats to 6 digits (CSV −50%, with gz 4.9× vs today),
+- Rounding ✅ — indicator columns written with 6 significant digits (`indicator_digits` in tech), candles exact.
+  Real data: CSV 51% of before, `.csv.gz` 4.9× smaller than the old CSV, max relative change 5e-6.
+  Daily upload estimate: ~40–50 GB → ~8–10 GB.
+- Next ideas:
   move old manual scripts to `old/`, "updated on" date on the site, Hugging Face.
 - Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
   `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);
