@@ -14,7 +14,8 @@
 # ---
 
 # %%
-import requests, pandas as pd, sys
+import requests, pandas as pd, sys, os
+from io import StringIO
 from bs4 import BeautifulSoup
 
 df_overview_full = pd.DataFrame()
@@ -32,8 +33,9 @@ headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 ### Составление общего списка
 def get_main (url):
     
-    html = requests.get(url, headers=headers).content
-    df_list = pd.read_html(html)
+    html = requests.get(url, headers=headers, timeout=30).text
+    # pandas 3: html-текст передаём через StringIO
+    df_list = pd.read_html(StringIO(html))
     df_mainpage = df_list[-1]
 
     # очистка от ненужных колонок
@@ -61,7 +63,7 @@ def get_page_info (url):
     df_each_full = pd.DataFrame()
 
     ### Сбор всех ссылок на страницы
-    page = requests.get(url, headers=headers)
+    page = requests.get(url, headers=headers, timeout=30)
     soup = BeautifulSoup(page.text, 'lxml')
 
     data = []
@@ -87,9 +89,9 @@ def get_page_info (url):
 
     b = []
     for url in url_list:
-        html = requests.get(url, headers=headers).content
         try:
-            df_list = pd.read_html(html)
+            html = requests.get(url, headers=headers, timeout=30).text
+            df_list = pd.read_html(StringIO(html))
         except:
             df_list = pd.DataFrame()
             print('Не смог найти таблицы на этой странице: {}',format(url))
@@ -145,6 +147,9 @@ def get_page_info (url):
 
 # %%
 def main(url):
+    # папки с данными нет в git — создаём при первом запуске
+    os.makedirs('{}/datasets/dividends/dohodru'.format(current_path), exist_ok=True)
+
     df_mainpage = get_main(url)
     df_mainpage.to_excel('{}/datasets/dividends/dohodru/main_page.xlsx'.format(current_path))
     df_mainpage.to_csv('{}/datasets/dividends/dohodru/main_page.csv'.format(current_path))

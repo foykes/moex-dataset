@@ -87,6 +87,11 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
 - Phase 2+3 ✅ — `MOEX_CONFIG` switch (default 1 year), short periods cut from long ones,
   dedupe by `(ticker, begin)` keep last, new tickers get full period, files trimmed to their period,
   safe CSV/XLSX writes, fixed ISO date parsing bug (day/month swap).
+- Phase 4 ✅ — tech: indicators per ticker (one concat), file list from config (`"tech": false` to skip),
+  `STOCH_slowd` fixed (was a copy of slowk), `TRIX` now saved (+1 column, 80 indicators);
+  XLSX written row by row (`xlsx_utils.py`, xlsxwriter) — openpyxl needed ~600 MB RAM for 16k rows;
+  `MOEX_XLSX=0` turns XLSX off. dohodru: pandas 3 `read_html` fix + timeouts.
+  dividends: MOEX ISS dividends are now **subscribers only** → step stops with a message, old file kept.
 - Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
   `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);
   default `MOEX_CONFIG` → switch to full config in Phase 6 for the VPS cron.

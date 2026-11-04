@@ -28,5 +28,8 @@ lxml>=5.2.0
 # Excel engine for DataFrame.to_excel() / read_excel() (.xlsx) — used by 7 modules.
 openpyxl>=3.1.0
 
+# Построчная запись больших XLSX без съедания памяти — xlsx_utils.py (data_gathering, tech).
+xlsxwriter>=3.2.0
+
 # Google Sheets upload of the daily dataset — upload.py (import pygsheets).
 pygsheets>=2.0.6

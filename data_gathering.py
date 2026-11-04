@@ -17,6 +17,7 @@
 import datetime, pandas as pd, requests, csv, sys, time, os, json
 from io import StringIO
 from pathlib import Path
+from xlsx_utils import write_xlsx
 
 
 today = datetime.datetime.now()
@@ -35,6 +36,9 @@ request_sleep = 1
 
 # MOEX ISS отдаёт свечи страницами максимум по 500 строк
 page_size = 500
+
+# Сохранять ли XLSX (по умолчанию да). Отключить: MOEX_XLSX=0
+save_xlsx = os.environ.get('MOEX_XLSX', '1') == '1'
 
 
 def _resolve_current_path() -> Path:
@@ -566,13 +570,11 @@ def save_dataset(df, filename, current_path):
         print('Датасет {} пустой, файл не сохраняю'.format(filename))
         return
 
+    # XLSX пишется построчно (xlsx_utils), чтобы не съесть всю память
     xlsx_path = datasets_dir / (filename + '.xlsx')
-    if len(df) < 1048576:
-        tmp_path = datasets_dir / (filename + '.tmp.xlsx')
-        df.to_excel(tmp_path, index = False)
-        os.replace(tmp_path, xlsx_path)
-    else:
-        print('XLSX для {} не сохраняю: {} строк больше лимита Excel'.format(filename, len(df)))
+    xlsx_saved = save_xlsx and write_xlsx(df, xlsx_path)
+    if not xlsx_saved:
+        print('XLSX для {} не сохраняю ({} строк)'.format(filename, len(df)))
         # старый xlsx больше не соответствует csv — удаляем, чтобы не выложить устаревшие данные
         if xlsx_path.is_file():
             xlsx_path.unlink()
