@@ -21,7 +21,20 @@ from pathlib import Path
 
 today = datetime.datetime.now()
 df_full = pd.DataFrame()
+
+# Список неудачных запросов к API (словари: тикер, интервал, даты, страница, ошибка).
+# В конце main() сохраняется в datasets/exception_list.csv
 exception_list = []
+
+# Одна сессия на все запросы к MOEX: соединение переиспользуется, так быстрее
+session = requests.Session()
+
+# Пауза между успешными запросами к API (сек.), чтобы не получить бан от MOEX.
+# Раньше было 3 сек.; при бане/ошибках 429 увеличить
+request_sleep = 1
+
+# MOEX ISS отдаёт свечи страницами максимум по 500 строк
+page_size = 500
 
 
 def _resolve_current_path() -> Path:
@@ -164,13 +177,64 @@ def moex_tickerlists (current_path):
     return all_stocks_ru
 
 # %%
-### Функция запроса к API по тикеру, датам и нужному интервалу
-def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3):
+### Функция запроса одной страницы API с ретраями и сменой User-Agent
+## Возвращает (df, error): df — DataFrame страницы или None, если все попытки неуспешны
+def moex_query_page(query, max_retries=5, retry_sleep_start=3):
     global header
-    global headers_full
-    
+
+    # Если global header почему-то не задан или пустой —
+    # инициализируем первым User-Agent из headers_full
+    if not isinstance(header, dict) or len(header) == 0:
+        header = get_next_header(None)
+
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = session.get(query, headers=header, timeout=30)
+
+            # Читаем CSV если статус успешный
+            if response.status_code == 200:
+                df = pd.read_csv(StringIO(response.text), sep=';', header=1)
+
+                # Пауза после успешного запроса, чтобы не перегружать API Мосбиржи
+                time.sleep(request_sleep)
+                return df, None
+
+            last_error = 'status code {}'.format(response.status_code)
+
+        except Exception as e:
+            last_error = str(e)
+
+        print('Попытка {}/{} неуспешна: {}'.format(attempt, max_retries, last_error))
+        print(query)
+
+        # Если попытка неуспешна — меняем header и ждём перед следующей попыткой
+        if attempt < max_retries:
+            old_user_agent = header.get('User-Agent') if isinstance(header, dict) else None
+            header = get_next_header(header)
+            new_user_agent = header.get('User-Agent') if isinstance(header, dict) else None
+
+            print('Меняем User-Agent:')
+            print(f'old: {old_user_agent}')
+            print(f'new: {new_user_agent}')
+
+            # Экспоненциальная пауза после неудачной попытки:
+            # 1-я ошибка -> 3 сек., 2-я -> 6 сек., 3-я -> 12 сек., 4-я -> 24 сек.
+            sleep_time = retry_sleep_start * (2 ** (attempt - 1))
+            print(f'Ждём {sleep_time} сек. перед следующей попыткой...')
+            time.sleep(sleep_time)
+
+    return None, last_error
+
+
+### Функция запроса к API по тикеру, датам и нужному интервалу
+## MOEX отдаёт максимум 500 свечей за запрос, поэтому листаем страницы через &start=0, 500, 1000...
+## пока страница не придёт неполной (меньше 500 строк)
+def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max_retries=5, retry_sleep_start=3):
+    global exception_list
+
     df_ticker = pd.DataFrame()
-    df = pd.DataFrame()
 
     # Определение типа market для корректного запроса
     if ticker_type in ['Инвестиционные паи', 'Депозитарные расписки', 'Акции', 'Ипотечные сертификаты участия']:
@@ -179,89 +243,51 @@ def moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval, max
         market = "bonds"
     else:
         market = "shares"
-        
-    query = f'http://iss.moex.com/iss/engines/stock/markets/{market}/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #универсальный шаблон
-    # query = f'http://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для акций
-    # query = f'http://iss.moex.com/iss/engines/stock/markets/bonds/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #шаблон для облигаций
 
-    attempt = 0
-    success = False
-    last_status_code = None
-    last_error = None
+    query = f'https://iss.moex.com/iss/engines/stock/markets/{market}/securities/{ticker_in}/candles.csv?from={end_date_mx}&till={start_date_mx}&interval={interval}' #универсальный шаблон
 
-    # Если global header почему-то не задан или пустой —
-    # инициализируем первым User-Agent из headers_full
-    if not isinstance(header, dict) or len(header) == 0:
-        header = get_next_header(None)
+    pages = []
+    start = 0
+    last_begin = None
 
-    while attempt < max_retries and not success:
-        attempt += 1
+    while True:
+        df, error = moex_query_page(query + '&start={}'.format(start), max_retries, retry_sleep_start)
 
-        try:
-            response = requests.get(query, headers=header, timeout=30)
-            last_status_code = response.status_code
+        if df is None:
+            # Страница не скачалась после всех попыток. То, что уже скачано, оставляем:
+            # это непрерывный кусок от начала периода, а data_update в следующий раз
+            # продолжит с последней даты этого тикера
+            print('Не удалось получить данные после {} попыток. ticker: {}, interval: {}, from: {}, till: {}, start: {}, ошибка: {}'.format(
+                max_retries, ticker_in, interval, end_date_mx, start_date_mx, start, error))
+            exception_list.append({
+                'ticker': ticker_in,
+                'interval': interval,
+                'from': end_date_mx,
+                'till': start_date_mx,
+                'start': start,
+                'error': error,
+            })
+            break
 
-            # Читаем CSV если статус успешный
-            if response.status_code == 200:
-                df = pd.read_csv(StringIO(response.text), sep=';', header=1)
+        if len(df) == 0:
+            break
 
-                # Пауза после успешного запроса, чтобы не перегружать API Мосбиржи
-                time.sleep(3)
+        # Защита от бесконечного цикла: если API вернул ту же страницу ещё раз
+        if last_begin is not None and df['begin'].iloc[-1] == last_begin:
+            break
+        last_begin = df['begin'].iloc[-1]
 
-                success = True
+        pages.append(df)
 
-            else:
-                print(
-                    f'Попытка {attempt}/{max_retries} неуспешна. '
-                    f'Status code: {response.status_code}, '
-                    f'ticker: {ticker_in}, '
-                    f'from: {end_date_mx}, till: {start_date_mx}, interval: {interval}'
-                )
-                print(query)
+        # Неполная страница — значит это последняя
+        if len(df) < page_size:
+            break
 
-        except Exception as e:
-            last_error = e
-            print(
-                f'Попытка {attempt}/{max_retries} завершилась ошибкой: {e}. '
-                f'ticker: {ticker_in}, '
-                f'from: {end_date_mx}, till: {start_date_mx}, interval: {interval}'
-            )
-            print(query)
+        start = start + page_size
 
-        # Если попытка неуспешна — меняем header и ждём перед следующей попыткой
-        if not success and attempt < max_retries:
-            old_user_agent = header.get('User-Agent') if isinstance(header, dict) else None
-
-            header = get_next_header(header)
-
-            new_user_agent = header.get('User-Agent') if isinstance(header, dict) else None
-
-            print('Меняем User-Agent:')
-            print(f'old: {old_user_agent}')
-            print(f'new: {new_user_agent}')
-
-            # Экспоненциальная пауза после неудачной попытки:
-            # 1-я ошибка -> 3 сек.
-            # 2-я ошибка -> 6 сек.
-            # 3-я ошибка -> 12 сек.
-            # 4-я ошибка -> 24 сек.
-            sleep_time = retry_sleep_start * (2 ** (attempt - 1))
-
-            print(f'Ждём {sleep_time} сек. перед следующей попыткой...')
-            time.sleep(sleep_time)
-
-    if not success:
-        print(
-            f'Не удалось получить данные после {max_retries} попыток. '
-            f'ticker: {ticker_in}, '
-            f'last_status_code: {last_status_code}, '
-            f'last_error: {last_error}'
-        )
-        return df_ticker
-
-    if len(df) > 0:
-        df['ticker'] = ticker_in
-        df_ticker = pd.concat([df_ticker, df], ignore_index=True)
+    if len(pages) > 0:
+        df_ticker = pd.concat(pages, ignore_index=True)
+        df_ticker['ticker'] = ticker_in
 
     return df_ticker
 
@@ -293,8 +319,9 @@ def moex (ticker_in, ticker_type, years, interval):
         try:
             df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
             if len(df) > 0: df_ticker = pd.concat([df_ticker,df])
-        except:
-            exception_list.append(ticker_in)
+        except Exception as e:
+            exception_list.append({'ticker': ticker_in, 'interval': interval, 'from': end_date_mx,
+                                   'till': start_date_mx, 'start': None, 'error': str(e)})
 
     return df_ticker
 
@@ -654,8 +681,11 @@ def main(current_path, force_reload = False):
         data_update(config, current_path, all_stocks_ru, tickers_dates)
 
 
-    exception_list = list(set(exception_list)) #дедупликация
-    print("Пропущено тикеров при разных интервалах: {}".format(len(exception_list)))
+    ## Отчёт по неудачным запросам: печатаем и сохраняем в CSV, чтобы понимать что и когда не выгрузилось
+    df_exceptions = pd.DataFrame(exception_list, columns=['ticker', 'interval', 'from', 'till', 'start', 'error'])
+    df_exceptions.drop_duplicates(inplace=True)
+    print("Неудачных запросов: {}, тикеров: {}".format(len(df_exceptions), df_exceptions['ticker'].nunique()))
+    df_exceptions.to_csv(current_path / 'datasets' / 'exception_list.csv', index=False)
 
 # %%
 if __name__ == "__main__":
