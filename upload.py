@@ -16,21 +16,26 @@
 # %%
 import pygsheets, pandas as pd, time, datetime, ftplib, sys, json
 from os import listdir
-from os.path import isfile, join
+from os.path import isfile, join, isdir
 
 from multiprocessing import Process
 
 
 current_path = sys.path[0]
 
-## Префикс секретов
+## Префикс секретов (папка secrets лежит рядом с папкой проекта)
 secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
 
 ## Гугл док для сохранения данных
 gdoc_to_write = "https://docs.google.com/spreadsheets/d/1HXXoxcDVqIrWN6QEg5ij88AxcNAKT-G-xm2UTUfQe1Q/edit?usp=sharing"
 
+## Какой датасет выкладываем в гугл док
+gdoc_dataset = "10years_data_1d_interval.csv"
 
-datasets_path = current_path + "/datasets/"
+## Лимит ячеек в одной Google таблице и размер порции строк при записи
+## (один огромный запрос Google API не принимает)
+gdoc_max_cells = 10000000
+gdoc_chunk_rows = 20000
 
 
 ## Начальное время
@@ -38,61 +43,88 @@ start_time = time.time()
 
 # %%
 def gdoc_upload(current_path, gdoc_to_write):
-    print('Начал загрузку данных на Google Диск и FTP.\nВремя старта: {}'.format(datetime.datetime.now()))
+    print('Начал загрузку данных на Google Диск.\nВремя старта: {}'.format(datetime.datetime.now()))
 
     ## Префикс секретов
     secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
-
     service_account_json = secrets_prefix + '/python-304621-1e403209f05f.json'
-    gc = pygsheets.authorize(service_file=service_account_json)
+    datasets_path = current_path + "/datasets/"
 
     ### Подготовка данных для гугл дока
-    df = pd.read_csv(datasets_path + "10years_data_1d_interval.csv")
-    # df = df.round(decimals = 2) #округление до 2 цифр
-    # df.sort_values(by=0, ascending=True, inplace=True) #сортировка
+    dataset_file = datasets_path + gdoc_dataset
+    if not isfile(dataset_file):
+        raise RuntimeError('Нет файла для гугл дока: {}'.format(dataset_file))
 
-    ### Убирание ненужных колонок, чтобы не упираться в лимит в 10кк ячеек гугл доков
+    df = pd.read_csv(dataset_file)
+    # df = df.round(decimals = 2) #округление до 2 цифр
+
+    ### Убирание ненужных колонок, чтобы не упираться в лимит ячеек гугл доков
     columns = df.columns
     white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
         'ticker', 'RSI14']
     columns_to_remove = [i for i in columns if i not in white_list_columns]
-    columns_to_remove
     df.drop(columns_to_remove, axis=1,inplace=True)
 
+    ### Проверка размера ДО очистки листа: если не влезает — старые данные в доке не трогаем
+    rows_needed = len(df) + 1  # + заголовок
+    cells_needed = rows_needed * len(df.columns)
+    if cells_needed > gdoc_max_cells:
+        raise RuntimeError('Данные не влезают в гугл док: {} ячеек при лимите {}. Старые данные оставлены'.format(cells_needed, gdoc_max_cells))
+
+    # те же значения, что раньше писал set_dataframe(..., nan='NaN'): заголовок + строки
+    values = [list(df.columns)] + df.astype(object).where(df.notna(), 'NaN').values.tolist()
 
     ### Загрузка данных на гугл док
+    gc = pygsheets.authorize(service_file=service_account_json)
+    google_doc = gc.open_by_url(gdoc_to_write)
+    #opening needed sheet
+    needed_sheet = google_doc[0]
+    #clearing all data
+    needed_sheet.clear()
+    # размер листа ровно под данные
+    needed_sheet.resize(rows=rows_needed, cols=len(df.columns))
 
-    try:
-        google_doc = gc.open_by_url(gdoc_to_write)
-
-        #opening needed sheet
-        needed_sheet = google_doc[0]
-
-        #clearing all data
-        needed_sheet.clear()
-
-        #writing data
-        needed_sheet.set_dataframe(df, 'A1', copy_index=False, copy_head=True, fit=False, escape_formulae=False, nan='NaN')
-    except Exception as e:
-        print(f"Произошла ошибка: {e}")
-
+    #writing data порциями, каждую порцию до 3 попыток
+    for start in range(0, len(values), gdoc_chunk_rows):
+        chunk = values[start:start + gdoc_chunk_rows]
+        for attempt in range(1, 4):
+            try:
+                needed_sheet.update_values('A{}'.format(start + 1), chunk)
+                break
+            except Exception as e:
+                print('Ошибка записи строк {}-{} в гугл док (попытка {}/3): {}'.format(start + 1, start + len(chunk), attempt, e))
+                if attempt == 3:
+                    raise
+                time.sleep(10 * attempt)
 
     # конечное время
     end_time = time.time()
-
     # разница между конечным и начальным временем
     elapsed_time = end_time - start_time
-
     mins, secs = divmod(elapsed_time, 60)
     hours, mins = divmod(mins, 60)
-
-    print('Обновление данных на Google Диске закончено.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
+    print('Обновление данных на Google Диске закончено ({} строк).\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(len(df), round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
 # %%
+### Загрузка одного файла на FTP: сперва под временным именем, потом переименование,
+### чтобы на сайте не было видно недогруженного файла
+def ftp_store(ftp_server, file_path, remote_name):
+    remote_tmp = remote_name + '.uploading'
+    with open(file_path, "rb") as file:
+        ftp_server.storbinary("STOR {}".format(remote_tmp), file)
+    try:
+        ftp_server.rename(remote_tmp, remote_name)
+    except ftplib.error_perm:
+        # некоторые FTP-серверы не переименовывают поверх существующего файла
+        ftp_server.delete(remote_name)
+        ftp_server.rename(remote_tmp, remote_name)
+
+
 def ftp_upload(current_path):
 
     secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
+    datasets_path = current_path + "/datasets/"
 
     ## Получение секрета подключения к FTP
     ftp_secrets_path = open(secrets_prefix + "moex.foykes.com.json")
@@ -100,94 +132,85 @@ def ftp_upload(current_path):
     ftp_secrets_path.close()
 
     ## Подключение к FTP
-    ftp_server = ftplib.FTP(ftp_data['domain'], ftp_data['username'], ftp_data['password'])
+    ftp_server = ftplib.FTP(ftp_data['domain'], ftp_data['username'], ftp_data['password'], timeout=300)
     ftp_server.encoding = "utf-8"
 
-    ## Загрузка основных датасетов
-    datasets_list = [f for f in listdir(datasets_path) if isfile(join(datasets_path, f))]
-    datasets_list = list(set(datasets_list)) #дедуп
-    
-    try:
-        for i in range(0,len(datasets_list)):
-            file_path = datasets_path + "/" + datasets_list[i]
-            where_upload = "STOR {}".format(datasets_list[i])
-            
-            with open(file_path, "rb") as file:
-                ftp_server.storbinary(where_upload, file)
-    except Exception as e:
-        print(f"Произошла ошибка: {e}")
+    ## Что выкладываем: (локальная папка, папка на FTP)
+    ## основные датасеты, дивиденды, списки тикеров
+    folders = [
+        (datasets_path, ""),
+        (datasets_path + "dividends", "dividends/"),
+        (datasets_path + "ticker_lists", "ticker_lists/"),
+    ]
 
+    failed = []
+    uploaded = 0
+    for local_dir, remote_dir in folders:
+        if not isdir(local_dir):
+            print('Нет папки {}, пропускаю'.format(local_dir))
+            continue
 
-    ## Загрузка дивидендов
-    datasets_path_divs = datasets_path + "/dividends"
-    datasets_list = [f for f in listdir(datasets_path_divs) if isfile(join(datasets_path_divs, f))]
-    datasets_list = list(set(datasets_list)) #дедуп
+        datasets_list = [f for f in listdir(local_dir) if isfile(join(local_dir, f))]
+        datasets_list = sorted(set(datasets_list)) #дедуп
+        # временные файлы от незаконченной записи и служебные файлы не выкладываем
+        datasets_list = [f for f in datasets_list if '.tmp.' not in f and not f.startswith('.') and not f.startswith('~$')]
 
-    try:
-        for i in range(0,len(datasets_list)):
-            file_path = datasets_path_divs + "/" + datasets_list[i]
-            where_upload = "STOR dividends/{}".format(datasets_list[i])
-            
-            with open(file_path, "rb") as file:
-                ftp_server.storbinary(where_upload, file)
-    except Exception as e:
-        print(f"Произошла ошибка: {e}")
+        for file_name in datasets_list:
+            # ошибка с одним файлом не останавливает загрузку остальных
+            try:
+                ftp_store(ftp_server, join(local_dir, file_name), remote_dir + file_name)
+                uploaded = uploaded + 1
+            except Exception as e:
+                print(f"Произошла ошибка при загрузке {remote_dir + file_name}: {e}")
+                failed.append(remote_dir + file_name)
 
-        
-    ## Загрузка списка тикеров
-    datasets_path_divs = datasets_path + "/ticker_lists"
-    datasets_list = [f for f in listdir(datasets_path_divs) if isfile(join(datasets_path_divs, f))]
-    datasets_list = list(set(datasets_list)) #дедуп
-
-    try:
-        for i in range(0,len(datasets_list)):
-            file_path = datasets_path_divs + "/" + datasets_list[i]
-            where_upload = "STOR ticker_lists/{}".format(datasets_list[i])
-            
-            with open(file_path, "rb") as file:
-                ftp_server.storbinary(where_upload, file)
-    except Exception as e:
-        print(f"Произошла ошибка: {e}")
-
-    ## Закрытие подключения к FTP   
+    ## Закрытие подключения к FTP
     ftp_server.quit()
-
 
     # конечное время
     end_time = time.time()
-
     # разница между конечным и начальным временем
     elapsed_time = end_time - start_time
-
     mins, secs = divmod(elapsed_time, 60)
     hours, mins = divmod(mins, 60)
-
-    print('Загрузка данных на FTP закончена.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
+    print('Загрузка данных на FTP закончена. Загружено файлов: {}, с ошибкой: {}.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(uploaded, len(failed), round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
 
+    if len(failed) > 0:
+        raise RuntimeError('Не загрузились на FTP: {}'.format(failed))
+
 # %%
+### Загрузка в гугл док и на FTP параллельно.
+### Возвращает список шагов, которые завершились ошибкой (пустой — всё хорошо)
 def main(current_path,gdoc_to_write):
-    # end_time = gdoc_upload(current_path, gdoc_to_write)
-    # end_time_ftp = ftp_upload(current_path)
+    current_path = str(current_path)
 
     p1 = Process(target=gdoc_upload, args=(current_path, gdoc_to_write))
     p1.start()
+
     p2 = Process(target=ftp_upload, args=(current_path,))
     p2.start()
+
     p1.join()
     p2.join()
 
+    # если внутри процесса была ошибка, у процесса ненулевой exitcode
+    failed = []
+    if p1.exitcode != 0: failed.append('google')
+    if p2.exitcode != 0: failed.append('ftp')
+    if len(failed) > 0:
+        print('Загрузка с ошибками: {}'.format(failed))
+
     # конечное время
     end_time_ftp = time.time()
-
     # разница между конечным и начальным временем
     elapsed_time = end_time_ftp - start_time
-
     mins, secs = divmod(elapsed_time, 60)
     hours, mins = divmod(mins, 60)
-
     print('Скрипт загрузки данных закончил работу.\nЗаняло времени: {} часов, {} минут, {} секунд. Суммарно в секундах: {}'. format(round(hours), round(mins), round(secs), round(elapsed_time, 3), 'сек'))
     print('-----------------------')
+
+    return failed
 
 # %%
 if __name__ == "__main__": 

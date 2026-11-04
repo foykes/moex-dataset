@@ -92,6 +92,11 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
   XLSX written row by row (`xlsx_utils.py`, xlsxwriter) — openpyxl needed ~600 MB RAM for 16k rows;
   `MOEX_XLSX=0` turns XLSX off. dohodru: pandas 3 `read_html` fix + timeouts.
   dividends: MOEX ISS dividends are now **subscribers only** → step stops with a message, old file kept.
+- Phase 5 ✅ — upload logic kept (same sheet, same 10 columns, same FTP folders). Google: size check before
+  `clear()`, chunked writes (20k rows) with 3 retries — one request with ~7M cells would fail.
+  FTP: upload as `name.uploading` then rename, one failed file doesn't stop the rest, timeout 300 s,
+  `.tmp.` files skipped, missing folders skipped. Failures → non-zero process exit (`main()` returns list).
+  Not verified live (no writes to real FTP/Google from here).
 - Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
   `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);
   default `MOEX_CONFIG` → switch to full config in Phase 6 for the VPS cron.
