@@ -15,7 +15,7 @@ If Python is older than 3.11 (Ubuntu 22.04 ships 3.10), install a newer one firs
 
 ```bash
 cd ~
-git clone -b simple https://github.com/foykes/moex-dataset.git
+git clone --depth 1 https://github.com/foykes/moex-dataset.git   # main; --depth 1: old history is large
 cd moex-dataset
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
