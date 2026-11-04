@@ -105,7 +105,7 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
 - (resolved by the decision above) Scale of the full config: ~1.4 KB per row in CSV, ~5 KB per row peak RAM (whole file in pandas).
   Rough estimates: 10y daily ~0.7M rows → ~1 GB CSV, ~3.5 GB RAM; 10y hourly ~6M rows → ~9 GB CSV, ~30 GB RAM;
   10y 1-minute ~100M rows → ~140 GB CSV per file. 10m/1m for 10/30 years do not fit 2 GB RAM / 400 GB disk / daily FTP.
-- Owner decision 2026-11-04: full config = daily + hourly for 10/30 years, 10m and 1m for 1 year.
+- Owner decision 2026-11-04: full config = daily + hourly for 10/30 years; daily, hourly, 10m, 1m for 1 year (1y daily/hourly are cut from 30y, no extra download).
 - Phase 8 ✅ — per-ticker streaming so the full config fits 2 GB RAM: `dataset_files.py`
   (`iter_ticker_groups`, `append_csv`, XLSX from CSV in chunks). `data_update` / `full_reload` / `tech`
   keep one ticker in memory. Full reload resumes after a crash (`*.partial.csv` + `*.partial.progress`).

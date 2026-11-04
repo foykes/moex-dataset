@@ -59,7 +59,7 @@ Run inside `tmux` so it survives SSH disconnects:
 
 ```bash
 tmux new -s moex
-cd ~/moex-dataset && ./run.sh        # default config: datasets_config.json (1d/1h 10 and 30 years, 10m/1m 1 year)
+cd ~/moex-dataset && ./run.sh        # default config: datasets_config.json (1d/1h 10 and 30 years; 1d/1h/10m/1m 1 year)
 # detach: Ctrl+B, then D. Re-attach later: tmux attach -t moex
 ```
 

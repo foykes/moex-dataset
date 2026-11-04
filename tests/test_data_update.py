@@ -160,3 +160,22 @@ def test_to_datetime_safe_keeps_iso_month_and_day():
     result = data_gathering.to_datetime_safe(series)
     assert result.tolist()[:3] == [pd.Timestamp('2026-11-03'), pd.Timestamp('2026-11-03'), pd.Timestamp('2025-06-05 10:00')]
     assert pd.isna(result.iloc[3])
+
+
+def test_one_download_for_30_10_and_1_year(project):
+    current_path, calls, answers = project
+    answers['SBER'] = [candle('SBER', today - 20 * 365 * day, 1), candle('SBER', today - 5 * 365 * day, 2),
+                       candle('SBER', today - 10 * day, 3)]
+
+    all_stocks_ru = pd.DataFrame({'TRADE_CODE': ['SBER']})
+    tickers_dates = pd.DataFrame({'TRADE_CODE': [], 'issue_date': [], 'stopped_date': []})
+    config = data_gathering.json.load(open('settings/datasets_config.json', encoding='utf-8'))
+    config = [c for c in config if c['interval'] == 24]
+
+    data_gathering.data_update(config, current_path, all_stocks_ru, tickers_dates)
+
+    assert len(calls) == 1
+    datasets = current_path / 'datasets'
+    assert len(pd.read_csv(datasets / '30years_data_1d_interval.csv')) == 3
+    assert len(pd.read_csv(datasets / '10years_data_1d_interval.csv')) == 2
+    assert len(pd.read_csv(datasets / '1years_data_1d_interval.csv')) == 1

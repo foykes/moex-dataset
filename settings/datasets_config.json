@@ -24,6 +24,18 @@
         "word": "минут"
     },
     {
+        "interval": 24,
+        "years": 1,
+        "filename": "1years_data_1d_interval",
+        "word": "часа"
+    },
+    {
+        "interval": 60,
+        "years": 1,
+        "filename": "1years_data_1h_interval",
+        "word": "минут"
+    },
+    {
         "interval": 10,
         "years": 1,
         "filename": "1years_data_10m_interval",

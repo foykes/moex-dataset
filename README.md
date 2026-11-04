@@ -11,7 +11,7 @@
 
 | Конфиг | Наборы |
 |---|---|
-| `settings/datasets_config.json` | 10 и 30 лет × свечи 1 день и 1 час; 1 год × 10 минут и 1 минута |
+| `settings/datasets_config.json` | 10 и 30 лет × свечи 1 день и 1 час; 1 год × 1 день, 1 час, 10 минут, 1 минута |
 | `settings/datasets_config_1_year.json` | 1 год × свечи 1 день, 1 час, 10 минут, 1 минута |
 
 Файлы: `datasets/<период>_data_<интервал>_interval.csv` (+ `.xlsx`, если влезает в лист Excel).
