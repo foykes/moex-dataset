@@ -119,6 +119,15 @@ def ftp_store(ftp_server, file_path, remote_name):
         ftp_server.rename(remote_tmp, remote_name)
 
 
+### Удалить файл на FTP, если он там есть (ошибку "нет файла" игнорируем)
+def ftp_delete_if_exists(ftp_server, remote_name):
+    try:
+        ftp_server.delete(remote_name)
+        print('Удалил с FTP устаревший файл {}'.format(remote_name))
+    except Exception:
+        pass
+
+
 def ftp_upload(current_path):
 
     secrets_prefix = current_path.rsplit("/", 1)[0] + "/secrets/"
@@ -134,10 +143,12 @@ def ftp_upload(current_path):
     ftp_server.encoding = "utf-8"
 
     ## Что выкладываем: (локальная папка, папка на FTP)
-    ## основные датасеты, дивиденды, списки тикеров
+    ## основные датасеты (+ index.html и run_report.csv), дивиденды, доход.ру, списки тикеров
+    ## Корень FTP — это папка /datasets/ сайта moex.foykes.com
     folders = [
         (datasets_path, ""),
         (datasets_path + "dividends", "dividends/"),
+        (datasets_path + "dividends/dohodru", "dividends/dohodru/"),
         (datasets_path + "ticker_lists", "ticker_lists/"),
     ]
 
@@ -148,16 +159,34 @@ def ftp_upload(current_path):
             print('Нет папки {}, пропускаю'.format(local_dir))
             continue
 
+        # папки на FTP может не быть (например dividends/dohodru) — создаём
+        if remote_dir != "":
+            try:
+                ftp_server.mkd(remote_dir.rstrip('/'))
+            except Exception:
+                pass
+
         datasets_list = [f for f in listdir(local_dir) if isfile(join(local_dir, f))]
         datasets_list = sorted(set(datasets_list)) #дедуп
         # временные файлы от незаконченной записи и служебные файлы не выкладываем
-        datasets_list = [f for f in datasets_list if '.tmp.' not in f and not f.startswith('.') and not f.startswith('~$')]
+        datasets_list = [f for f in datasets_list if '.tmp.' not in f and '.partial.' not in f
+                         and not f.startswith('.') and not f.startswith('~$')]
 
         for file_name in datasets_list:
+            ## Большие датасеты выкладываем только сжатыми (.csv.gz): сам .csv не грузим,
+            ## а старый .csv на FTP удаляем после успешной загрузки .csv.gz (см. ниже).
+            ## Если датасет стал маленьким и .csv.gz больше нет — удаляем старый .csv.gz с FTP
+            if file_name.endswith('.csv') and file_name + '.gz' in datasets_list:
+                continue
+            if file_name.endswith('.csv') and remote_dir == "":
+                ftp_delete_if_exists(ftp_server, remote_dir + file_name + '.gz')
+
             # ошибка с одним файлом не останавливает загрузку остальных
             try:
                 ftp_store(ftp_server, join(local_dir, file_name), remote_dir + file_name)
                 uploaded = uploaded + 1
+                if file_name.endswith('.csv.gz'):
+                    ftp_delete_if_exists(ftp_server, remote_dir + file_name[:-len('.gz')])
             except Exception as e:
                 print(f"Произошла ошибка при загрузке {remote_dir + file_name}: {e}")
                 failed.append(remote_dir + file_name)

@@ -28,6 +28,8 @@ class FakeFTP:
         self.fail_on = set()
         self.rename_fails = False
         self.encoding = None
+        self.deleted = []
+        self.dirs = set()
         FakeFTP.instances.append(self)
 
     def storbinary(self, command, file):
@@ -42,7 +44,13 @@ class FakeFTP:
         self.files[new] = self.files.pop(old)
 
     def delete(self, name):
+        if name not in self.files:
+            raise ftplib.error_perm('550 no such file')
         self.files.pop(name)
+        self.deleted.append(name)
+
+    def mkd(self, name):
+        self.dirs.add(name)
 
     def quit(self):
         pass
@@ -149,3 +157,30 @@ def test_gdoc_too_big_does_not_touch_sheet(project, monkeypatch):
         upload.gdoc_upload(str(project), 'https://docs.google.com/test')
 
     assert sheet.calls == []
+
+
+def test_ftp_big_dataset_only_gz_and_old_csv_deleted(project, monkeypatch):
+    FakeFTP.instances = []
+
+    class ServerWithOldFiles(FakeFTP):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # на сервере лежит старый большой .csv
+            self.files['10years_data_1h_interval.csv'] = b'old big csv'
+
+    monkeypatch.setattr(upload.ftplib, 'FTP', ServerWithOldFiles)
+    datasets = project / 'datasets'
+    (datasets / '10years_data_1h_interval.csv').write_text('big')
+    (datasets / '10years_data_1h_interval.csv.gz').write_bytes(b'gz')
+    (datasets / '1years_data_1d_interval.csv').write_text('small')
+    (datasets / '1years_data_1d_interval.partial.csv').write_text('half')
+    (datasets / 'dividends' / 'dohodru').mkdir(parents=True)
+    (datasets / 'dividends' / 'dohodru' / 'all_payments.csv').write_text('d')
+
+    upload.ftp_upload(str(project))
+
+    ftp = FakeFTP.instances[0]
+    assert sorted(ftp.files) == ['10years_data_1h_interval.csv.gz', '1years_data_1d_interval.csv',
+                                 'dividends/dohodru/all_payments.csv']
+    assert ftp.deleted == ['10years_data_1h_interval.csv']
+    assert 'dividends/dohodru' in ftp.dirs

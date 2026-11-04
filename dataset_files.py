@@ -8,6 +8,8 @@
 ### отсортировать через sort_dataset_file.
 import os
 import math
+import gzip
+import shutil
 import datetime
 import pandas as pd
 import xlsxwriter
@@ -153,15 +155,55 @@ def write_xlsx_from_csv(csv_path, xlsx_path):
     return True
 
 
-### Обновить XLSX рядом с CSV. Если XLSX выключен или не влезает в лист Excel —
-### старый XLSX удаляем, чтобы не выложить устаревшие данные рядом с новым CSV
-def update_xlsx(csv_path):
+### Сжатая копия CSV (.csv.gz) — для больших датасетов, которые не влезают в XLSX.
+### Gzip сжимает CSV в 4–6 раз, это сильно сокращает загрузку на FTP
+def write_gzip(csv_path):
+    csv_path = str(csv_path)
+    gz_path = csv_path + '.gz'
+    tmp_path = csv_path + '.tmp.gz'
+    with open(csv_path, 'rb') as source, gzip.open(tmp_path, 'wb', compresslevel=6) as target:
+        shutil.copyfileobj(source, target, 16 * 1024 * 1024)
+    os.replace(tmp_path, gz_path)
+    return gz_path
+
+
+def _remove(path):
+    if os.path.isfile(path):
+        os.remove(path)
+
+
+### Файлы для публикации рядом с CSV:
+###   влезает в лист Excel -> XLSX (если не выключен MOEX_XLSX=0), сжатой копии нет
+###   не влезает           -> .csv.gz вместо XLSX (на FTP уходит только .csv.gz, без большого .csv)
+### Устаревшие XLSX/.csv.gz удаляются, чтобы не выложить старые данные рядом с новым CSV.
+### Возвращает 'xlsx', 'gz' или 'csv'
+def update_published_files(csv_path):
     csv_path = str(csv_path)
     xlsx_path = csv_path[:-len('.csv')] + '.xlsx'
+    gz_path = csv_path + '.gz'
 
-    saved = save_xlsx and write_xlsx_from_csv(csv_path, xlsx_path)
-    if not saved:
-        print('XLSX для {} не сохраняю'.format(os.path.basename(csv_path)))
-        if os.path.isfile(xlsx_path):
-            os.remove(xlsx_path)
-    return saved
+    if count_rows(csv_path) + 1 > EXCEL_MAX_ROWS:
+        _remove(xlsx_path)
+        write_gzip(csv_path)
+        print('{}: больше лимита Excel, сохранил сжатую копию .csv.gz'.format(os.path.basename(csv_path)))
+        return 'gz'
+
+    _remove(gz_path)
+    if save_xlsx and write_xlsx_from_csv(csv_path, xlsx_path):
+        return 'xlsx'
+
+    print('XLSX для {} не сохраняю (MOEX_XLSX=0)'.format(os.path.basename(csv_path)))
+    _remove(xlsx_path)
+    return 'csv'
+
+
+### Старое имя, оставлено для совместимости
+def update_xlsx(csv_path):
+    return update_published_files(csv_path) == 'xlsx'
+
+
+### После записи нового CSV XLSX и .csv.gz рядом уже не соответствуют данным — удаляем
+def remove_published_copies(csv_path):
+    csv_path = str(csv_path)
+    _remove(csv_path[:-len('.csv')] + '.xlsx')
+    _remove(csv_path + '.gz')

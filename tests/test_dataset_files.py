@@ -52,3 +52,21 @@ def test_update_xlsx_respects_excel_limit(tmp_path, monkeypatch):
     assert dataset_files.update_xlsx(path)
     back = pd.read_excel(tmp_path / 'a.xlsx')
     assert len(back) == 5 and list(back.columns) == ['begin', 'close', 'ticker']
+
+
+def test_big_dataset_published_as_gz_small_as_xlsx(tmp_path, monkeypatch):
+    import gzip
+    path = tmp_path / 'a.csv'
+    make_file(path, [('AAA', 5)])
+    (tmp_path / 'a.xlsx').write_text('старый')
+
+    monkeypatch.setattr(dataset_files, 'EXCEL_MAX_ROWS', 5)
+    assert dataset_files.update_published_files(path) == 'gz'
+    assert not (tmp_path / 'a.xlsx').exists()
+    with gzip.open(tmp_path / 'a.csv.gz', 'rb') as f:
+        assert f.read() == path.read_bytes()
+
+    monkeypatch.setattr(dataset_files, 'EXCEL_MAX_ROWS', 100)
+    assert dataset_files.update_published_files(path) == 'xlsx'
+    assert not (tmp_path / 'a.csv.gz').exists()
+    assert (tmp_path / 'a.xlsx').is_file()

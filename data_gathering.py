@@ -17,7 +17,7 @@
 import datetime, pandas as pd, requests, csv, sys, time, os, json
 from io import StringIO
 from pathlib import Path
-from dataset_files import iter_ticker_groups, append_csv, sort_dataset_file, count_rows, NotGroupedError, CHUNK_ROWS
+from dataset_files import iter_ticker_groups, append_csv, sort_dataset_file, count_rows, remove_published_copies, NotGroupedError, CHUNK_ROWS
 
 
 today = datetime.datetime.now()
@@ -577,12 +577,10 @@ def prepare_ticker_rows(parts, years, today):
     return df
 
 
-## После записи нового CSV старый XLSX рядом уже не соответствует данным — удаляем.
-## Новый XLSX (уже с индикаторами) запишет tech.py
+## После записи нового CSV старые XLSX и .csv.gz рядом уже не соответствуют данным — удаляем.
+## Новые (уже с индикаторами) запишет tech.py
 def remove_stale_xlsx(csv_path):
-    xlsx_path = csv_path.with_suffix('.xlsx')
-    if xlsx_path.is_file():
-        xlsx_path.unlink()
+    remove_published_copies(csv_path)
 
 
 ## Короткий период (например 10 лет) вырезаем из файла длинного периода (30 лет) того же интервала,

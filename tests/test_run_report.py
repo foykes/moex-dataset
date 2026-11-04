@@ -83,3 +83,23 @@ def test_telegram_error_does_not_print_token(tmp_path, monkeypatch, capsys):
 
     assert notify.send_telegram('текст', project) is False
     assert 'T0KEN' not in capsys.readouterr().out
+
+
+def test_index_html_links_published_files(tmp_path):
+    datasets = tmp_path / 'datasets'
+    (datasets / 'ticker_lists').mkdir(parents=True)
+    write_dataset(datasets / 'big.csv', [[1, 1, '2026-11-03 10:00:00', 'SBER']])
+    (datasets / 'big.csv.gz').write_bytes(b'gz')
+    write_dataset(datasets / 'small.csv', [[1, 1, '2026-11-03 00:00:00', 'SBER']])
+    (datasets / 'small.xlsx').write_bytes(b'xlsx')
+    (datasets / 'ticker_lists' / 'moex_full.csv').write_text('x')
+    config = [{'filename': 'big'}, {'filename': 'small'}]
+
+    run_report.build_report(tmp_path, config, now=datetime.datetime(2026, 11, 4, 12, 0))
+    page = (datasets / 'index.html').read_text(encoding='utf-8')
+
+    assert 'href="big.csv.gz"' in page and 'href="big.csv"' not in page
+    assert 'href="small.csv"' in page and 'href="small.xlsx"' in page
+    assert 'href="ticker_lists/moex_full.csv"' in page
+    assert 'Обновлено: 2026-11-04 12:00' in page
+    assert '2026-11-03 — 2026-11-03' in page

@@ -116,7 +116,12 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
   3× (was one 5 s try). Run report `datasets/run_report.csv` (rows/tickers/first/last date/size, stale warning),
   Telegram alerts (`notify.py`, `~/secrets/telegram.json`), time per step in the log; exit code 3 = step errors.
   Dry run (daily update, all tickers): data 6.8 min, tech 0.5 min, dohod.ru 1.1 min.
-- Next ideas: compressed `.csv.gz` uploads (40–50 GB/day → ~8–10 GB), rounding indicator floats,
+- gz ✅ — datasets with >1M rows are published as `.csv.gz` only (old plain `.csv` deleted on FTP after the
+  `.gz` upload succeeds); small ones stay `.csv` + `.xlsx`. Measured on real data: gzip level 6 = 2.5×
+  (indicators are 93% of the size and compress poorly), ~26 MB/s. `dividends/dohodru/` now uploaded.
+  Site: FTP root = `moex.foykes.com/datasets/`; the hand-written root page had broken links and data from
+  2025-04-06. Pipeline now writes `datasets/index.html` (files, sizes, rows, period, "updated on").
+- Next ideas: round indicator floats to 6 digits (CSV −50%, with gz 4.9× vs today),
   move old manual scripts to `old/`, "updated on" date on the site, Hugging Face.
 - Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
   `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);

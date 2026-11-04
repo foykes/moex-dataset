@@ -17,7 +17,7 @@
 import talib, pandas as pd
 import sys, os, json
 from pathlib import Path
-from dataset_files import iter_ticker_groups, append_csv, sort_dataset_file, update_xlsx, NotGroupedError
+from dataset_files import iter_ticker_groups, append_csv, sort_dataset_file, update_published_files, NotGroupedError
 
 current_path = Path(sys.path[0])
 
@@ -161,7 +161,7 @@ def ticker_indicators(df_ticker):
 ### Файл читается по тикерам и сразу дописывается в новый файл, поэтому в памяти только один тикер
 ### (датасет 30 лет x 1 час с индикаторами целиком в память не влезает).
 ### Индикаторы считаются по каждому тикеру отдельно, чтобы не смешивать строки разных тикеров.
-### Рядом сохраняется XLSX из того же результата, если включён и влезает в лист Excel
+### Рядом сохраняется XLSX из того же результата (если влезает в лист Excel) или сжатая копия .csv.gz
 def write_with_indicators(path, tmp_path, keep_columns):
     if tmp_path.is_file():
         tmp_path.unlink()
@@ -198,7 +198,8 @@ def calculator(filename, current_path = current_path):
         return
 
     os.replace(tmp_path, path)
-    update_xlsx(path)
+    # XLSX, если влезает в лист Excel, иначе сжатая копия .csv.gz
+    update_published_files(path)
     print('Посчитал индикаторы для {}: {} записей'.format(filename, rows))
 
 # %%
@@ -236,7 +237,7 @@ def main(current_path):
             continue
         if dataset.get('tech', True) == False:
             print('Для {} индикаторы выключены в конфиге'.format(filename))
-            update_xlsx(current_path / 'datasets' / filename)
+            update_published_files(current_path / 'datasets' / filename)
             continue
 
         try:

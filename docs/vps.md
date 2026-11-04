@@ -113,6 +113,15 @@ writes a line to `logs/skipped.log`.
 Exit code `3` = some step failed (log ends with `Шаги с ошибками: [...]`); any other non-zero code = the script crashed.
 If data gathering or tech fails, upload is skipped so FTP and Google keep the previous data.
 
+## 7a. Website
+
+The FTP root is the `/datasets/` folder of moex.foykes.com. Every run uploads `datasets/index.html`
+(all files with size, rows, period and "updated on" time) → **https://moex.foykes.com/datasets/index.html**.
+The old hand-written page at https://moex.foykes.com/ is not touched by the pipeline: replace it once with a
+redirect or a link to `/datasets/index.html` (its links to `ticker_lists/` and `dividends/` are broken).
+
+Big datasets (>1,048,576 rows, no XLSX) are published only as `.csv.gz`; small ones as `.csv` + `.xlsx`.
+
 ## 8. Settings (environment variables)
 
 | Variable | Default | Meaning |
