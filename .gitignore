@@ -11,3 +11,6 @@ datasets/*
 playground.ipynb
 playground.py
 Agents.md
+
+## Логи запусков run.sh
+logs/

@@ -2,7 +2,7 @@
 # These are needed to run the .py modules: data_gathering, tech, dividends,
 # dohodru_data, upload. Install with:  pip install -r requirements.txt
 #
-# Version specifiers are conservative lower bounds (compatible with Python 3.14).
+# Needs Python 3.11+. Tested versions are listed in docs/vps.md.
 # After a verified install, lock exact versions with:
 #   pip freeze > requirements.lock.txt
 
@@ -13,11 +13,9 @@ pandas>=2.2.3
 requests>=2.32.0
 
 # Technical indicators — tech.py (import talib).
-# NOTE: the pip package wraps a C library that must be installed first.
-#   macOS:          brew install ta-lib
-#   Debian/Ubuntu:  apt-get install ta-lib   (or build from source)
-# See docs/requirements.md for details.
-TA-Lib>=0.4.28
+# TA-Lib 0.6+ ships wheels with the C library bundled (Linux/macOS/Windows, Python 3.11+),
+# so no separate system install is needed.
+TA-Lib>=0.6.5
 
 # HTML parsing of dohod.ru pages — dohodru_data.py (from bs4 import BeautifulSoup).
 beautifulsoup4>=4.12.0

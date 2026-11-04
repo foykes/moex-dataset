@@ -6,16 +6,11 @@
 # Pinned to match the rev in .pre-commit-config.yaml.
 jupytext==1.19.2
 
-# main.py runs `jupyter nbconvert --to script ...` to regenerate the .py modules
-# from the notebooks before the full pipeline run. Required to run main.py end-to-end.
-nbconvert>=7.16.0
-
 # Runs the notebooks (Python 3 kernel).
 ipykernel>=7.0.0
 
 # Git hook runner configured in .pre-commit-config.yaml.
 pre-commit>=4.0.0
 
-# Test runner for new tests (per AGENTS.md). Existing tests.py / main_tests.py use
-# the stdlib `unittest` and run without pytest, but pytest is the project standard.
+# Test runner: python -m pytest -q (tests/ use mocks, no real MOEX/FTP/Google calls).
 pytest>=8.0.0

@@ -97,6 +97,14 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
   FTP: upload as `name.uploading` then rename, one failed file doesn't stop the rest, timeout 300 s,
   `.tmp.` files skipped, missing folders skipped. Failures → non-zero process exit (`main()` returns list).
   Not verified live (no writes to real FTP/Google from here).
+- Phase 6 ✅ — `main.py` without nbconvert (`--full-reload`, `--no-upload`, exit code 1 on failure,
+  upload skipped if data/tech failed), `run.sh` (lock, logs/, `MOEX_CONFIG` default = full config),
+  `docs/vps.md`, README refresh. Phase 7 (tests) done along the way: 21 pytest tests, all mocked.
+- Dry run 2026-11-04 (all tickers, 1y daily only, `--no-upload`): all steps OK, 8.4 min,
+  83,729 rows × 89 columns, CSV 115 MB, XLSX 72 MB, peak RAM 460 MB, 0 failed requests.
+- **Open: scale of the full config.** ~1.4 KB per row in CSV, ~5 KB per row peak RAM (whole file in pandas).
+  Rough estimates: 10y daily ~0.7M rows → ~1 GB CSV, ~3.5 GB RAM; 10y hourly ~6M rows → ~9 GB CSV, ~30 GB RAM;
+  10y 1-minute ~100M rows → ~140 GB CSV per file. 10m/1m for 10/30 years do not fit 2 GB RAM / 400 GB disk / daily FTP.
 - Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
   `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);
   default `MOEX_CONFIG` → switch to full config in Phase 6 for the VPS cron.
