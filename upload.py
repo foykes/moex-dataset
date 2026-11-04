@@ -55,15 +55,12 @@ def gdoc_upload(current_path, gdoc_to_write):
     if not isfile(dataset_file):
         raise RuntimeError('Нет файла для гугл дока: {}'.format(dataset_file))
 
-    df = pd.read_csv(dataset_file)
-    # df = df.round(decimals = 2) #округление до 2 цифр
-
-    ### Убирание ненужных колонок, чтобы не упираться в лимит ячеек гугл доков
-    columns = df.columns
+    ### Читаем только нужные колонки, чтобы не упираться в лимит ячеек гугл доков
+    ### (и не грузить в память ~80 колонок индикаторов). Порядок колонок — как в файле
     white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end',
         'ticker', 'RSI14']
-    columns_to_remove = [i for i in columns if i not in white_list_columns]
-    df.drop(columns_to_remove, axis=1,inplace=True)
+    df = pd.read_csv(dataset_file, usecols=lambda column: column in white_list_columns)
+    # df = df.round(decimals = 2) #округление до 2 цифр
 
     ### Проверка размера ДО очистки листа: если не влезает — старые данные в доке не трогаем
     rows_needed = len(df) + 1  # + заголовок
@@ -71,8 +68,6 @@ def gdoc_upload(current_path, gdoc_to_write):
     if cells_needed > gdoc_max_cells:
         raise RuntimeError('Данные не влезают в гугл док: {} ячеек при лимите {}. Старые данные оставлены'.format(cells_needed, gdoc_max_cells))
 
-    # те же значения, что раньше писал set_dataframe(..., nan='NaN'): заголовок + строки
-    values = [list(df.columns)] + df.astype(object).where(df.notna(), 'NaN').values.tolist()
 
     ### Загрузка данных на гугл док
     gc = pygsheets.authorize(service_file=service_account_json)
@@ -84,12 +79,15 @@ def gdoc_upload(current_path, gdoc_to_write):
     # размер листа ровно под данные
     needed_sheet.resize(rows=rows_needed, cols=len(df.columns))
 
-    #writing data порциями, каждую порцию до 3 попыток
-    for start in range(0, len(values), gdoc_chunk_rows):
-        chunk = values[start:start + gdoc_chunk_rows]
+    #writing data порциями, каждую порцию до 3 попыток.
+    #значения те же, что раньше писал set_dataframe(..., nan='NaN'); первая строка листа — заголовок
+    needed_sheet.update_values('A1', [list(df.columns)])
+    for start in range(0, len(df), gdoc_chunk_rows):
+        df_chunk = df.iloc[start:start + gdoc_chunk_rows]
+        chunk = df_chunk.astype(object).where(df_chunk.notna(), 'NaN').values.tolist()
         for attempt in range(1, 4):
             try:
-                needed_sheet.update_values('A{}'.format(start + 1), chunk)
+                needed_sheet.update_values('A{}'.format(start + 2), chunk)
                 break
             except Exception as e:
                 print('Ошибка записи строк {}-{} в гугл док (попытка {}/3): {}'.format(start + 1, start + len(chunk), attempt, e))

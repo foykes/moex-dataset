@@ -17,7 +17,7 @@
 import datetime, pandas as pd, requests, csv, sys, time, os, json
 from io import StringIO
 from pathlib import Path
-from xlsx_utils import write_xlsx
+from dataset_files import iter_ticker_groups, append_csv, sort_dataset_file, count_rows, NotGroupedError, CHUNK_ROWS
 
 
 today = datetime.datetime.now()
@@ -37,8 +37,6 @@ request_sleep = 1
 # MOEX ISS отдаёт свечи страницами максимум по 500 строк
 page_size = 500
 
-# Сохранять ли XLSX (по умолчанию да). Отключить: MOEX_XLSX=0
-save_xlsx = os.environ.get('MOEX_XLSX', '1') == '1'
 
 
 def _resolve_current_path() -> Path:
@@ -498,6 +496,10 @@ def build_tickers_dates(all_stocks_ru, current_path):
 # %%
 ### Вспомогательные функции для выгрузки и обновления датасетов
 
+# Колонки свечей в файле датасета (без индикаторов, их добавляет tech.py)
+base_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end', 'ticker']
+
+
 ## Безопасное приведение колонки к datetime.
 ## Сначала разбираем ISO 'YYYY-MM-DD HH:MM:SS' (из API и наших файлов).
 ## Важно: format='mixed' + dayfirst=True для ISO-дат меняет местами день и месяц
@@ -560,71 +562,211 @@ def cut_years(df, years, today):
     return df[df['begin'] >= cutoff].reset_index(drop=True)
 
 
-## Сохранение датасета: CSV всегда, XLSX только если влезает в лист Excel (1 048 576 строк с заголовком).
-## Пишем во временный файл и потом подменяем, чтобы при падении не остался битый файл
-def save_dataset(df, filename, current_path):
-    datasets_dir = current_path / 'datasets'
-    datasets_dir.mkdir(parents=True, exist_ok=True)
+## Свечи одного тикера (старые + новые) -> готовые строки для файла:
+## даты в datetime, без дублей, только нужный период, по порядку времени.
+## Дубли по (тикер, начало свечи): последняя свеча прошлой выгрузки могла быть
+## незавершённой, поэтому оставляем свежую версию из нового запроса
+def prepare_ticker_rows(parts, years, today):
+    parts = [part for part in parts if len(part) > 0]
+    if len(parts) == 0:
+        return pd.DataFrame(columns=base_columns)
 
-    if len(df) == 0:
+    df = pd.concat(parts, ignore_index=True)
+    df = df[base_columns]
+    df = normalize_dates(df)
+    df = df.drop_duplicates(subset=['ticker', 'begin'], keep='last')
+    df = cut_years(df, years, today)
+    df = df.sort_values(by='begin').reset_index(drop=True)
+    return df
+
+
+## После записи нового CSV старый XLSX рядом уже не соответствует данным — удаляем.
+## Новый XLSX (уже с индикаторами) запишет tech.py
+def remove_stale_xlsx(csv_path):
+    xlsx_path = csv_path.with_suffix('.xlsx')
+    if xlsx_path.is_file():
+        xlsx_path.unlink()
+
+
+## Короткий период (например 10 лет) вырезаем из файла длинного периода (30 лет) того же интервала,
+## читая длинный файл кусками
+def cut_dataset_file(long_csv_path, filename, years, today, current_path):
+    csv_path = current_path / 'datasets' / (filename + '.csv')
+    tmp_path = csv_path.with_name(filename + '.tmp.csv')
+    if tmp_path.is_file():
+        tmp_path.unlink()
+
+    # даты в файле в ISO-формате, поэтому можно сравнивать строки
+    cutoff = (today - datetime.timedelta(days=years*365)).strftime('%Y-%m-%d %H:%M:%S')
+    rows = 0
+    for chunk in pd.read_csv(long_csv_path, chunksize=CHUNK_ROWS, usecols=base_columns):
+        chunk = chunk[base_columns]
+        if years != 0:
+            chunk = chunk[chunk['begin'].astype(str) >= cutoff]
+        rows = rows + append_csv(chunk, tmp_path)
+
+    if rows == 0:
         print('Датасет {} пустой, файл не сохраняю'.format(filename))
-        return
+        if tmp_path.is_file():
+            tmp_path.unlink()
+        return 0
 
-    # XLSX пишется построчно (xlsx_utils), чтобы не съесть всю память
-    xlsx_path = datasets_dir / (filename + '.xlsx')
-    xlsx_saved = save_xlsx and write_xlsx(df, xlsx_path)
-    if not xlsx_saved:
-        print('XLSX для {} не сохраняю ({} строк)'.format(filename, len(df)))
-        # старый xlsx больше не соответствует csv — удаляем, чтобы не выложить устаревшие данные
-        if xlsx_path.is_file():
-            xlsx_path.unlink()
-
-    csv_path = datasets_dir / (filename + '.csv')
-    tmp_path = datasets_dir / (filename + '.tmp.csv')
-    # date_format: полночь не превращается в дату без времени, формат как у API
-    df.to_csv(tmp_path, index = False, date_format='%Y-%m-%d %H:%M:%S')
     os.replace(tmp_path, csv_path)
+    remove_stale_xlsx(csv_path)
+    print("{} вырезан из {}: {} записей".format(filename, long_csv_path.name, rows))
+    return rows
 
 
 # %%
-### Функция для выгрузки данных с нуля
+### Функция для выгрузки данных с нуля.
+### Тикеры выгружаются по алфавиту и сразу дописываются в файл <filename>.partial.csv,
+### поэтому в памяти только один тикер. Если выгрузка прервалась (а полная может идти днями),
+### следующий запуск продолжит с места остановки: готовые тикеры записаны в <filename>.partial.progress
 def full_reload (all_stocks_ru, interval, years, filename, word, current_path, tickers_dates, moex_full_catalogue = None):
     today = datetime.datetime.now()
-    parts = []
+    current_path = Path(current_path)
 
     if moex_full_catalogue is None:
         moex_full_catalogue = pd.read_csv(current_path / 'datasets' / 'ticker_lists' / 'moex_full.csv', index_col=0)
 
-    for i in range(0,len(all_stocks_ru)):
-        ticker_in = all_stocks_ru['TRADE_CODE'][i]
+    datasets_dir = current_path / 'datasets'
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = datasets_dir / (filename + '.csv')
+    partial_path = datasets_dir / (filename + '.partial.csv')
+    progress_path = datasets_dir / (filename + '.partial.progress')
 
-        if len(ticker_in) > 0: #проверка что тикер выгрузился и есть
-            ticker_type = get_ticker_type(ticker_in, moex_full_catalogue)
-            end_date_mx, start_date_mx = ticker_date_range(ticker_in, years, tickers_dates, today)
-
-            df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
-            if len(df) > 0: parts.append(df)
-            print('[{}/{}] {}: {} записей ({} - {})'.format(i + 1, len(all_stocks_ru), ticker_in, len(df), end_date_mx, start_date_mx))
-        else:
-            print(ticker_in)
-
-    if len(parts) > 0:
-        df_full = pd.concat(parts, ignore_index=True)
+    ## Продолжение прерванной выгрузки: в progress строки "тикер,размер partial-файла после него"
+    done_tickers = set()
+    if partial_path.is_file() and progress_path.is_file():
+        progress = pd.read_csv(progress_path, names=['ticker', 'size'], keep_default_na=False)
+        if len(progress) > 0:
+            done_tickers = set(progress['ticker'])
+            # обрезаем недописанный хвост, если запуск прервался посреди записи тикера
+            with open(partial_path, 'r+b') as f:
+                f.truncate(int(progress['size'].iloc[-1]))
+            print('Продолжаю прерванную выгрузку {}: уже готово тикеров {}'.format(filename, len(done_tickers)))
     else:
-        df_full = pd.DataFrame()
-    df_full = normalize_dates(df_full)
+        for path in (partial_path, progress_path):
+            if path.is_file():
+                path.unlink()
 
-    print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, len(df_full)))
-    save_dataset(df_full, filename, current_path)
+    tickers = [t for t in all_stocks_ru['TRADE_CODE'].to_list() if pd.notna(t) and str(t).strip() != '']
+    tickers = sorted(set(tickers))
 
-    return df_full
+    for i in range(0,len(tickers)):
+        ticker_in = tickers[i]
+        if ticker_in in done_tickers:
+            continue
+
+        ticker_type = get_ticker_type(ticker_in, moex_full_catalogue)
+        end_date_mx, start_date_mx = ticker_date_range(ticker_in, years, tickers_dates, today)
+
+        df = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
+        df = prepare_ticker_rows([df], years, today)
+        if len(df) > 0:
+            append_csv(df, partial_path)
+
+        # отмечаем тикер готовым только после записи его строк
+        size = partial_path.stat().st_size if partial_path.is_file() else 0
+        with open(progress_path, 'a') as f:
+            f.write('{},{}\n'.format(ticker_in, size))
+
+        print('[{}/{}] {}: {} записей ({} - {})'.format(i + 1, len(tickers), ticker_in, len(df), end_date_mx, start_date_mx))
+
+    if not partial_path.is_file() or partial_path.stat().st_size == 0:
+        print("Записей для промежутка {} лет с интервалом {} {}.: 0, файл не сохраняю".format(years, interval, word))
+        for path in (partial_path, progress_path):
+            if path.is_file():
+                path.unlink()
+        return 0
+
+    rows = count_rows(partial_path)
+    os.replace(partial_path, csv_path)
+    progress_path.unlink()
+    remove_stale_xlsx(csv_path)
+
+    print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, rows))
+    return rows
 
 
 # %%
+### Обновление одного файла датасета: читаем его по тикерам, к каждому тикеру докачиваем
+### свечи с его последней даты, новые тикеры выгружаем за весь период. Пишем в новый файл
+### сразу по тикеру, поэтому в памяти только один тикер.
+### Обновляются только тикеры из актуального списка MOEX (делистнутые не трогаем)
+def update_dataset_file(dataset_path, interval, years, today, ticker_list_actual, tickers_dates, moex_full_catalogue):
+    ## 1. последняя дата каждого тикера в файле (читаем только 2 колонки)
+    last_dates = {}
+    for chunk in pd.read_csv(dataset_path, usecols=['ticker', 'end'], chunksize=CHUNK_ROWS):
+        chunk['end'] = to_datetime_safe(chunk['end'])
+        for ticker_in, end in chunk.groupby('ticker')['end'].max().items():
+            if ticker_in not in last_dates or end > last_dates[ticker_in]:
+                last_dates[ticker_in] = end
+
+    ### Новые тикеры (появились с момента последнего обновления) выгружаем за весь период датасета
+    actual = set(ticker_list_actual)
+    new_tickers = sorted(actual - set(last_dates))
+    if len(new_tickers) > 0:
+        print('Новых тикеров: {}'.format(len(new_tickers)))
+
+    tmp_path = dataset_path.with_name(dataset_path.stem + '.tmp.csv')
+    if tmp_path.is_file():
+        tmp_path.unlink()
+
+    rows_before = 0
+    rows_after = 0
+    new_index = 0
+    start_date_mx = today.strftime('%Y-%m-%d')
+
+    ## 2. по тикерам: старые строки + докачка -> новый файл
+    for ticker_in, df_old in iter_ticker_groups(dataset_path, base_columns):
+
+        # новые тикеры, которые по алфавиту раньше текущего — чтобы файл остался отсортированным
+        while new_index < len(new_tickers) and new_tickers[new_index] < str(ticker_in):
+            new_ticker = new_tickers[new_index]
+            end_date_mx, new_start_date_mx = ticker_date_range(new_ticker, years, tickers_dates, today)
+            df_new = moex_query(new_ticker, get_ticker_type(new_ticker, moex_full_catalogue), end_date_mx, new_start_date_mx, interval)
+            rows_after = rows_after + append_csv(prepare_ticker_rows([df_new], years, today), tmp_path)
+            print('Новый тикер {}: {} записей'.format(new_ticker, len(df_new)))
+            new_index = new_index + 1
+
+        rows_before = rows_before + len(df_old)
+        parts = [df_old]
+
+        last_end = last_dates.get(ticker_in)
+        if ticker_in in actual and pd.notna(last_end):
+            end_date_mx = last_end.strftime('%Y-%m-%d')
+            df_new = moex_query(ticker_in, get_ticker_type(ticker_in, moex_full_catalogue), end_date_mx, start_date_mx, interval)
+            parts.append(df_new)
+            print('{}: +{} записей'.format(ticker_in, len(df_new)))
+
+        rows_after = rows_after + append_csv(prepare_ticker_rows(parts, years, today), tmp_path)
+
+    ## 3. оставшиеся новые тикеры (по алфавиту после последнего тикера файла)
+    while new_index < len(new_tickers):
+        new_ticker = new_tickers[new_index]
+        end_date_mx, new_start_date_mx = ticker_date_range(new_ticker, years, tickers_dates, today)
+        df_new = moex_query(new_ticker, get_ticker_type(new_ticker, moex_full_catalogue), end_date_mx, new_start_date_mx, interval)
+        rows_after = rows_after + append_csv(prepare_ticker_rows([df_new], years, today), tmp_path)
+        print('Новый тикер {}: {} записей'.format(new_ticker, len(df_new)))
+        new_index = new_index + 1
+
+    if rows_after == 0:
+        print('После обновления {} пустой, оставляю старый файл'.format(dataset_path.name))
+        if tmp_path.is_file():
+            tmp_path.unlink()
+        return rows_before, rows_before
+
+    os.replace(tmp_path, dataset_path)
+    remove_stale_xlsx(dataset_path)
+    return rows_before, rows_after
+
+
 ### Функция для обновления текущих датасетов по конфигу
 ## force_reload = True — все файлы выгружаются с нуля
 def data_update (config, current_path, all_stocks_ru, tickers_dates, force_reload = False):
     today = datetime.datetime.now()
+    current_path = Path(current_path)
     moex_full_catalogue = pd.read_csv(current_path / 'datasets' / 'ticker_lists' / 'moex_full.csv', index_col=0)
 
     datasets_dir = current_path / 'datasets'
@@ -640,7 +782,7 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, force_reloa
 
     loaded_interval = None
     loaded_years = None
-    loaded_df = None
+    loaded_path = None
 
     for j in range(0,len(config_sorted)):
         filename_j = config_sorted[j]['filename']
@@ -648,11 +790,9 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, force_reloa
         years = config_sorted[j]['years']
         word = config_sorted[j]['word']
 
-        ## Этот интервал уже скачан за более длинный период — просто вырезаем нужные годы
-        if loaded_interval == interval and (loaded_years == 0 or loaded_years >= years):
-            df = cut_years(loaded_df, years, today)
-            print("{} вырезан из периода {} лет: {} записей".format(filename_j, loaded_years, len(df)))
-            save_dataset(df, filename_j, current_path)
+        ## Этот интервал уже обработан за более длинный период — просто вырезаем нужные годы
+        if loaded_interval == interval and (loaded_years == 0 or loaded_years >= years) and loaded_path.is_file():
+            cut_dataset_file(loaded_path, filename_j, years, today, current_path)
             continue
 
         dataset_path = datasets_dir / "{}.csv".format(filename_j)
@@ -661,82 +801,22 @@ def data_update (config, current_path, all_stocks_ru, tickers_dates, force_reloa
             if not force_reload:
                 print("Файла не существует, не могу его обновить: \n{}".format(dataset_path))
                 print("Начинаю выгружать его с нуля")
-            df = full_reload (all_stocks_ru, interval, years, filename_j, word, current_path, tickers_dates, moex_full_catalogue)
+            full_reload (all_stocks_ru, interval, years, filename_j, word, current_path, tickers_dates, moex_full_catalogue)
 
         else:
-            df = pd.read_csv(dataset_path)
-            print("Длина {} до обновления {}".format(filename_j, len(df)))
+            print("Обновляю {}".format(filename_j))
+            try:
+                rows_before, rows_after = update_dataset_file(dataset_path, interval, years, today, ticker_list_actual, tickers_dates, moex_full_catalogue)
+            except NotGroupedError:
+                # старый файл, где строки тикера идут не подряд — один раз сортируем и обновляем
+                sort_dataset_file(dataset_path)
+                rows_before, rows_after = update_dataset_file(dataset_path, interval, years, today, ticker_list_actual, tickers_dates, moex_full_catalogue)
+            print("Длина {} до обновления {}, после обновления {}".format(filename_j, rows_before, rows_after))
 
-            # убираем колонки теханализа - их потом с нуля пересчитает tech.py
-            white_list_columns = ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end', 'ticker']
-            columns_to_remove = [i for i in df.columns if i not in white_list_columns]
-            df.drop(columns_to_remove, axis=1, inplace=True)
-
-            # Нормализуем даты загруженного файла к datetime, иначе сортировка и
-            # сравнение строк ниже работают неверно
-            df = normalize_dates(df)
-
-            # для каждого тикера выбираем последнюю дату за которую есть выгрузка
-            df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
-            df_last_date = df_last_date.loc[:,['end','ticker']]
-            df_last_date = df_last_date.dropna(subset=['end'])
-            df_last_date.reset_index(inplace=True,drop=True)
-
-            # обновляем только тикеры, которые сейчас есть в списке MOEX (делистнутые не трогаем)
-            df_last_date = df_last_date[df_last_date['ticker'].isin(ticker_list_actual)]
-
-            parts = [df]
-
-            # обновление текущих данных: с последней даты тикера по сегодня
-            for i in range(0,len(df_last_date)):
-                ticker_in = df_last_date.iloc[i]['ticker']
-                ticker_type = get_ticker_type(ticker_in, moex_full_catalogue)
-
-                end_date_mx = df_last_date.iloc[i]['end'].strftime('%Y-%m-%d')
-                start_date_mx = today.strftime('%Y-%m-%d')
-
-                df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
-                parts.append(df_ticker)
-                print('[{}/{}] {}: +{} записей'.format(i + 1, len(df_last_date), ticker_in, len(df_ticker)))
-
-            ### Проверка не появилось ли новых тикеров с момента последнего обновления
-            ### Новые тикеры выгружаем за весь период датасета (а не только за последний год)
-            ticker_list_actual_dataset = set(df['ticker'].to_list())
-            delta = sorted(set(ticker_list_actual) - ticker_list_actual_dataset)
-            if len(delta) > 0:
-                print('Новых тикеров: {}'.format(len(delta)))
-            for t in range (0,len(delta)):
-                ticker_in = delta[t]
-                ticker_type = get_ticker_type(ticker_in, moex_full_catalogue)
-                end_date_mx, start_date_mx = ticker_date_range(ticker_in, years, tickers_dates, today)
-
-                df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
-                parts.append(df_ticker)
-                print('Новый тикер {}: {} записей'.format(ticker_in, len(df_ticker)))
-
-            df = pd.concat(parts, ignore_index=True)
-
-            # После конкатенации новые строки из API — это строки ISO, а старые
-            # уже datetime. Снова приводим обе колонки к datetime
-            df = normalize_dates(df)
-
-            # Дубли по (тикер, начало свечи): последняя свеча прошлой выгрузки могла быть
-            # незавершённой, поэтому оставляем свежую версию из нового запроса
-            df.drop_duplicates(subset=['ticker', 'begin'], keep='last', inplace=True)
-
-            # убираем то, что вышло за период датасета (иначе файл "10 лет" со временем растёт)
-            df = cut_years(df, years, today)
-
-            df.sort_values(by=['ticker','begin'],inplace=True)
-            df.reset_index(inplace=True,drop=True)
-            print("Длина {} после обновления {}".format(filename_j, len(df)))
-
-            save_dataset(df, filename_j, current_path)
-
-        # запоминаем скачанный интервал, чтобы вырезать из него более короткие периоды
+        # запоминаем обработанный интервал, чтобы вырезать из него более короткие периоды
         loaded_interval = interval
         loaded_years = years
-        loaded_df = df
+        loaded_path = dataset_path
 
 
 # %%

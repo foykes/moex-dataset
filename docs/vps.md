@@ -35,9 +35,9 @@ scp ~/Documents/petprojects/prod/secrets/moex.foykes.com.json USER@VPS:~/secrets
 ssh USER@VPS 'chmod 600 ~/secrets/*'
 ```
 
-## 3. Swap (recommended with small RAM)
+## 3. Swap (safety net)
 
-Each dataset is processed as one pandas table in memory. Swap prevents the process from being killed on peaks.
+Datasets are processed one ticker at a time (~300 MB RAM measured), so 2 GB is enough. Swap is a safety net.
 
 ```bash
 sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile
@@ -59,11 +59,17 @@ Run inside `tmux` so it survives SSH disconnects:
 
 ```bash
 tmux new -s moex
-cd ~/moex-dataset && ./run.sh        # default config: datasets_config.json (10 and 30 years)
+cd ~/moex-dataset && ./run.sh        # default config: datasets_config.json (1d/1h 10 and 30 years, 10m/1m 1 year)
 # detach: Ctrl+B, then D. Re-attach later: tmux attach -t moex
 ```
 
 Missing dataset files are downloaded from scratch automatically. `./run.sh --full-reload` forces it for all files.
+If the run stops (reboot, crash), just start `./run.sh` again: the full load continues from the last finished ticker
+(`datasets/*.partial.csv` + `*.partial.progress`).
+
+Expected size: ~40–50 GB of CSV/XLSX in total (10y hourly ≈ 8–9 GB, 1y 1-minute ≈ 20 GB). FTP uploads all of it
+on every run, so the daily upload time depends on the VPS bandwidth. To make the 1-minute file smaller, set
+`"tech": false` for it in `settings/datasets_config.json` (no indicators, ~10× smaller).
 
 ## 6. Daily update (cron)
 

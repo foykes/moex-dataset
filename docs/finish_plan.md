@@ -102,9 +102,16 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
   `docs/vps.md`, README refresh. Phase 7 (tests) done along the way: 21 pytest tests, all mocked.
 - Dry run 2026-11-04 (all tickers, 1y daily only, `--no-upload`): all steps OK, 8.4 min,
   83,729 rows × 89 columns, CSV 115 MB, XLSX 72 MB, peak RAM 460 MB, 0 failed requests.
-- **Open: scale of the full config.** ~1.4 KB per row in CSV, ~5 KB per row peak RAM (whole file in pandas).
+- (resolved by the decision above) Scale of the full config: ~1.4 KB per row in CSV, ~5 KB per row peak RAM (whole file in pandas).
   Rough estimates: 10y daily ~0.7M rows → ~1 GB CSV, ~3.5 GB RAM; 10y hourly ~6M rows → ~9 GB CSV, ~30 GB RAM;
   10y 1-minute ~100M rows → ~140 GB CSV per file. 10m/1m for 10/30 years do not fit 2 GB RAM / 400 GB disk / daily FTP.
+- Owner decision 2026-11-04: full config = daily + hourly for 10/30 years, 10m and 1m for 1 year.
+- Phase 8 ✅ — per-ticker streaming so the full config fits 2 GB RAM: `dataset_files.py`
+  (`iter_ticker_groups`, `append_csv`, XLSX from CSV in chunks). `data_update` / `full_reload` / `tech`
+  keep one ticker in memory. Full reload resumes after a crash (`*.partial.csv` + `*.partial.progress`).
+  Measured on 2.1M synthetic hourly rows: update 11 s / ~300 MB, tech 112 s / ~300 MB (before: ~10 GB).
+  XLSX is now written only by `tech` (once, with indicators); data_gathering removes the stale one.
+  Rough output sizes: 10y hourly ~5–6M rows ≈ 8–9 GB CSV, 1y 1m ≈ 15M rows ≈ 20 GB CSV, total ≈ 40–50 GB.
 - Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
   `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);
   default `MOEX_CONFIG` → switch to full config in Phase 6 for the VPS cron.

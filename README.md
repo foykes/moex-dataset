@@ -11,7 +11,7 @@
 
 | Конфиг | Наборы |
 |---|---|
-| `settings/datasets_config.json` | 10 и 30 лет × свечи 1 день, 1 час, 10 минут, 1 минута |
+| `settings/datasets_config.json` | 10 и 30 лет × свечи 1 день и 1 час; 1 год × 10 минут и 1 минута |
 | `settings/datasets_config_1_year.json` | 1 год × свечи 1 день, 1 час, 10 минут, 1 минута |
 
 Файлы: `datasets/<период>_data_<интервал>_interval.csv` (+ `.xlsx`, если влезает в лист Excel).
@@ -44,7 +44,7 @@ MOEX_CONFIG=datasets_config_1_year.json .venv/bin/python main.py --no-upload
 | `dividends` | дивиденды через ISS MOEX (сейчас доступны только подписчикам ISS — шаг пропускается) |
 | `dohodru_data` | дивиденды с доход.ру |
 | `upload` | загрузка на FTP и 10 лет дневных свечей в гугл док |
-| `xlsx_utils.py` | запись больших XLSX без расхода памяти |
+| `dataset_files.py` | чтение/запись датасетов по тикерам (в памяти один тикер), XLSX без расхода памяти |
 
 <h3 align="center">ToDo:</h3>
 

@@ -17,12 +17,9 @@
 import talib, pandas as pd
 import sys, os, json
 from pathlib import Path
-from xlsx_utils import write_xlsx
+from dataset_files import iter_ticker_groups, append_csv, sort_dataset_file, update_xlsx, NotGroupedError
 
 current_path = Path(sys.path[0])
-
-## Сохранять ли XLSX (по умолчанию да). Отключить: MOEX_XLSX=0
-save_xlsx = os.environ.get('MOEX_XLSX', '1') == '1'
 
 # %%
 ### Все доступные функции в пакете TA-lib
@@ -161,45 +158,48 @@ def ticker_indicators(df_ticker):
 
 
 ### Пересчёт индикаторов для файла датасета (CSV).
+### Файл читается по тикерам и сразу дописывается в новый файл, поэтому в памяти только один тикер
+### (датасет 30 лет x 1 час с индикаторами целиком в память не влезает).
 ### Индикаторы считаются по каждому тикеру отдельно, чтобы не смешивать строки разных тикеров.
-### Если save_xlsx и строк меньше лимита Excel — рядом сохраняется XLSX из того же результата
+### Рядом сохраняется XLSX из того же результата, если включён и влезает в лист Excel
+def write_with_indicators(path, tmp_path, keep_columns):
+    if tmp_path.is_file():
+        tmp_path.unlink()
+
+    rows = 0
+    for ticker, df_ticker in iter_ticker_groups(path, keep_columns):
+        # индикаторы считаются по порядку свечей, поэтому сортируем по времени
+        df_ticker = df_ticker.sort_values(by='begin', kind='stable').reset_index(drop=True)
+        df_ticker = df_ticker.join(ticker_indicators(df_ticker))
+        rows = rows + append_csv(df_ticker, tmp_path)
+    return rows
+
+
 def calculator(filename, current_path = current_path):
     datasets_dir = Path(current_path) / 'datasets'
     path = datasets_dir / filename
+    tmp_path = path.with_name(path.stem + '.tmp.csv')
 
-    df = pd.read_csv(path)
+    # старые значения индикаторов не читаем — они пересчитываются
+    header = pd.read_csv(path, nrows=0).columns
+    keep_columns = [i for i in header if i not in indicator_columns]
 
-    # убираем старые значения индикаторов, если они есть
-    columns_to_remove = [i for i in df.columns if i in indicator_columns]
-    df.drop(columns_to_remove, axis=1, inplace=True)
+    try:
+        rows = write_with_indicators(path, tmp_path, keep_columns)
+    except NotGroupedError:
+        # старый файл, где строки тикера идут не подряд — один раз сортируем
+        sort_dataset_file(path)
+        rows = write_with_indicators(path, tmp_path, keep_columns)
 
-    # индикаторы считаются по порядку свечей, поэтому сортируем внутри тикера по времени
-    df.sort_values(by=['ticker', 'begin'], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-
-    parts = []
-    for ticker, df_ticker in df.groupby('ticker', sort=False):
-        parts.append(ticker_indicators(df_ticker))
-
-    if len(parts) > 0:
-        df = df.join(pd.concat(parts))
-
-    if len(df) == 0:
+    if rows == 0:
         print('Файл {} пустой, пропускаю'.format(filename))
+        if tmp_path.is_file():
+            tmp_path.unlink()
         return
 
-    # пишем во временный файл и подменяем, чтобы при падении не остался битый файл
-    tmp_path = path.with_name(path.stem + '.tmp.csv')
-    df.to_csv(tmp_path, index = False)
     os.replace(tmp_path, path)
-
-    # XLSX из того же результата; если не влезает в лист Excel или выключен — старый удаляем,
-    # чтобы не выложить устаревшие данные рядом с новым CSV
-    xlsx_path = path.with_suffix('.xlsx')
-    xlsx_saved = save_xlsx and write_xlsx(df, xlsx_path)
-    if not xlsx_saved and xlsx_path.is_file():
-        print('XLSX для {} не сохраняю ({} строк)'.format(filename, len(df)))
-        xlsx_path.unlink()
+    update_xlsx(path)
+    print('Посчитал индикаторы для {}: {} записей'.format(filename, rows))
 
 # %%
 ### Ниже блоки для проверки отдельно функции
@@ -231,11 +231,12 @@ def main(current_path):
     for dataset in config:
         filename = dataset['filename'] + '.csv'
 
-        if dataset.get('tech', True) == False:
-            print('Для {} индикаторы выключены в конфиге'.format(filename))
-            continue
         if not (current_path / 'datasets' / filename).is_file():
             print('Файла {} нет, пропускаю'.format(filename))
+            continue
+        if dataset.get('tech', True) == False:
+            print('Для {} индикаторы выключены в конфиге'.format(filename))
+            update_xlsx(current_path / 'datasets' / filename)
             continue
 
         try:

@@ -134,8 +134,8 @@ def test_gdoc_writes_in_chunks_with_same_columns(project, monkeypatch):
     assert sheet.calls[0] == ('clear',)
     assert sheet.calls[1] == ('resize', 4, 10)
     updates = [c for c in sheet.calls if c[0] == 'update']
-    assert [u[1] for u in updates] == ['A1', 'A3']
-    values = updates[0][2] + updates[1][2]
+    assert [u[1] for u in updates] == ['A1', 'A2', 'A4']
+    values = updates[0][2] + updates[1][2] + updates[2][2]
     assert values[0] == ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end', 'ticker', 'RSI14']
     assert values[1][9] == 'NaN'
     assert values[3][5] == 2 and type(values[3][5]) is int
