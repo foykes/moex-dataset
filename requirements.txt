@@ -1,0 +1,32 @@
+# Runtime dependencies for the moex-dataset data pipeline.
+# These are needed to run the .py modules: data_gathering, tech, dividends,
+# dohodru_data, upload. Install with:  pip install -r requirements.txt
+#
+# Version specifiers are conservative lower bounds (compatible with Python 3.14).
+# After a verified install, lock exact versions with:
+#   pip freeze > requirements.lock.txt
+
+# Core data handling — used by every module (DataFrames, read/to_csv, read_html).
+pandas>=2.2.3
+
+# HTTP requests to the MOEX ISS API and dohod.ru — data_gathering.py, dohodru_data.py.
+requests>=2.32.0
+
+# Technical indicators — tech.py (import talib).
+# NOTE: the pip package wraps a C library that must be installed first.
+#   macOS:          brew install ta-lib
+#   Debian/Ubuntu:  apt-get install ta-lib   (or build from source)
+# See docs/requirements.md for details.
+TA-Lib>=0.4.28
+
+# HTML parsing of dohod.ru pages — dohodru_data.py (from bs4 import BeautifulSoup).
+beautifulsoup4>=4.12.0
+
+# Parser backend used explicitly by BeautifulSoup('lxml') and by pandas.read_html.
+lxml>=5.2.0
+
+# Excel engine for DataFrame.to_excel() / read_excel() (.xlsx) — used by 7 modules.
+openpyxl>=3.1.0
+
+# Google Sheets upload of the daily dataset — upload.py (import pygsheets).
+pygsheets>=2.0.6

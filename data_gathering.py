@@ -16,18 +16,47 @@
 # %%
 import datetime, pandas as pd, requests, csv, sys, time, os, json
 from io import StringIO
+from pathlib import Path
 
 
 today = datetime.datetime.now()
 df_full = pd.DataFrame()
 exception_list = []
-current_path = sys.path[0]
+
+
+def _resolve_current_path() -> Path:
+    """Каталог проекта, надёжно и кроссплатформенно (Windows/macOS/Linux).
+
+    Один и тот же исходник работает и как .py, и как .ipynb (jupytext),
+    поэтому пробуем источники пути по убыванию надёжности:
+      1) __file__   — есть при запуске как обычный .py-скрипт;
+                      указывает на сам файл и не зависит от того,
+                      откуда запущен python;
+      2) __vsc_ipynb_file__ — VS Code прокидывает сюда путь .ipynb,
+                      тоже не зависит от рабочей директории;
+      3) Path.cwd() — универсальный фолбэк для любого Jupyter-фронтенда
+                      (по умолчанию ядро стартует в папке ноутбука).
+    pathlib сам подставляет правильный разделитель пути для текущей ОС.
+    """
+    try:
+        return Path(__file__).resolve().parent
+    except NameError:
+        pass
+
+    notebook_path = globals().get("__vsc_ipynb_file__")
+    if notebook_path:
+        return Path(notebook_path).resolve().parent
+
+    return Path.cwd().resolve()
+
+
+current_path = _resolve_current_path()
 
 
 # %%
 header = {'User-Agent': ''}
 ### Выгрузка header для запроса
-json_path = current_path + '/settings/user_agents.json'
+json_path = current_path / 'settings' / 'user_agents.json'
 with open(json_path, 'r', encoding='utf-8') as f:
     headers_full = json.load(f)
 
@@ -36,7 +65,7 @@ header['User-Agent'] = header_first
 
 # %%
 ### Выгрузка конфига файлов
-json_path = current_path + '/settings/datasets_config.json'
+json_path = current_path / 'settings' / 'datasets_config.json'
 
 with open(json_path, 'r', encoding='utf-8') as f:
     config = json.load(f)
@@ -106,9 +135,12 @@ def moex_tickerlists (current_path):
     df_moex = df_moex[1:]
     df_moex.columns = new_header
 
+    ticker_lists_dir = current_path / 'datasets' / 'ticker_lists'
+    ticker_lists_dir.mkdir(parents=True, exist_ok=True)
+
     print("Общее количество объектов на Мосбирже: {}".format(len(df_moex)))
-    df_moex.to_excel(("{}/datasets/ticker_lists/moex_full.xlsx").format(current_path))
-    df_moex.to_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path))
+    df_moex.to_excel(ticker_lists_dir / 'moex_full.xlsx')
+    df_moex.to_csv(ticker_lists_dir / 'moex_full.csv')
 
     df_moex_stocks = df_moex[(df_moex['SUPERTYPE'] == "Акции")|(df_moex['SUPERTYPE'] == "Депозитарные расписки")]
     df_moex_stocks.reset_index(drop=True, inplace=True)
@@ -116,16 +148,16 @@ def moex_tickerlists (current_path):
     ## moex_stocks_list['CURRENCY'] == '' это заблокированные акции
 
     print("Количество акций и депозитарных расписок: {}".format(len(df_moex_stocks)))
-    # df_moex_stocks.to_excel(("{}/datasets/ticker_lists/moex_stocks.xlsx").format(current_path))
-    df_moex_stocks.to_csv(("{}/datasets/ticker_lists/moex_stocks.csv").format(current_path))
+    # df_moex_stocks.to_excel(ticker_lists_dir / 'moex_stocks.xlsx')
+    df_moex_stocks.to_csv(ticker_lists_dir / 'moex_stocks.csv')
 
     ## Запуск только для акций и депозитарных расписок
     all_stocks_ru = df_moex_stocks.filter(['TRADE_CODE'], axis = 1)
     all_stocks_ru = all_stocks_ru.loc[~all_stocks_ru.duplicated(), :]
 
     ## Запуск для всего
-    all_stocks_ru = df_moex.filter(['TRADE_CODE'], axis = 1)
-    all_stocks_ru = df_moex.loc[~all_stocks_ru.duplicated(), :]
+    # all_stocks_ru = df_moex.filter(['TRADE_CODE'], axis = 1)
+    # all_stocks_ru = df_moex.loc[~all_stocks_ru.duplicated(), :]
 
     df_moex_stocks.reset_index(drop=True, inplace=True)
 
@@ -416,17 +448,19 @@ def build_tickers_dates(all_stocks_ru, current_path):
         )
 
     tickers_dates = pd.DataFrame(rows)
-    
+
     ## Сохранение файлов
-    tickers_dates.to_excel(("{}/datasets/ticker_lists/tickers_dates.xlsx").format(current_path))
-    tickers_dates.to_csv(("{}/datasets/ticker_lists/tickers_dates.csv").format(current_path))
+    ticker_lists_dir = current_path / 'datasets' / 'ticker_lists'
+    ticker_lists_dir.mkdir(parents=True, exist_ok=True)
+    tickers_dates.to_excel(ticker_lists_dir / 'tickers_dates.xlsx')
+    tickers_dates.to_csv(ticker_lists_dir / 'tickers_dates.csv')
 
     return tickers_dates
 
 
 # %%
 ### Функция для выгрузки данных с нуля
-def full_reload (all_stocks_ru, interval, years, filename, word, current_path, tickers_dates):
+def full_reload (all_stocks_ru, interval, years, filename, word, current_path, tickers_dates, moex_full_catalogue):
     df_full = pd.DataFrame()
     today = datetime.datetime.now()
     start_date = today
@@ -441,9 +475,12 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
 
     for i in range(0,len(all_stocks_ru)):
         ticker_in = all_stocks_ru['TRADE_CODE'][i]
-        ticker_type = all_stocks_ru['SUPERTYPE'][i]
 
         if len(ticker_in) > 0: #проверка что тикер выгрузился и есть
+
+            # тип бумаги берём из полного каталога MOEX: в all_stocks_ru колонки
+            # SUPERTYPE нет (там только TRADE_CODE), а в moex_full_catalogue есть
+            ticker_type = moex_full_catalogue[moex_full_catalogue['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
 
             #определение левой границы выгрузки: или дата листинга или самое раннее нужное значение
             end_date_mx = tickers_dates[tickers_dates['TRADE_CODE'] == ticker_in]['issue_date'].values[0]
@@ -463,15 +500,28 @@ def full_reload (all_stocks_ru, interval, years, filename, word, current_path, t
             print(ticker_in)
 
     print("Записей для промежутка {} лет с интервалом {} {}.: {}".format(years,interval, word, len(df_full)))
-    if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(('{}/datasets/{}'.format(current_path,filename + '.xlsx')),index = False)
-    if len(df_full) > 0: df_full.to_csv(('{}/datasets/{}'.format(current_path, filename + '.csv')),index = False)
+    datasets_dir = current_path / 'datasets'
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+    if len(df_full) > 0 and len(df_full) < 1048576: df_full.to_excel(datasets_dir / (filename + '.xlsx'), index = False)
+    if len(df_full) > 0: df_full.to_csv(datasets_dir / (filename + '.csv'), index = False)
 
 # %%
 ### Функция для обновления текущих датасетов по конфигу
-def data_update (config, current_path, all_stocks_ru):
+def data_update (config, current_path, all_stocks_ru, tickers_dates):
     today = datetime.datetime.now()
-    moex_full_catalogue = pd.read_csv(("{}/datasets/ticker_lists/moex_full.csv").format(current_path), index_col=0)
-    
+    moex_full_catalogue = pd.read_csv(current_path / 'datasets' / 'ticker_lists' / 'moex_full.csv', index_col=0)
+
+    datasets_dir = current_path / 'datasets'
+
+    # Безопасное приведение колонки к datetime.
+    # format='mixed' разбирает КАЖДЫЙ элемент по своему формату, поэтому
+    # смешанные в одной колонке 'DD/MM/YYYY HH:MM' (из старых файлов) и
+    # ISO 'YYYY-MM-DD HH:MM:SS' (из API) парсятся оба и не зануляются.
+    # dayfirst=True снимает неоднозначность дат вида 05/06/2025 в пользу дня.
+    # errors='coerce' превращает непарсящиеся значения в NaT.
+    def _to_datetime_safe(series):
+        return pd.to_datetime(series, format='mixed', dayfirst=True, errors='coerce')
+
     ## обновление готовых файлов
     for j in range(0,len(config)):
         filename_j = config[j]['filename']
@@ -479,18 +529,18 @@ def data_update (config, current_path, all_stocks_ru):
         years = config[j]['years']
         word = config[j]['word']
 
-        dataset_path = current_path + "datasets/{}.csv".format(filename_j)
+        dataset_path = datasets_dir / "{}.csv".format(filename_j)
 
         # проверка что файл существует
-        if os.path.isfile(dataset_path) == False:
+        if not dataset_path.is_file():
             print("Файла не существует, не могу его обновить: \n{}".format(dataset_path))
             print("Начинаю выгружать его с нуля")
-            full_reload (all_stocks_ru, interval, years, filename_j, word, current_path)
+            full_reload (all_stocks_ru, interval, years, filename_j, word, current_path, tickers_dates, moex_full_catalogue)
 
         else:
-            if dataset_path.endswith('csv') and "~$" not in dataset_path:
+            if dataset_path.suffix == '.csv' and "~$" not in dataset_path.name:
                 df = pd.read_csv(dataset_path)
-            elif dataset_path.endswith('xlsx') and "~$" not in dataset_path:
+            elif dataset_path.suffix == '.xlsx' and "~$" not in dataset_path.name:
                 df = pd.read_excel(dataset_path)
 
             print("Длина {} до обновления {}".format(filename_j, len(df)))
@@ -505,6 +555,13 @@ def data_update (config, current_path, all_stocks_ru):
             df.drop(columns_to_remove, axis=1,inplace=True)
             # df.head(2)
 
+            # Нормализуем даты загруженного файла к datetime, иначе сортировка и
+            # сравнение строк ниже работают неверно (часть тикеров молча
+            # выпадает из обновления).
+            for _dt_col in ('begin', 'end'):
+                if _dt_col in df.columns:
+                    df[_dt_col] = _to_datetime_safe(df[_dt_col])
+
             # для каждого тикера выбираем последнюю дату за которую есть выгрузка 
             df_last_date = df.sort_values(by=['end']).drop_duplicates(subset='ticker', keep='last')
             df_last_date = df_last_date.loc[:,['end','ticker']]
@@ -512,7 +569,8 @@ def data_update (config, current_path, all_stocks_ru):
             df_last_date.reset_index(inplace=True,drop=True)
 
             # оставляем только тикеры, которые выгружались в последние 30 дней (чтобы не брать тикеры, которые делистили)
-            filter_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+            # end теперь datetime, поэтому сравниваем с datetime-границей напрямую
+            filter_date = datetime.datetime.now() - datetime.timedelta(days=30)
             df_last_date = df_last_date[df_last_date['end'] >= filter_date]
 
 
@@ -525,7 +583,8 @@ def data_update (config, current_path, all_stocks_ru):
                 ticker_type = moex_full_catalogue[moex_full_catalogue['TRADE_CODE'] == ticker_in]['SUPERTYPE'].values[0]
 
                 start_date_mx = start_date.strftime('%Y-%m-%d')
-                end_date_mx = (datetime.datetime.strptime(end_date,'%Y-%m-%d %H:%M:%S')).strftime('%Y-%m-%d')
+                # end_date теперь Timestamp (после нормализации выше)
+                end_date_mx = end_date.strftime('%Y-%m-%d')
 
                 df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
                 df = pd.concat([df, df_ticker])
@@ -534,7 +593,10 @@ def data_update (config, current_path, all_stocks_ru):
             ### Проверка не появилось ли новых тикеров с момента последнего обновления
 
             ticker_list_actual = list(set(all_stocks_ru['TRADE_CODE'].to_list()))
-            ticker_list_actual.remove('')
+            # убираем пустые/NaN значения безопасно (раньше было .remove(''),
+            # но оно падало с ValueError, если пустой строки в списке нет —
+            # например в режиме "только акции", где пустого тикера не бывает)
+            ticker_list_actual = [t for t in ticker_list_actual if pd.notna(t) and str(t).strip() != '']
 
             ticker_list_actual_dataset = list(set(df['ticker'].to_list()))
 
@@ -548,31 +610,48 @@ def data_update (config, current_path, all_stocks_ru):
 
                     df_ticker = moex_query(ticker_in, ticker_type, end_date_mx, start_date_mx, interval)
                     df = pd.concat([df, df_ticker])
-            
+
+            # После конкатенации новые строки из API — это строки ISO, а старые
+            # уже datetime. Снова приводим обе колонки к datetime, иначе колонка
+            # становится смешанной (Timestamp + str) и сортировка по 'begin'
+            # упадёт на сравнении разных типов. Заодно файл сохранится в едином
+            # ISO-формате.
+            for _dt_col in ('begin', 'end'):
+                if _dt_col in df.columns:
+                    df[_dt_col] = _to_datetime_safe(df[_dt_col])
+
             df.sort_values(by=['ticker','begin'],inplace=True)
             df.drop_duplicates(inplace=True)
             df.reset_index(inplace=True,drop=True)
             print("Длина {} после обновления {}".format(filename_j, len(df)))
 
-            if len(df) > 0 and len(df) < 1048576: df.to_excel(('{}/datasets/{}'.format(current_path,filename_j + '.xlsx')),index = False)
-            if len(df) > 0: df.to_csv(('{}/datasets/{}'.format(current_path, filename_j + '.csv')),index = False)
+            datasets_dir.mkdir(parents=True, exist_ok=True)
+            if len(df) > 0 and len(df) < 1048576: df.to_excel(datasets_dir / (filename_j + '.xlsx'), index = False)
+            if len(df) > 0: df.to_csv(datasets_dir / (filename_j + '.csv'), index = False)
 
 # %%
 def main(current_path, force_reload = False):
     global exception_list
     global config
-    
+
+    # На случай, если main вызвали со строковым путём (например, из «старой»
+    # переменной current_path, оставшейся в ядре Jupyter) — приводим к Path.
+    # Path(Path(...)) идемпотентен, так что уже готовый Path тоже пройдёт без вреда.
+    current_path = Path(current_path)
+
     all_stocks_ru = moex_tickerlists (current_path)
     all_stocks_ru.reset_index(drop=True, inplace=True)
 
     tickers_dates = build_tickers_dates(all_stocks_ru, current_path)
     
     if force_reload == True: ## Если нужно с нуля перевыгрузить данные, то это этот необязательный параметр нужно передать как True
+        # тип бумаги в full_reload берётся из полного каталога MOEX
+        moex_full_catalogue = pd.read_csv(current_path / 'datasets' / 'ticker_lists' / 'moex_full.csv', index_col=0)
         for k in range(0, len(config)):
-            full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path, tickers_dates)
+            full_reload(all_stocks_ru, config[k]['interval'], config[k]['years'], config[k]['filename'],config[k]['word'], current_path, tickers_dates, moex_full_catalogue)
         
     else:
-        data_update(config,current_path, all_stocks_ru)
+        data_update(config, current_path, all_stocks_ru, tickers_dates)
 
 
     exception_list = list(set(exception_list)) #дедупликация
