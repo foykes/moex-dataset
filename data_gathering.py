@@ -336,6 +336,19 @@ def moex (ticker_in, ticker_type, years, interval):
 # %%
 ## Функция выгружает даты торгов по каждому тикеру (когда начали торговать по этому тикеру и конца закончили)
 ## полезно, чтобы перестать выгружать данные по тем тикерам, которые уже делистили
+## Запрос JSON к ISS: 3 попытки с паузой, чтобы одна сетевая ошибка не оставляла тикер без дат
+def iss_get_json(session, url, params, attempts=3):
+    for attempt in range(1, attempts + 1):
+        try:
+            r = session.get(url, params=params, timeout=30)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if attempt == attempts:
+                raise
+            time.sleep(3 * attempt)
+
+
 def build_tickers_dates(all_stocks_ru, current_path):
     """
     По уникальным тикерам из all_stocks_ru['TRADE_CODE'] получает:
@@ -380,13 +393,7 @@ def build_tickers_dates(all_stocks_ru, current_path):
                 "iss.only": "description",
                 "description.columns": "name,value",
             }
-            r = session.get(
-                desc_url.format(secid=secid),
-                params=params_desc,
-                timeout=5,
-            )
-            r.raise_for_status()
-            j = r.json()
+            j = iss_get_json(session, desc_url.format(secid=secid), params_desc)
 
             desc = j.get("description", {})
             cols = desc.get("columns", [])
@@ -414,13 +421,7 @@ def build_tickers_dates(all_stocks_ru, current_path):
                 "iss.only": "securities",
                 "securities.columns": "secid,group,is_traded,primary_boardid",
             }
-            r = session.get(
-                securities_url,
-                params=params_sec,
-                timeout=5,
-            )
-            r.raise_for_status()
-            j = r.json()
+            j = iss_get_json(session, securities_url, params_sec)
 
             sec = j.get("securities", {})
             cols = sec.get("columns", [])
@@ -433,8 +434,8 @@ def build_tickers_dates(all_stocks_ru, current_path):
                 pb_idx = cols.index("primary_boardid")
 
                 for row_ in data:
-                    # выбираем именно акцию (group == 'stock_shares') и нужный SECID
-                    if str(row_[secid_idx]).upper() == secid and row_[group_idx] == "stock_shares":
+                    # выбираем акцию или депозитарную расписку (раньше расписки stock_dr не находились) и нужный SECID
+                    if str(row_[secid_idx]).upper() == secid and row_[group_idx] in ("stock_shares", "stock_dr"):
                         is_traded = row_[is_traded_idx]
                         primary_boardid = row_[pb_idx]
                         break
@@ -452,13 +453,7 @@ def build_tickers_dates(all_stocks_ru, current_path):
                     "sort_order": "desc",
                     "limit": 1,
                 }
-                r = session.get(
-                    history_url.format(board=primary_boardid, secid=secid),
-                    params=params_hist,
-                    timeout=5,
-                )
-                r.raise_for_status()
-                j = r.json()
+                j = iss_get_json(session, history_url.format(board=primary_boardid, secid=secid), params_hist)
 
                 hist = j.get("history", {})
                 cols = hist.get("columns", [])
@@ -483,6 +478,8 @@ def build_tickers_dates(all_stocks_ru, current_path):
         )
 
     tickers_dates = pd.DataFrame(rows)
+    print('Даты тикеров: всего {}, без даты листинга {}, делистнуто {}'.format(
+        len(tickers_dates), tickers_dates['issue_date'].isna().sum(), tickers_dates['stopped_date'].notna().sum()))
 
     ## Сохранение файлов
     ticker_lists_dir = current_path / 'datasets' / 'ticker_lists'
