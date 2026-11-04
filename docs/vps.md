@@ -35,6 +35,25 @@ scp ~/Documents/petprojects/prod/secrets/moex.foykes.com.json USER@VPS:~/secrets
 ssh USER@VPS 'chmod 600 ~/secrets/*'
 ```
 
+### Telegram alerts (optional, recommended)
+
+1. In Telegram open `@BotFather` → `/newbot` → copy the token.
+2. Send any message to your new bot, then open `https://api.telegram.org/bot<TOKEN>/getUpdates`
+   in a browser and copy `"chat":{"id": ...}`.
+3. On the VPS:
+
+```bash
+cat > ~/secrets/telegram.json <<'JSON'
+{"token": "<TOKEN>", "chat_id": "<CHAT_ID>", "notify_success": true}
+JSON
+chmod 600 ~/secrets/telegram.json
+cd ~/moex-dataset && .venv/bin/python notify.py "moex-dataset: тест"
+```
+
+You get a message after every run (`"notify_success": false` = only problems): status, time per step,
+rows / tickers / last date per dataset, warnings (stale data, failed MOEX requests). Also a message when
+cron finds the previous run still working, and when the script crashes. No file = alerts off.
+
 ## 3. Swap (safety net)
 
 Datasets are processed one ticker at a time (~300 MB RAM measured), so 2 GB is enough. Swap is a safety net.
@@ -88,9 +107,10 @@ writes a line to `logs/skipped.log`.
 |---|---|
 | Run logs | `logs/run_YYYY-MM-DD_HH-MM.log` (kept 60 days), last line = exit code |
 | Failed MOEX requests | `datasets/exception_list.csv` |
+| Run report (rows, tickers, first/last date, size per dataset) | `datasets/run_report.csv` (also uploaded to FTP) |
 | Datasets | `datasets/*.csv`, `*.xlsx`, `datasets/ticker_lists/`, `datasets/dividends/` |
 
-Exit code `1` = some step failed; the log ends with `Шаги с ошибками: [...]`.
+Exit code `3` = some step failed (log ends with `Шаги с ошибками: [...]`); any other non-zero code = the script crashed.
 If data gathering or tech fails, upload is skipped so FTP and Google keep the previous data.
 
 ## 8. Settings (environment variables)

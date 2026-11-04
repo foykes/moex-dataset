@@ -112,6 +112,12 @@ Date: 2026-11-04. Goal: a simple, working pipeline running daily on a VPS. No bi
   Measured on 2.1M synthetic hourly rows: update 11 s / ~300 MB, tech 112 s / ~300 MB (before: ~10 GB).
   XLSX is now written only by `tech` (once, with indicators); data_gathering removes the stale one.
   Rough output sizes: 10y hourly ~5–6M rows ≈ 8–9 GB CSV, 1y 1m ≈ 15M rows ≈ 20 GB CSV, total ≈ 40–50 GB.
+- Follow-ups ✅ — `tickers_dates`: depositary receipts (`stock_dr`) now get delisting dates, ISS requests retried
+  3× (was one 5 s try). Run report `datasets/run_report.csv` (rows/tickers/first/last date/size, stale warning),
+  Telegram alerts (`notify.py`, `~/secrets/telegram.json`), time per step in the log; exit code 3 = step errors.
+  Dry run (daily update, all tickers): data 6.8 min, tech 0.5 min, dohod.ru 1.1 min.
+- Next ideas: compressed `.csv.gz` uploads (40–50 GB/day → ~8–10 GB), rounding indicator floats,
+  move old manual scripts to `old/`, "updated on" date on the site, Hugging Face.
 - Notes for later: pandas 3.1 warns about `inplace=` (works, just warnings);
   `tech.main` reads every file in `datasets/` (Phase 4 → use the config list);
   default `MOEX_CONFIG` → switch to full config in Phase 6 for the VPS cron.

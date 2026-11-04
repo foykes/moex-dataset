@@ -44,6 +44,7 @@ MOEX_CONFIG=datasets_config_1_year.json .venv/bin/python main.py --no-upload
 | `dividends` | дивиденды через ISS MOEX (сейчас доступны только подписчикам ISS — шаг пропускается) |
 | `dohodru_data` | дивиденды с доход.ру |
 | `upload` | загрузка на FTP и 10 лет дневных свечей в гугл док |
+| `run_report.py`, `notify.py` | отчёт о запуске `datasets/run_report.csv` и сообщение в Telegram |
 | `dataset_files.py` | чтение/запись датасетов по тикерам (в памяти один тикер), XLSX без расхода памяти |
 
 <h3 align="center">ToDo:</h3>
